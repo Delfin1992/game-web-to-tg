@@ -1,0 +1,10 @@
+Update chat message data structure for database storage
+
+Refactor insertMessageSchema in shared/schema.ts from createInsertSchema to z.object, defining explicit types for userId, username, and content.
+
+Replit-Commit-Author: Agent
+Replit-Commit-Session-Id: a575195f-f41b-4b7c-9926-cac1f4ed6a19
+Replit-Commit-Checkpoint-Type: full_checkpoint
+Replit-Commit-Event-Id: a5552381-3818-4929-b48e-894e08f85079
+Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/b1643ec5-608b-4d60-8f7b-737c09307012/a575195f-f41b-4b7c-9926-cac1f4ed6a19/o7auDVv
+Replit-Helium-Checkpoint-Created: true

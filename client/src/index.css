@@ -1,0 +1,88 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(0 0% 4%);
+  --color-foreground: hsl(180 100% 90%); /* Light cyan */
+
+  --color-card: hsl(240 10% 8% / 0.8);
+  --color-card-foreground: hsl(180 100% 90%);
+
+  --color-popover: hsl(240 10% 8%);
+  --color-popover-foreground: hsl(180 100% 90%);
+
+  --color-primary: hsl(180 100% 50%); /* Neon Cyan */
+  --color-primary-foreground: hsl(0 0% 0%);
+
+  --color-secondary: hsl(300 100% 50%); /* Neon Pink */
+  --color-secondary-foreground: hsl(0 0% 0%);
+
+  --color-muted: hsl(240 20% 15%);
+  --color-muted-foreground: hsl(240 10% 60%);
+
+  --color-accent: hsl(180 100% 50% / 0.1);
+  --color-accent-foreground: hsl(180 100% 50%);
+
+  --color-destructive: hsl(0 100% 50%);
+  --color-destructive-foreground: hsl(0 0% 100%);
+
+  --color-border: hsl(180 100% 50% / 0.3);
+  --color-input: hsl(180 100% 50% / 0.2);
+  --color-ring: hsl(180 100% 50%);
+
+  --font-display: 'Orbitron', sans-serif;
+  --font-body: 'Rajdhani', sans-serif;
+
+  --radius: 0.25rem;
+}
+
+:root {
+  --font-sans: 'Rajdhani', sans-serif;
+}
+
+body {
+  @apply font-body bg-background text-foreground antialiased selection:bg-primary selection:text-primary-foreground;
+  background-image: linear-gradient(to bottom, rgba(0,0,0,0.8), rgba(0,0,0,0.95));
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(0 0% 5%);
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(180 100% 20%);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(180 100% 40%);
+}
+
+/* Cyberpunk Utilities */
+.cyber-border {
+  @apply border border-primary/30 shadow-[0_0_10px_rgba(0,243,255,0.1)];
+}
+
+.cyber-glow {
+  text-shadow: 0 0 10px rgba(0,243,255,0.5);
+}
+
+.cyber-glow-pink {
+  text-shadow: 0 0 10px rgba(255,0,255,0.5);
+}
+
+.scanline {
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,0),
+    rgba(255,255,255,0) 50%,
+    rgba(0,0,0,0.2) 50%,
+    rgba(0,0,0,0.2)
+  );
+  background-size: 100% 4px;
+  pointer-events: none;
+}
