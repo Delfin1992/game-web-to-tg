@@ -3,7 +3,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { registerRoutes } from "./routes";
 import { initializeStorage, storageMode } from "./storage";
-import path from "path";
+import { startTelegramBot } from "./telegram";
 
 const app = express();
 const httpServer = createServer(app);
@@ -39,6 +39,7 @@ async function main() {
     console.log("✅ Server running successfully");
     console.log(`🌐 Server URL: http://localhost:${port}`);
     console.log(`🗄️  Storage mode: ${storageMode === "postgres" ? "PostgreSQL (Drizzle ORM)" : "In-memory fallback"}`);
+    startTelegramBot(httpServer);
   });
 }
 

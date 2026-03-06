@@ -1,7 +1,7 @@
 // server/routes.ts
 import type { Express } from "express";
 import { type Server } from "http";
-import { randomUUID } from "crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import { storage } from "./storage";
 import { insertMessageSchema, insertUserSchema } from "../shared/schema";
 import { GADGET_BLUEPRINTS, getAvailableBlueprints, RARITY_QUALITY_MULTIPLIERS, type BlueprintStatus } from "../shared/gadgets";
@@ -89,6 +89,76 @@ const referralClaimHistory = new Map<string, Set<string>>();
 const telegramIdToUserId = new Map<string, string>();
 const deviceRegistrationTimestamps = new Map<string, number[]>();
 const ipRegistrationTimestamps = new Map<string, number[]>();
+
+
+type TelegramAuthUser = {
+  id: number;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+  language_code?: string;
+};
+
+function parseTelegramInitData(initDataRaw: string) {
+  const params = new URLSearchParams(initDataRaw);
+  const hash = params.get("hash");
+  if (!hash) return null;
+
+  const items: string[] = [];
+  params.forEach((value, key) => {
+    if (key === "hash") return;
+    items.push(`${key}=${value}`);
+  });
+  items.sort();
+
+  return {
+    hash,
+    dataCheckString: items.join("\n"),
+    authDate: Number(params.get("auth_date") ?? 0),
+    startParam: params.get("start_param") ?? undefined,
+    userRaw: params.get("user") ?? undefined,
+  };
+}
+
+function verifyTelegramInitData(initDataRaw: string, botToken: string) {
+  const parsed = parseTelegramInitData(initDataRaw);
+  if (!parsed) return { ok: false as const, reason: "hash_missing" };
+
+  const secretKey = createHmac("sha256", "WebAppData").update(botToken).digest();
+  const expectedHash = createHmac("sha256", secretKey).update(parsed.dataCheckString).digest("hex");
+
+  const expected = Buffer.from(expectedHash, "utf8");
+  const actual = Buffer.from(parsed.hash, "utf8");
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    return { ok: false as const, reason: "hash_mismatch" };
+  }
+
+  const maxAgeSeconds = 24 * 60 * 60;
+  if (!parsed.authDate || Math.floor(Date.now() / 1000) - parsed.authDate > maxAgeSeconds) {
+    return { ok: false as const, reason: "auth_expired" };
+  }
+
+  return { ok: true as const, parsed };
+}
+
+function buildTelegramUsername(user: TelegramAuthUser) {
+  if (user.username && user.username.trim().length > 0) {
+    return `tg_${user.username.replace(/[^a-zA-Z0-9_]/g, "").toLowerCase()}`.slice(0, 30);
+  }
+  return `tg_${user.id}`;
+}
+
+async function generateUniqueUsername(base: string) {
+  const normalized = base.slice(0, 28);
+  if (!(await storage.usernameExists(normalized))) return normalized;
+
+  for (let i = 0; i < 10; i++) {
+    const candidate = `${normalized.slice(0, 24)}_${randomBytes(2).toString("hex")}`;
+    if (!(await storage.usernameExists(candidate))) return candidate;
+  }
+
+  return `${normalized.slice(0, 20)}_${Date.now().toString(36)}`;
+}
 
 function cleanupOldTimestamps(items: number[], now = Date.now()) {
   const dayAgo = now - 24 * 60 * 60 * 1000;
@@ -287,6 +357,91 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/check-username/:username", async (req, res) => {
     const exists = await storage.usernameExists(req.params.username);
     res.json({ exists, available: !exists });
+  });
+
+  app.post("/api/telegram/auth", async (req, res) => {
+    try {
+      const initData = typeof req.body?.initData === "string" ? req.body.initData : "";
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+      let telegramUser: TelegramAuthUser | null = null;
+      let startParam: string | undefined;
+
+      if (initData && botToken) {
+        const verified = verifyTelegramInitData(initData, botToken);
+        if (!verified.ok) {
+          return res.status(401).json({ error: "Invalid Telegram initData", code: verified.reason });
+        }
+
+        startParam = verified.parsed.startParam;
+        if (verified.parsed.userRaw) {
+          telegramUser = JSON.parse(verified.parsed.userRaw) as TelegramAuthUser;
+        }
+      } else if (req.body?.user && typeof req.body.user.id === "number") {
+        telegramUser = req.body.user as TelegramAuthUser;
+        startParam = typeof req.body?.startParam === "string" ? req.body.startParam : undefined;
+      }
+
+      if (!telegramUser || typeof telegramUser.id !== "number") {
+        return res.status(400).json({ error: "Telegram user is required" });
+      }
+
+      const telegramId = String(telegramUser.id);
+      const mappedUserId = telegramIdToUserId.get(telegramId);
+      if (mappedUserId) {
+        const mappedUser = await storage.getUser(mappedUserId);
+        if (mappedUser) {
+          const { password, ...safeUser } = mappedUser;
+          return res.json({ ...safeUser, isNewUser: false });
+        }
+      }
+
+      const baseUsername = buildTelegramUsername(telegramUser);
+      const existingByBase = await storage.getUserByUsername(baseUsername);
+      if (existingByBase) {
+        telegramIdToUserId.set(telegramId, existingByBase.id);
+        const { password, ...safeUser } = existingByBase;
+        return res.json({ ...safeUser, isNewUser: false });
+      }
+
+      const username = await generateUniqueUsername(baseUsername);
+      const created = await storage.createUser({
+        username,
+        password: `tg_${randomUUID()}`,
+        city: "Санкт-Петербург",
+        personality: "workaholic",
+        gender: "male",
+      });
+
+      const code = generateReferralCode(created.username);
+      userReferralCodes.set(created.id, code);
+      referralCodeToUserId.set(code, created.id);
+      telegramIdToUserId.set(telegramId, created.id);
+
+      const referralCode = startParam?.startsWith("ref_") ? startParam.slice(4) : undefined;
+      if (referralCode) {
+        const referrerId = referralCodeToUserId.get(referralCode.trim());
+        if (referrerId && referrerId !== created.id) {
+          referredByUserId.set(created.id, referrerId);
+          const children = referralChildrenByUserId.get(referrerId) ?? new Set<string>();
+          children.add(created.id);
+          referralChildrenByUserId.set(referrerId, children);
+
+          const referrer = await storage.getUser(referrerId);
+          if (referrer) {
+            await storage.updateUser(referrer.id, { balance: referrer.balance + 200 });
+          }
+          await storage.updateUser(created.id, { balance: created.balance + 100 });
+          created.balance += 100;
+        }
+      }
+
+      const { password, ...safeUser } = created;
+      res.status(201).json({ ...safeUser, isNewUser: true, referralCode: code });
+    } catch (error) {
+      console.error("Telegram auth failed:", error);
+      res.status(500).json({ error: "Telegram auth failed" });
+    }
   });
 
   app.get("/api/referrals/:userId", async (req, res) => {

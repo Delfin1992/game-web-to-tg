@@ -29,6 +29,7 @@ import Leaderboards from "./Leaderboards";
 import Market from "./Market";
 import { getRankLabel } from "@/lib/ranks";
 import { rollRandomPartDrop, RARITY_LEVELS, getPartPrice } from "@/lib/parts";
+import { getStartParamFromUrl, getTelegramWebApp } from "@/lib/telegram";
 
 interface BankProduct {
   type: "credit" | "deposit";
@@ -112,41 +113,67 @@ export default function Game({ onResetGame }: GameProps) {
     return "Common";
   };
 
+  const applyUserData = (userData: any) => {
+    setPlayer({
+      id: userData.id,
+      name: userData.username,
+      city: userData.city || "Санкт-Петербург",
+      personality: userData.personality || "workaholic",
+      gender: userData.gender || "male",
+      level: userData.level || 1,
+      experience: userData.experience || 0,
+      balance: userData.balance || 100,
+      reputation: userData.reputation || 0,
+      skills: userData.skills || {
+        coding: 0,
+        testing: 0,
+        analytics: 0,
+        drawing: 0,
+        modeling: 0,
+        design: 0,
+        attention: 0,
+      },
+      workTime: (userData.workTime || 100) / 100,
+      studyTime: (userData.studyTime || 100) / 100,
+    });
+    setInventory(userData.inventory || []);
+    setUserId(userData.id);
+    localStorage.setItem("playerId", userData.id);
+    setCurrentScreen("home");
+  };
+
   // ✅ ЗАГРУЗКА ИГРОКА ИЗ БД ПРИ СТАРТЕ
   useEffect(() => {
     async function loadPlayer() {
       try {
+        const tg = getTelegramWebApp();
+        if (tg) {
+          tg.ready();
+          tg.expand();
+
+          const authRes = await fetch("/api/telegram/auth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              initData: tg.initData,
+              user: tg.initDataUnsafe?.user,
+              startParam: tg.initDataUnsafe?.start_param ?? getStartParamFromUrl(),
+            }),
+          });
+
+          if (authRes.ok) {
+            const authUser = await authRes.json();
+            applyUserData(authUser);
+            return;
+          }
+        }
+
         const storedId = localStorage.getItem("playerId");
         if (storedId) {
           const res = await fetch(`/api/users/${storedId}`);
           if (res.ok) {
             const userData = await res.json();
-            setPlayer({
-              id: userData.id,
-              name: userData.username,
-              city: userData.city || "Санкт-Петербург",
-              personality: userData.personality || "workaholic",
-              gender: userData.gender || "male",
-              level: userData.level || 1,
-              experience: userData.experience || 0,
-              balance: userData.balance || 100,
-              reputation: userData.reputation || 0,
-              skills: userData.skills || {
-                coding: 0,
-                testing: 0,
-                analytics: 0,
-                drawing: 0,
-                modeling: 0,
-                design: 0,
-                attention: 0,
-              },
-              workTime: (userData.workTime || 100) / 100,
-              studyTime: (userData.studyTime || 100) / 100,
-            });
-            setInventory(userData.inventory || []);
-            setUserId(userData.id);
-            localStorage.setItem("playerId", userData.id);
-            setCurrentScreen("home");
+            applyUserData(userData);
           } else {
             setCurrentScreen("registration");
           }

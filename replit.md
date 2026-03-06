@@ -82,3 +82,25 @@ Preferred communication style: Simple, everyday language.
 ### Build Dependencies
 - **esbuild**: Server bundling for production
 - **tsx**: TypeScript execution for development
+
+## Telegram Bot / Mini App Run Guide
+
+1. Создай бота через **@BotFather** и получи `TELEGRAM_BOT_TOKEN`.
+2. Подними проект локально:
+   - `npm install`
+   - `cp .env.example .env`
+   - заполни `TELEGRAM_BOT_TOKEN`
+3. Для Telegram WebApp нужен **публичный HTTPS URL** (например, через ngrok/cloudflared) и выставленный `TELEGRAM_WEBAPP_URL`.
+4. Запусти сервер:
+   - `npm run dev`
+5. Открой чат с ботом и отправь `/start`.
+   - Бот вернёт кнопку **"🚀 Открыть игру"** (web_app), которая открывает Mini App.
+
+### Важные переменные окружения
+- `TELEGRAM_BOT_TOKEN` — обязателен для запуска polling-бота.
+- `TELEGRAM_WEBAPP_URL` — URL, который бот отправляет в `web_app` кнопке.
+- `APP_URL` — fallback, если `TELEGRAM_WEBAPP_URL` не задан.
+
+### Почему бот "не запускается"
+- Если `TELEGRAM_BOT_TOKEN` не указан, сервер логирует: `TELEGRAM_BOT_TOKEN не задан — Telegram бот не запущен`.
+- Если URL не публичный/не HTTPS, Telegram Mini App из кнопки не откроется корректно.
