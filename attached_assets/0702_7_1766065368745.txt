@@ -1,0 +1,1209 @@
+# main.py
+import sqlite3
+import asyncio
+import random
+import math
+import nest_asyncio  # Импортируем nest_asyncio
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from items import tier_1_items, tier_2_items
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    CallbackContext,
+    ConversationHandler,
+    CallbackQueryHandler,
+)
+import config  # Импортируем config.py
+
+# Словарь для перевода характеристик
+STAT_TRANSLATIONS = {
+    "coding": "Кодинг ⌨️",
+    "testing": "Тестинг 🔍",
+    "analytics": "Аналитика 📊",
+    "drawing": "Рисование 🎨",
+    "modeling": "Моделинг 🌐",
+    "design": "Дизайн 🖌️",
+    "attention": "Внимательность 👀"
+}
+
+# Данные для учебных курсов и менторов
+STUDY_COSTS = {
+    "Школа": {
+        "Основы программирования": {"cost": 100, "time_cost": 10, "skill_gain": {"coding": 0.1}, "fail_rate": 0.2},
+        "Основы аналитики": {"cost": 100, "time_cost": 10, "skill_gain": {"analytics": 0.1}, "fail_rate": 0.2},
+    },
+    "Колледж": {
+        "Программирование": {"cost": 500, "time_cost": 20, "skill_gain": {"coding": 0.2}, "fail_rate": 0.15},
+        "Аналитика": {"cost": 500, "time_cost": 20, "skill_gain": {"analytics": 0.2}, "fail_rate": 0.15},
+        "Конференция": {"cost": 1000, "time_cost": 30, "skill_gain": {"coding": 0.2, "analytics": 0.2}, "fail_rate": 0.3, "money_gain": 200},
+    },
+    "Университет": {
+        "Расширенное программирование": {"cost": 1000, "time_cost": 30, "skill_gain": {"coding": 0.3}, "fail_rate": 0.1},
+        "Расширенная аналитика": {"cost": 1000, "time_cost": 30, "skill_gain": {"analytics": 0.3}, "fail_rate": 0.1},
+        "Конференция": {"cost": 2000, "time_cost": 40, "skill_gain": {"coding": 0.3, "analytics": 0.3}, "fail_rate": 0.25, "money_gain": 500},
+    }
+}
+
+MENTORS = {
+    "Начальный": {"cost": 500, "duration": 6, "time_reduction": 0.1, "fail_reduction": 0.1},
+    "Средний": {"cost": 1000, "duration": 12, "time_reduction": 0.2, "fail_reduction": 0.2},
+    "Продвинутый": {"cost": 2000, "duration": 24, "time_reduction": 0.3, "fail_reduction": 0.3},
+}
+
+# Активируем поддержку вложенных циклов событий
+nest_asyncio.apply()
+
+# Состояния для ConversationHandler
+GET_NAME, SELECT_CITY, SELECT_PERSONALITY, SHOW_PROFILE, WORK_SELECTION, STUDY = range(6)
+
+# Характеры и их эффекты
+PERSONALITIES = {
+    "Гений": {"coding": 1, "analytics": 1, "testing": 1},
+    "Творец": {"drawing": 1, "design": 1, "modeling": 1},
+    "Перфекционист": {"attention": 1, "analytics": 1},
+    "Карьерист": {"experience_multiplier": 0.01, "money_multiplier": 0.01},
+}
+
+
+# Функции проверки модулей
+def check_module(module_name):
+    """Проверяет, установлен ли указанный модуль."""
+    try:
+        __import__(module_name)
+        print(f"Модуль {module_name} найден.")
+        return True
+    except ImportError:
+        print(f"Модуль {module_name} НЕ найден! Пожалуйста, установите его с помощью pip install {module_name}.")
+        return False
+
+
+# Проверка всех необходимых модулей
+def check_required_modules():
+    """Проверяет наличие всех необходимых модулей."""
+    modules_to_check = ["sqlite3", "asyncio", "nest_asyncio", "telegram"]
+    all_modules_found = True
+    for module in modules_to_check:
+        if not check_module(module):
+            all_modules_found = False
+    if not all_modules_found:
+        print("Не все необходимые модули установлены. Установите их и перезапустите программу.")
+        exit(1)  # Выход из программы, если хотя бы один модуль отсутствует
+    print("Все необходимые модули установлены. Продолжаем запуск бота.")
+
+
+# Подключение к базе данных SQLite
+def init_db():
+    """Инициализация базы данных."""
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS players (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER UNIQUE,
+            name TEXT,
+            city TEXT,
+            personality TEXT,
+            gram INTEGER DEFAULT 0,
+            dollars INTEGER DEFAULT 0,  -- Валюта для Сан-Франциско
+            won INTEGER DEFAULT 0,     -- Валюта для Сингапура и Сеула
+            rubles INTEGER DEFAULT 0,  -- Валюта для Санкт-Петербурга
+            coding INTEGER DEFAULT 5,
+            testing INTEGER DEFAULT 5,
+            analytics INTEGER DEFAULT 5,
+            drawing INTEGER DEFAULT 5,
+            modeling INTEGER DEFAULT 5,
+            design INTEGER DEFAULT 5,
+            attention INTEGER DEFAULT 5,
+            level INTEGER DEFAULT 1,
+            experience INTEGER DEFAULT 0,
+            work_time REAL DEFAULT 8,  -- Время на работу (8 часов)
+            study_time REAL DEFAULT 4  -- Время на учебу (4 часа)
+        )
+    """)
+    # Проверяем наличие всех необходимых столбцов
+    cursor.execute("PRAGMA table_info(players)")
+    columns = [column[1] for column in cursor.fetchall()]
+    required_columns = [
+        "name", "city", "personality", "gram", "dollars", "won", "rubles",
+        "coding", "testing", "analytics", "drawing", "modeling", "design",
+        "attention", "level", "experience", "work_time", "study_time"
+    ]
+    for col in required_columns:
+        if col not in columns:
+            print(f"Добавляем столбец '{col}' в таблицу players.")
+            cursor.execute(f"ALTER TABLE players ADD COLUMN {col} DEFAULT 0")
+    conn.commit()
+    conn.close()
+
+
+# Функция для форматирования времени
+def format_time(time_in_hours):
+    """Форматирует время в виде 'X ч. Y мин.' или просто 'Y мин.'"""
+    hours = int(time_in_hours)
+    minutes = int((time_in_hours - hours) * 60)
+    if hours > 0:
+        return f"{hours} ч. {minutes} мин."
+    else:
+        return f"{minutes} мин."
+
+
+# Максимальные значения времени
+MAX_WORK_TIME = 20 / 60  # 20 минут = 1/3 часа
+MAX_STUDY_TIME = 20 / 60  # 20 минут = 1/3 часа
+
+# Сколько времени (в часах) добавляем каждую секунду восстановления
+RESTORE_INCREMENT = 0.1 / 60  # 1 минута = 1/60 часа
+
+# Фоновая задача для восстановления времени
+async def continuous_restore_time():
+    """Фоновая задача для восстановления времени для всех игроков."""
+    while True:
+        try:
+            conn = sqlite3.connect('players.db')
+            cursor = conn.cursor()
+            # Обновляем время работы и учебы, если оно ниже максимума.
+            cursor.execute("""
+                UPDATE players
+                SET work_time = CASE
+                                  WHEN work_time < ? THEN MIN(work_time + ?, ?)
+                                  ELSE work_time
+                                END,
+                    study_time = CASE
+                                   WHEN study_time < ? THEN MIN(study_time + ?, ?)
+                                   ELSE study_time
+                                 END
+            """, (
+                MAX_WORK_TIME, RESTORE_INCREMENT, MAX_WORK_TIME,
+                MAX_STUDY_TIME, RESTORE_INCREMENT, MAX_STUDY_TIME,
+            ))
+            conn.commit()
+        except Exception as e:
+            print("Ошибка при восстановлении времени:", e)
+        finally:
+            conn.close()
+        await asyncio.sleep(1)
+
+
+# Обработчик команды /start
+async def start(update: Update, context: CallbackContext) -> int:
+    """Запускает бота. Если игрок уже существует, показывает его профиль."""
+    user = update.effective_user
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        # Проверяем, есть ли игрок в базе
+        cursor.execute("SELECT name, city, level FROM players WHERE user_id = ?", (user.id,))
+        player = cursor.fetchone()
+        if player:
+            name, city, level = player
+            # Исправление уровня, если он равен нулю
+            if level < 1:
+                level = 1
+                cursor.execute("UPDATE players SET level = 1 WHERE user_id = ?", (user.id,))
+                conn.commit()
+            # Игрок уже существует — загружаем данные в context.user_data
+            context.user_data["name"] = name
+            context.user_data["city"] = city
+            context.user_data["level"] = level
+            await update.message.reply_text("С возвращением! Вот ваш профиль:")
+            await show_profile(update, context)
+            return SHOW_PROFILE
+        else:
+            # Игрока нет в базе — запускаем регистрацию
+            await update.message.reply_text("Добро пожаловать! Давай познакомимся. Как тебя зовут?")
+            return GET_NAME
+    finally:
+        conn.close()
+
+
+async def save_name(update: Update, context: CallbackContext) -> int:
+    """Сохраняет имя игрока и предлагает выбрать город."""
+    user = update.effective_user
+    name = update.message.text.strip()
+    # Сохраняем имя в базу данных вместе с начальным временем
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        # Проверяем, существует ли игрок
+        cursor.execute("SELECT user_id FROM players WHERE user_id = ?", (user.id,))
+        player_exists = cursor.fetchone()
+        if player_exists:
+            # Если игрок существует, обновляем время, если оно не установлено
+            cursor.execute("""
+                UPDATE players
+                SET work_time = 0.5, study_time = 0.5
+                WHERE user_id = ? AND (work_time IS NULL OR study_time IS NULL )
+            """, (user.id,))
+        else:
+            # Если игрок не существует, добавляем его с начальными значениями
+            cursor.execute("""
+                INSERT INTO players (
+                    user_id, name, work_time, study_time, level
+                ) VALUES (?, ?, ?, ?, ?)
+            """, (user.id, name, 0.5, 0.5, 1))  # Устанавливаем level = 1
+        conn.commit()
+    finally:
+        conn.close()
+    # Отправляем информацию о переходе к выбору города
+    await update.message.reply_text(f"Приятно познакомиться, {name}! Теперь выбери город, в котором ты хочешь жить.")
+    # Отправляем клавиатуру для выбора города
+    await show_city_options(update, context)
+    return SELECT_CITY
+
+
+# Показать клавиатуру для выбора города
+async def show_city_options(update: Update, context: CallbackContext):
+    """Отправляет клавиатуру для выбора города."""
+    cities = ["Сан-Франциско", "Сингапур", "Санкт-Петербург", "Сеул"]
+    context.user_data["cities"] = cities
+    context.user_data["current_city_index"] = 0
+    current_city = cities[context.user_data["current_city_index"]]
+    info = get_city_info(current_city)
+    keyboard = [
+        [current_city],
+        ["<", ">"],
+        ["Мой выбор"],
+        ["Назад к списку"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    await update.message.reply_text(info, reply_markup=reply_markup)
+
+
+# Обработка выбора города
+async def handle_city_selection(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает выбор города и показывает информацию о нем."""
+    user_input = update.message.text.strip()
+    cities = context.user_data["cities"]
+    current_city_index = context.user_data["current_city_index"]
+
+    if user_input == "<":
+        current_city_index = (current_city_index - 1) % len(cities)
+    elif user_input == ">":
+        current_city_index = (current_city_index + 1) % len(cities)
+    elif user_input == "Мой выбор":
+        current_city = cities[current_city_index]
+        context.user_data["city"] = current_city
+        # Сохраняем город в базу данных
+        user = update.effective_user
+        conn = sqlite3.connect('players.db')
+        cursor = conn.cursor()
+        try:
+            cursor.execute("UPDATE players SET city = ? WHERE user_id = ?", (current_city, user.id))
+            conn.commit()
+        finally:
+            conn.close()
+        # Отправляем информацию о городе
+        info = get_city_info(current_city)
+        await update.message.reply_text(info)
+        # Отправляем клавиатуру для выбора характера
+        await show_personality_options(update, context)
+        return SELECT_PERSONALITY
+    elif user_input == "Назад к списку":
+        await update.message.reply_text("Давай познакомимся, как тебя зовут?")
+        return GET_NAME
+
+    context.user_data["current_city_index"] = current_city_index
+    current_city = cities[current_city_index]
+    info = get_city_info(current_city)
+    keyboard = [
+        [current_city],
+        ["<", ">"],
+        ["Мой выбор"],
+        ["Назад к списку"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    await update.message.reply_text(info, reply_markup=reply_markup)
+    return SELECT_CITY
+
+
+# Получение информации о городе
+def get_city_info(city: str) -> str:
+    """Возвращает информацию о городе."""
+    if city == "Сан-Франциско":
+        return "Это город прекрасный..."
+    elif city == "Сингапур":
+        return "Это город отличный..."
+    elif city == "Санкт-Петербург":
+        return "Это город великий..."
+    elif city == "Сеул":
+        return "Это город удивительный..."
+    return "Неизвестный город."
+
+
+# Показать клавиатуру для выбора характера
+async def show_personality_options(update: Update, context: CallbackContext):
+    """Отправляет клавиатуру для выбора характера."""
+    personalities = ["Гений", "Творец", "Перфекционист", "Карьерист"]
+    context.user_data["personalities"] = personalities
+    context.user_data["current_personality_index"] = 0
+    current_personality = personalities[context.user_data["current_personality_index"]]
+    info = get_personality_info(current_personality)
+    keyboard = [
+        [current_personality],
+        ["<", ">"],
+        ["Мой выбор"],
+        ["Назад к списку"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    await update.message.reply_text(info, reply_markup=reply_markup)
+
+
+# Обработка выбора характера
+async def select_personality(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает выбор характера и обновляет профиль игрока."""
+    user_input = update.message.text.strip()
+    personalities = context.user_data["personalities"]
+    current_personality_index = context.user_data["current_personality_index"]
+
+    if user_input == "<":
+        current_personality_index = (current_personality_index - 1) % len(personalities)
+    elif user_input == ">":
+        current_personality_index = (current_personality_index + 1) % len(personalities)
+    elif user_input == "Мой выбор":
+        current_personality = personalities[current_personality_index]
+        context.user_data["selected_personality"] = current_personality
+        # Сохраняем выбранный характер в базу данных
+        user = update.effective_user
+        conn = sqlite3.connect('players.db')
+        cursor = conn.cursor()
+        try:
+            cursor.execute("UPDATE players SET personality = ? WHERE user_id = ?", (current_personality, user.id))
+            conn.commit()
+        finally:
+            conn.close()
+        # Обновляем характеристики игрока
+        update_player_characteristics(user.id, current_personality)
+        # Показываем профиль игрока
+        await show_profile(update, context)
+        return SHOW_PROFILE
+    elif user_input == "Назад к списку":
+        # Возвращаемся к выбору города
+        await show_city_options(update, context)
+        return SELECT_CITY
+
+    context.user_data["current_personality_index"] = current_personality_index
+    current_personality = personalities[current_personality_index]
+    info = get_personality_info(current_personality)
+    keyboard = [
+        [current_personality],
+        ["<", ">"],
+        ["Мой выбор"],
+        ["Назад к списку"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    await update.message.reply_text(info, reply_markup=reply_markup)
+    return SELECT_PERSONALITY
+
+
+# Получение информации о характере
+def get_personality_info(personality: str) -> str:
+    """Возвращает информацию о характере."""
+    if personality == "Гений":
+        return "Ты обладаешь отличными навыками программирования, аналитики и тестирования!"
+    elif personality == "Творец":
+        return "Ты талантливый художник, дизайнер и модельер!"
+    elif personality == "Перфекционист":
+        return "Ты внимательный и всегда анализируешь данные!"
+    elif personality == "Карьерист":
+        return "Ты стремишься к карьерному росту и дополнительному доходу!"
+    return "Неизвестный характер."
+
+
+# Показ профиля игрока
+async def show_profile(update: Update, context: CallbackContext) -> object:
+    """Отображает профиль игрока с обновленным балансом."""
+    user = update.effective_user
+    message = update.effective_message  # Используем effective_message для универсальности
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM players WHERE user_id = ?", (user.id,))
+        player = cursor.fetchone()
+        if player:
+            name = player[5]
+            city = player[6]
+            gram = player[8]
+            dollars = player[9]
+            won = player[10]
+            rubles = player[11]
+            coding = player[12]
+            testing = player[13]
+            analytics = player[14]
+            drawing = player[15]
+            modeling = player[16]
+            design = player[17]
+            attention = player[18]
+            level = player[19]
+            experience = player[20]
+            work_time = player[21]  # Время на работу (в часах)
+            study_time = player[22]  # Время на учебу (в часах)
+
+            # Определение значка игрока
+            if 1 <= level <= 10:
+                rank = "Junior👼"
+            elif 11 <= level <= 50:
+                rank = "Middle👶"
+            elif 51 <= level <= 100:
+                rank = "Senior🙍‍♂️"
+            else:
+                rank = "Team Lead👨‍💻"
+
+            profile = (
+                f"📊 *Профиль игрока:*\n\n"
+                f"👤 Никнейм: {name}\n"
+                f"🌟 Уровень: {level}\n"
+                f"🎭 Значок: {rank}\n"
+                f"✨ Опыт: {experience}/100\n"
+                f"🌆 Город: {city}\n\n"
+            )
+
+            # Добавление информации о валюте в зависимости от города
+            if city == "Сан-Франциско":
+                profile += f"💰 Валюта: {dollars} $\n"
+            elif city in ("Сингапур", "Сеул"):
+                profile += f"💰 Валюта: {won}\n"
+            elif city == "Санкт-Петербург":
+                profile += f"💰 Валюта: {rubles} ₽\n"
+            elif city == "Сеул":
+                profile += f"💰 Валюта: {dollars} ₽\n"
+
+            profile += (
+                f"💎 Gram: {gram}\n\n"
+                f"\n⏱️ Оставшееся время:\n"
+                f"- На работу: {format_time(work_time)}\n"
+                f"- На учебу: {format_time(study_time)}\n\n"
+                f"💪 Характеристики:\n"
+                f"- Кодинг: {coding} ⌨️\n"
+                f"- Тестинг: {testing} 🔍\n"
+                f"- Аналитика: {analytics} 📊\n"
+                f"- Рисование: {drawing} 🎨\n"
+                f"- Моделинг: {modeling} 🌐\n"
+                f"- Дизайн: {design} 🖌️\n"
+                f"- Внимательность: {attention} 👀\n"
+            )
+            keyboard = [["Работа", "Учеба"], ["Профиль", "Навыки"], ["Проживание", "Компания"]]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            if update.message:
+                await update.message.reply_text(profile, parse_mode="Markdown", reply_markup=reply_markup)
+            elif update.callback_query:
+                await update.callback_query.message.reply_text(profile, parse_mode="Markdown",
+                                                               reply_markup=reply_markup)
+    finally:
+        conn.close()
+
+
+# Обработка команды "Работа"
+async def work(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает команду 'Работа'."""
+    user = update.effective_user
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+
+    try:
+        # Загружаем информацию о городе и уровне игрока
+        cursor.execute("SELECT city, level FROM players WHERE user_id = ?", (user.id,))
+        result = cursor.fetchone()
+
+        if not result:
+            await update.message.reply_text("Не удалось загрузить ваш профиль. Попробуйте снова.")
+            return SHOW_PROFILE
+
+        city, level = result
+        context.user_data["city", ""] = city
+        context.user_data["level",1] = level
+
+        # Логирование загруженных данных
+        print(f"City: {city}, Level: {level}")
+
+        available_jobs = get_available_jobs(city, level)
+
+        if not available_jobs:
+            await update.message.reply_text(
+                f"В данный момент нет доступных работ для вашего уровня ({level}) в городе {city}."
+            )
+            return SHOW_PROFILE
+        # Формирование кнопок клавиатуры
+        keyboard = [[job["name"]] for job in available_jobs] + [["Домой"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+        await update.message.reply_text(f"Выберите работу в городе {city}:", reply_markup=reply_markup)
+        return WORK_SELECTION
+
+    finally:
+        conn.close()
+
+async def handle_work_selection(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает выбор работы и обновляет профиль игрока."""
+    selected_job = update.message.text.strip()
+    city = context.user_data.get("city", "Неизвестный город")
+    level = context.user_data.get("level", 1)
+    if selected_job == "Домой":
+        await show_profile(update, context)
+        return SHOW_PROFILE
+
+    available_jobs = get_available_jobs(city, level)
+    job_info = next((job for job in available_jobs if job["name"] == selected_job), None)
+    if not job_info:
+        await update.message.reply_text("Неверный выбор. Попробуйте снова.")
+        return WORK_SELECTION
+
+    work_time_required = job_info["time"]
+    currency = job_info.get("currency", "$")
+    currency_amount = job_info["money"]
+    experience_gain = job_info["experience"]
+
+    # Шанс провала работы
+    fail_chance = 0.2
+    if random.random() < fail_chance:
+        await update.message.reply_text(f"Вы не справились с работой '{selected_job}'. Попробуйте снова!")
+        return WORK_SELECTION
+
+    user = update.effective_user
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT work_time, experience, dollars, won, rubles, personality FROM players WHERE user_id = ?",
+            (user.id,)
+        )
+        result = cursor.fetchone()
+        if not result:
+            await update.message.reply_text("Ваш профиль не найден. Попробуйте снова.")
+            return SHOW_PROFILE
+
+        current_work_time, current_experience, current_dollars, current_won, current_rubles, personality = result
+
+        if current_work_time is None or current_work_time < work_time_required:
+            await update.message.reply_text(
+                f"Недостаточно времени для работы. У вас есть {format_time(current_work_time or 0)}"
+            )
+            return WORK_SELECTION
+
+        new_work_time = current_work_time - work_time_required
+
+        # Применение бонусов для "Карьерист"
+        if personality == "Карьерист":
+            currency_amount += currency_amount * 0.0001
+            experience_gain += experience_gain * 0.0001
+
+        # Обновление данных игрока
+        if city == "Сан-Франциско":
+            new_balance = current_dollars + int(currency_amount)
+            cursor.execute(
+                "UPDATE players SET dollars = ?, work_time = ?, experience = ? WHERE user_id = ?",
+                (new_balance, new_work_time, int(current_experience + experience_gain), user.id)
+            )
+        elif city in ("Сингапур", "Сеул"):
+            new_balance = current_won + int(currency_amount)
+            cursor.execute(
+                "UPDATE players SET won = ?, work_time = ?, experience = ? WHERE user_id = ?",
+                (new_balance, new_work_time, int(current_experience + experience_gain), user.id)
+            )
+        elif city == "Санкт-Петербург":
+            new_balance = current_rubles + int(currency_amount)
+            cursor.execute(
+                "UPDATE players SET rubles = ?, work_time = ?, experience = ? WHERE user_id = ?",
+                (new_balance, new_work_time, int(current_experience + experience_gain), user.id)
+            )
+
+        conn.commit()
+
+        await update.message.reply_text(
+            f"Вы выполнили работу '{selected_job}' на {format_time(work_time_required)}\n"
+            f"Заработано: {int(currency_amount)} {currency}\n"
+            f"Набрано опыта: {int(experience_gain)} ✨\n"
+            f"Оставшееся время на работу: {format_time(new_work_time)}"
+        )
+
+        # Проверяем уровень игрока
+        await check_level_up(update, context)
+
+        # Ждем немного перед показом профиля, если уровень не повышен
+        #await asyncio.sleep(1)
+        #if (current_experience + experience_gain) < 100:
+            #await show_profile(update, context)
+            #return SHOW_PROFILE
+
+    finally:
+        conn.close()
+
+    return SHOW_PROFILE
+
+
+# Обработка команды "Учеба"
+async def study(update: Update, context: CallbackContext) -> int:
+    """
+    Обрабатывает команду 'Учеба'.
+    """
+    education_levels = list(STUDY_COSTS.keys())
+    keyboard = [[level] for level in education_levels] + [["Назад"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    await update.message.reply_text("Выберите образовательный уровень:", reply_markup=reply_markup)
+    return STUDY
+
+# Обработка выбора учебного уровня и курса
+async def handle_study_choice(update: Update, context: CallbackContext) -> int:
+    user_input = update.message.text.strip()
+
+    if user_input == "Назад":
+        await show_profile(update, context)
+        return SHOW_PROFILE
+
+    if user_input in STUDY_COSTS:
+        context.user_data["selected_study_level"] = user_input
+        courses = list(STUDY_COSTS[user_input].keys())
+        keyboard = [[course] for course in courses] + [["Назад"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+        await update.message.reply_text("Выберите курс:", reply_markup=reply_markup)
+        return STUDY
+    else:
+        await update.message.reply_text("Неверный выбор. Попробуйте снова.")
+        return STUDY
+
+# Обработка выбранного курса
+async def handle_study_course(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает выбор учебного курса."""
+    user = update.effective_user
+    course_name = update.message.text.strip()
+
+    if course_name == "Назад":
+        return await study(update, context)
+
+    selected_level = context.user_data.get("selected_study_level")
+
+    if not selected_level or course_name not in STUDY_COSTS[selected_level]:
+        await update.message.reply_text("Неверный выбор. Попробуйте снова.")
+        return STUDY
+
+    course = STUDY_COSTS[selected_level][course_name]
+
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT study_time, dollars, coding, analytics FROM players WHERE user_id = ?", (user.id,))
+        current_study_time, current_balance, coding, analytics = cursor.fetchone()
+
+        if current_balance < course["cost"]:
+            await update.message.reply_text(f"Недостаточно средств. Нужно {course['cost']} $. У вас {current_balance} $.")
+            return STUDY
+
+        if current_study_time < course["time_cost"]:
+            await update.message.reply_text(f"Недостаточно времени для учебы. У вас есть {current_study_time} ч.")
+            return STUDY
+
+        # Проверка на провал курса
+        if random.random() < course["fail_rate"]:
+            await update.message.reply_text("Курс завершился неудачно. Попробуйте снова.")
+            return STUDY
+
+        # Применяем изменения навыков и обновляем данные
+        new_study_time = current_study_time - course["time_cost"]
+        new_balance = current_balance - course["cost"]
+
+        coding_gain = course.get("skill_gain", {}).get("coding", 0)
+        analytics_gain = course.get("skill_gain", {}).get("analytics", 0)
+
+        cursor.execute(
+            "UPDATE players SET study_time = ?, dollars = ?, coding = coding + ?, analytics = analytics + ? WHERE user_id = ?",
+            (new_study_time, new_balance, coding_gain, analytics_gain, user.id)
+        )
+        conn.commit()
+
+        # Проверяем уровень игрока
+        await check_level_up(update, context)
+
+        # Отправляем информацию о выполненном курсе
+        await update.message.reply_text(
+            f"Вы успешно завершили курс '{course_name}'.\n"
+            f"Затрачено времени: {course['time_cost']} ч.\n"
+            f"Затрачено средств: {course['cost']} $\n"
+            f"Получено навыков: Кодинг +{coding_gain}, Аналитика +{analytics_gain}\n"
+            f"Оставшееся время на учебу: {new_study_time} ч."
+        )
+    finally:
+        conn.close()
+
+    # Показываем профиль игрока
+    await show_profile(update, context)
+    return SHOW_PROFILE
+
+
+
+# Проверка уровня игрока
+async def check_level_up(update: Update, context: CallbackContext) -> None:
+    """Проверяет, нужно ли повысить уровень игрока."""
+    user = update.effective_user
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT experience, level FROM players WHERE user_id = ?", (user.id,))
+        experience, level = cursor.fetchone()
+        if experience >= 100:
+            new_level = level + 1
+            new_experience = experience - 100
+            # Обновляем уровень и опыт в базе данных
+            cursor.execute("UPDATE players SET level = ?, experience = ? WHERE user_id = ?", (new_level, new_experience, user.id))
+            conn.commit()
+            # Запускаем диалог выбора характеристики
+            await handle_level_up(update, context)
+        else:
+            # Если опыт недостаточен для повышения уровня, показываем профиль
+            await show_profile(update, context)
+    finally:
+        conn.close()
+        #await handle_level_up(update, context)  # Вызываем диалог повышения уровня
+        #await show_profile(update, context)  # Показываем обновленный профиль
+
+# Предоставление бонусов за новый уровень
+async def grant_level_up_bonuses(update: Update, context: CallbackContext, new_level: int, chosen_stat: str) -> None:
+    """Предоставляет бонусы за новый уровень."""
+    user = update.effective_user
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        bonuses, work_study_time = get_level_up_bonuses(new_level, chosen_stat)
+        await update.message.reply_text(
+            f"Поздравляем! Вы достигли уровня {new_level}! Вы получили бонусы:\n{bonuses}\nВремя на работу и учебу: {work_study_time} минут.")
+
+        # Обновляем характеристики в базе данных
+        cursor.execute(
+            "SELECT coding, testing, analytics, drawing, modeling, design, attention FROM players WHERE user_id = ?",
+            (user.id,))
+        coding, testing, analytics, drawing, modeling, design, attention = cursor.fetchone()
+
+        # Применяем бонусы
+        coding += bonuses.get("coding", 0)
+        testing += bonuses.get("testing", 0)
+        analytics += bonuses.get("analytics", 0)
+        drawing += bonuses.get("drawing", 0)
+        modeling += bonuses.get("modeling", 0)
+        design += bonuses.get("design", 0)
+        attention += bonuses.get("attention", 0)
+
+        # Обновляем базу данных
+        cursor.execute("""
+            UPDATE players
+            SET coding = ?, testing = ?, analytics = ?, drawing = ?, modeling = ?, design = ?, attention = ?
+            WHERE user_id = ?
+        """, (coding, testing, analytics, drawing, modeling, design, attention, user.id))
+        conn.commit()
+    except Exception as e:
+        await update.message.reply_text(f"Произошла ошибка при обновлении: {e}")
+    finally:
+        conn.close()
+
+
+# Получение бонусов за новый уровень
+def get_level_up_bonuses(level: int, chosen_stat: str) -> dict:
+    """Возвращает бонусы за новый уровень и увеличивает выбранную характеристику."""
+    # Список характеристик, которые игрок может выбрать
+    stats = ["coding", "testing", "analytics", "drawing", "modeling", "design", "attention"]
+
+    # Начальные бонусы на определенные уровни
+    bonuses = {
+        25: {"coding": 5, "testing": 5},
+        50: {"analytics": 5, "drawing": 5},
+        100: {"modeling": 5, "design": 5},
+        150: {"attention": 5},
+        200: {"coding": 10, "testing": 10},
+        250: {"analytics": 10, "drawing": 10},
+        300: {"modeling": 10, "design": 10},
+        350: {"attention": 10},
+        400: {"coding": 15, "testing": 15},
+        450: {"analytics": 15, "drawing": 15},
+        500: {"modeling": 15, "design": 15, "attention": 15}
+    }
+
+    # Проверка, что выбранная характеристика корректна
+    if chosen_stat not in stats:
+        raise ValueError(f"Invalid stat chosen: {chosen_stat}. Choose from {', '.join(stats)}.")
+
+    # Бонусы за уровень, начиная с уровня 1 (по 1 очку на характеристику)
+    level_bonuses = {stat: 0 for stat in stats}
+
+    # Увеличиваем выбранную характеристику на 1
+    level_bonuses[chosen_stat] = 1
+
+    # Обновление времени на работу и учебу
+    work_study_time = 20  # начальное время
+    if level >= 100:
+        work_study_time = 50  # до 100 уровня
+    elif level >= 50:
+        work_study_time = 40  # до 50 уровня
+    elif level >= 9:
+        work_study_time = 30  # до 9 уровня
+
+    # Объединение бонусов на конкретный уровень с выбранной характеристикой
+    combined_bonuses = {**bonuses.get(level, {}), **level_bonuses}
+
+    return combined_bonuses, work_study_time
+
+
+# Получение доступных работ для игрока
+def get_available_jobs(city: str, level: int) -> list:
+    """Возвращает доступные работы для игрока в зависимости от города и уровня."""
+    jobs = {
+        "Сан-Франциско": {
+            range(1, 3): [
+                {"name": "Junior Developer SF", "time": 0.02, "money": 15, "experience": 10},
+                {"name": "QA Tester SF", "time": 0.03, "money": 25, "experience": 15}
+            ],
+            range(3, 51): [
+                {"name": "Backend Engineer SF", "time": 0.05, "money": random.randint(40, 60), "experience": random.randint(40, 60)},
+                {"name": "Frontend Specialist SF", "time": 0.02, "money": random.randint(40, 60), "experience": random.randint(40, 60)},
+                {"name": "Data Research SF", "time": 0.07, "money": 0, "experience": random.randint(40, 60), "item": "Rare Analytics"}
+            ]
+        },
+        "Сингапур": {
+            range(1, 11): [
+                {"name": "IT Support SG", "time": 0.02, "money": 12, "experience": 8},
+                {"name": "Help Desk SG", "time": 0.03, "money": 18, "experience": 12}
+            ],
+            range(11, 51): [
+                {"name": "Cloud Engineer SG", "time": 0.05, "money": 55, "experience": 30},
+                {"name": "Network Specialist SG", "time": 0.02, "money": 22, "experience": 15},
+                {"name": "IoT Research SG", "time": 0.07, "money": 0, "experience": 45, "item": "Smart Module"}
+            ]
+        },
+        "Санкт-Петербург": {
+            range(1, 11): [
+                {"name": "Backend Developer SP", "time": 0.02, "money": 10, "experience": 12},
+                {"name": "Frontend Developer SP", "time": 0.03, "money": 18, "experience": 15}
+            ],
+            range(11, 51): [
+                {"name": "System Architect SP", "time": 0.05, "money": 60, "experience": 35},
+                {"name": "UI Designer SP", "time": 0.02, "money": 20, "experience": 15},
+                {"name": "Performance Analysis SP", "time": 0.07, "money": 0, "experience": 50, "item": "Performance Report"}
+            ]
+        },
+        "Сеул": {
+            range(1, 11): [
+                {"name": "Game Developer SU", "time": 0.02, "money": 14, "experience": 10},
+                {"name": "Software Engineer SU", "time": 0.03, "money": 20, "experience": 15}
+            ],
+            range(11, 51): [
+                {"name": "AI Specialist SU", "time": 0.05, "money": 65, "experience": 40},
+                {"name": "Shader Expert SU", "time": 0.02, "money": 22, "experience": 18},
+                {"name": "Game AI Research SU", "time": 0.07, "money": 0, "experience": 55, "item": "Experimental AI Module"}
+            ]
+        }
+    }
+
+    for level_range, job_list in jobs.get(city, {}).items():
+        if level in level_range:
+            return job_list
+    return []
+
+# Получение информации о работе
+def get_job_info(city: str, job: str) -> tuple:
+    """Возвращает информацию о работе: время, валюта, сумма, опыт."""
+    job_info = {
+        "Сан-Франциско": {
+            "Junior Developer SF": (0.02, "$", random.randint(10, 20), random.randint(8, 15)),
+            "QA Tester SF": (0.03, "$", random.randint(15, 25), random.randint(10, 20)),
+            "Backend Engineer SF": (0.05, "$", random.randint(40, 60), random.randint(25, 35)),
+            "Frontend Specialist SF": (0.02, "$", random.randint(18, 28), random.randint(15, 25)),
+            "Data Research SF": (0.07, "$", 0, random.randint(30, 50))
+        },
+        "Сингапур": {
+            "IT Support SG": (0.02, "S$", random.randint(10, 18), random.randint(8, 14)),
+            "Help Desk SG": (0.03, "S$", random.randint(15, 22), random.randint(12, 20)),
+            "Cloud Engineer SG": (0.05, "S$", random.randint(50, 70), random.randint(25, 40)),
+            "Network Specialist SG": (0.02, "S$", random.randint(18, 26), random.randint(15, 22)),
+            "IoT Research SG": (0.07, "S$", 0, random.randint(35, 50))
+        },
+        "Санкт-Петербург": {
+            "Backend Developer SP": (0.02, "₽", random.randint(12, 18), random.randint(10, 15)),
+            "Frontend Developer SP": (0.03, "₽", random.randint(15, 24), random.randint(12, 18)),
+            "System Architect SP": (0.05, "₽", random.randint(55, 75), random.randint(30, 45)),
+            "UI Designer SP": (0.02, "₽", random.randint(18, 26), random.randint(14, 20)),
+            "Performance Analysis SP": (0.07, "₽", 0, random.randint(40, 55))
+        },
+        "Сеул": {
+            "Game Developer SU": (0.02, "₩", random.randint(14, 22), random.randint(8, 14)),
+            "Software Engineer SU": (0.03, "₩", random.randint(18, 26), random.randint(12, 18)),
+            "AI Specialist SU": (0.05, "₩", random.randint(60, 80), random.randint(35, 45)),
+            "Shader Expert SU": (0.02, "₩", random.randint(20, 30), random.randint(15, 22)),
+            "Game AI Research SU": (0.07, "₩", 0, random.randint(45, 60))
+        }
+    }
+    return job_info.get(city, {}).get(job, (0, "", 0, 0))
+
+
+# Обработка команды "Профиль"
+async def profile(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает команду 'Профиль'."""
+    await show_profile(update, context)
+    return SHOW_PROFILE
+
+# Обработка команды "Навыки"
+async def skills(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает команду 'Навыки'."""
+    await update.message.reply_text("Вот ваши навыки:")
+    # Здесь можно добавить больше информации о навыках
+    await show_profile(update, context)
+    return SHOW_PROFILE
+
+# Обработка команды "Проживание"
+async def accommodation(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает команду 'Проживание'."""
+    await update.message.reply_text("Вот информация о вашем проживании:")
+    # Здесь можно добавить больше информации о проживании
+    await show_profile(update, context)
+    return SHOW_PROFILE
+
+# Обработка команды "Компания"
+async def company(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает команду 'Компания'."""
+    await update.message.reply_text("Вот информация о вашей компании:")
+    # Здесь можно добавить больше информации о компании
+    await show_profile(update, context)
+    return SHOW_PROFILE
+
+
+# Удаление игрока
+async def delete_me(update: Update, context: CallbackContext):
+    """Полностью удаляет игрока из базы данных и сбрасывает его данные в памяти бота."""
+    user = update.effective_user
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        # Проверяем, существует ли игрок
+        cursor.execute("SELECT user_id FROM players WHERE user_id = ?", (user.id,))
+        player = cursor.fetchone()
+        if player:
+            # Удаляем игрока из базы
+            cursor.execute("DELETE FROM players WHERE user_id = ?", (user.id,))
+            conn.commit()
+            # Очищаем данные игрока в `context.user_data`
+            context.user_data.clear()
+            await update.message.reply_text("Ваш аккаунт был полностью удалён. Чтобы начать заново, введите /start.")
+        else:
+            await update.message.reply_text("Ваш аккаунт не найден в базе данных.")
+    finally:
+        conn.close()
+
+    # Возвращаем END для полного завершения диалога
+    return ConversationHandler.END
+
+# Отмена диалога
+async def cancel(update: Update, context: CallbackContext) -> int:
+    """Отменяет диалог и очищает временные данные."""
+    await update.message.reply_text("Диалог завершен.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+# Обновление характеристик игрока
+def update_player_characteristics(user_id: int, personality: str) -> None:
+    """Обновляет характеристики игрока в зависимости от выбранного характера."""
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        # Извлекаем текущие характеристики игрока
+        cursor.execute("""
+            SELECT coding, testing, analytics, drawing, modeling, design, attention 
+            FROM players WHERE user_id = ?
+        """, (user_id,))
+        player = cursor.fetchone()
+
+        if player:
+            # Преобразуем все характеристики к целочисленному типу
+            current_characteristics = {
+                "coding": int(player[0]),
+                "testing": int(player[1]),
+                "analytics": int(player[2]),
+                "drawing": int(player[3]),
+                "modeling": int(player[4]),
+                "design": int(player[5]),
+                "attention": int(player[6])
+            }
+
+            effects = PERSONALITIES.get(personality, {})
+            for characteristic, value in effects.items():
+                if characteristic in current_characteristics:
+                    current_value = current_characteristics[characteristic]
+                    new_value = current_value + value  # Здесь больше не будет TypeError
+                    cursor.execute(f"UPDATE players SET {characteristic} = ? WHERE user_id = ?", (new_value, user_id))
+
+            # Обновляем мультипликаторы опыта и денег
+            if "experience_multiplier" in effects:
+                cursor.execute("UPDATE players SET experience_multiplier = ? WHERE user_id = ?",
+                               (effects["experience_multiplier"], user_id))
+            if "money_multiplier" in effects:
+                cursor.execute("UPDATE players SET money_multiplier = ? WHERE user_id = ?",
+                               (effects["money_multiplier"], user_id))
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# Состояния для ConversationHandler
+SELECT_STAT = range(1)
+
+
+# Обработчик для запроса выбора характеристики
+async def handle_level_up(update: Update, context: CallbackContext) -> int:
+    """Вызывает инлайн-клавиатуру с характеристиками при достижении нового уровня.
+    """
+    keyboard = [
+        [InlineKeyboardButton("Кодинг ⌨️", callback_data="coding"),
+         InlineKeyboardButton("Тестинг 🔍", callback_data="testing")],
+        [InlineKeyboardButton("Аналитика 📊", callback_data="analytics"),
+         InlineKeyboardButton("Рисование 🎨", callback_data="drawing")],
+        [InlineKeyboardButton("Моделинг 🌐", callback_data="modeling"),
+         InlineKeyboardButton("Дизайн 🖌️", callback_data="design")],
+        [InlineKeyboardButton("Внимательность 👀", callback_data="attention")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Вы достигли нового уровня! Выберите характеристику для улучшения:", reply_markup=reply_markup)
+    return SELECT_STAT  # Переходим к следующему состоянию
+
+# Обработчик выбора характеристики
+async def handle_stat_selection(update: Update, context: CallbackContext) -> None:
+    """Добавляет выбранную характеристику игроку и убирает клавиатуру.
+    """
+    query = update.callback_query
+    await query.answer()  # Подтверждаем нажатие кнопки
+    chosen_stat = query.data  # Получаем выбранную характеристику
+    user_id = query.from_user.id  # ID игрока
+
+    # Обновляем БД, увеличивая выбранную характеристику на 1
+    conn = sqlite3.connect('players.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM players WHERE user_id = ?", (user_id,))
+        player = cursor.fetchone()
+        if player:
+            cursor.execute(f"UPDATE players SET {chosen_stat} = {chosen_stat} + 1 WHERE user_id = ?", (user_id,))
+            conn.commit()
+    finally:
+        conn.close()
+
+    translated_stat = STAT_TRANSLATIONS.get(chosen_stat, chosen_stat)
+
+    # Убираем клавиатуру, заменяя сообщение
+    await query.edit_message_text(f"🎉 Ваша характеристика {translated_stat} увеличена на 1!")
+    # Показываем профиль игрока после выбора характеристики
+    await show_profile(update, context)
+
+# Обработчик для получения выбора пользователя
+async def handle_choice(update: Update, context: CallbackContext) -> None:
+    """Обрабатывает выбор характеристики и применяет бонусы."""
+    chosen_stat = update.message.text  # Получаем выбранную характеристику
+    context.user_data["chosen_stat"] = chosen_stat  # Сохраняем выбор пользователя
+
+    # Пример нового уровня, это может быть динамическое значение
+    new_level = context.user_data.get("level", 1) + 1  # Увеличиваем уровень на 1
+
+    # Теперь передаем chosen_stat в функцию grant_level_up_bonuses
+    await grant_level_up_bonuses(update, context, new_level, chosen_stat)
+
+    # Показываем профиль игрока после применения бонусов
+    await show_profile(update, context)
+
+    # Возвращаемся к основному меню
+    return ConversationHandler.END
+
+
+# Диалог для получения выбора
+    entry_points=[CommandHandler('level_up', handle_level_up)],  # Триггер на команду /level_up
+    states={
+        SELECT_STAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice)]  # Обрабатываем выбор
+    },
+    fallbacks=[CommandHandler("clevel_up_conversation = ConversationHandler(ancel", cancel)]  # Добавляем возможность отмены
+
+# Диалог для выбора характеристики при повышении уровня
+level_up_conversation = ConversationHandler(
+    entry_points=[CommandHandler('level_up', handle_level_up)],  # Триггер на команду /level_up
+    states={
+        SELECT_STAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice)]  # Обрабатываем выбор
+    },
+    fallbacks=[]  # Можно добавить обработку завершения
+)
+
+
+# Обработчик команды /items для вывода всех предметов
+async def handle_items(update: Update, context: CallbackContext) -> None:
+    """Отправляет информацию о всех доступных предметах."""
+    message = "Список доступных предметов:\n\n"
+
+    message += "Tier 1:\n"
+    for item in tier_1_items:
+        message += f"{item}\n\n"
+
+    message += "Tier 2:\n"
+    for item in tier_2_items:
+        message += f"{item}\n\n"
+
+    await update.message.reply_text(message)
+
+# Основная функция для запуска бота
+async def main() -> None:
+    """Основная функция для настройки и запуска бота."""
+    # Проверка необходимых модулей
+    check_required_modules()
+    # Инициализация базы данных
+    init_db()
+    # Создание приложения с использованием токена из config.py
+    application = Application.builder().token(config.BOT_TOKEN).build()
+
+    # Регистрация ConversationHandler для повышения уровня
+    application.add_handler(level_up_conversation)  # Добавляем здесь
+
+    # Создание основного ConversationHandler
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_name)],
+            SELECT_CITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_selection)
+            ],
+            SELECT_PERSONALITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, select_personality)
+            ],
+            SHOW_PROFILE: [
+                MessageHandler(filters.Regex("^Работа$"), work),
+                MessageHandler(filters.Regex("^Учеба$"), study),
+                MessageHandler(filters.Regex("^Профиль$"), profile),
+                MessageHandler(filters.Regex("^Навыки$"), skills),
+                MessageHandler(filters.Regex("^Проживание$"), accommodation),
+                MessageHandler(filters.Regex("^Компания$"), company),
+            ],
+            WORK_SELECTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_work_selection)
+            ],
+            STUDY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_choice),
+                MessageHandler(filters.Regex("^(Назад)$"), study),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_course)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,
+    )  # Устанавливаем per_message=False для корректной работы с обычными кнопками
+
+    # Регистрация ConversationHandler для повышения уровня
+    application.add_handler(level_up_conversation)
+
+    # Регистрация ConversationHandler
+    application.add_handler(conv_handler)
+
+    # Регистрация обработчика инлайн-кнопок
+    application.add_handler(CallbackQueryHandler(handle_stat_selection))
+
+    # Запускаем фоновую задачу восстановления времени
+    asyncio.create_task(continuous_restore_time())
+
+    # Добавляем команду в бота
+    application.add_handler(CommandHandler("delete_me", delete_me))
+
+    # Запуск бота
+    print("Бот запущен. Нажмите Ctrl+C для остановки.")
+    await application.run_polling()
+
+# Точка входа в программу
+if __name__ == '__main__':
+    asyncio.run(main())
