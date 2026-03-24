@@ -1,0 +1,1282 @@
+﻿import type { User } from "../shared/schema";
+import type { RarityName } from "../client/src/lib/parts";
+import { RARITY_LEVELS, getPartPrice, rollRandomPartDrop } from "../client/src/lib/parts";
+import { resolveCity } from "../shared/registration";
+import { storage } from "./storage";
+import { assertFeatureEnabled, getGameSettings } from "./game-settings";
+
+export type SkillName =
+  | "coding"
+  | "testing"
+  | "analytics"
+  | "drawing"
+  | "modeling"
+  | "design"
+  | "attention";
+
+export type InventoryItemType = "consumable" | "gear" | "part" | "gadget";
+export type BankProductType = "credit" | "deposit";
+
+export type Skills = Record<SkillName, number>;
+
+export interface GameInventoryItem {
+  id: string;
+  name: string;
+  stats: Record<string, number>;
+  rarity: string;
+  quantity: number;
+  type: InventoryItemType;
+  isEquipped?: boolean;
+  durability?: number;
+  maxDurability?: number;
+}
+
+export interface GameBankProduct {
+  type: BankProductType;
+  amount: number;
+  daysLeft: number;
+  totalDays: number;
+  totalReturn: number;
+  name: string;
+}
+
+export interface GameState {
+  skills: Skills;
+  inventory: GameInventoryItem[];
+  workTime: number;
+  studyTime: number;
+  gramBalance: number;
+  jobDropPity: number;
+  activeBankProduct: GameBankProduct | null;
+  lastTickAt: number;
+}
+
+export interface CityBonus {
+  failureRateReduction: number;
+  salaryBoost: number;
+  skillGrowthBoost: number;
+  xpBoost: number;
+}
+
+export interface Job {
+  name: string;
+  minStats: Record<string, number>;
+  rankRequired: string;
+  timeMinutes: number;
+  reward: number;
+  expReward: number;
+  description: string;
+}
+
+export interface ShopItem {
+  id: string;
+  name: string;
+  price: number;
+  stats: Record<string, number>;
+  description: string;
+  rarity: string;
+  type: "consumable" | "gear";
+}
+
+export interface BankProgram {
+  name: string;
+  minLevel: number;
+  minAmount: number;
+  maxAmount: number;
+  interest: number;
+  description: string;
+}
+
+type BankEarlyAction = "repay" | "withdraw";
+
+type GameTickResult = {
+  user: User;
+  notices: string[];
+};
+
+const DEFAULT_SKILLS: Skills = {
+  coding: 0,
+  testing: 0,
+  analytics: 0,
+  drawing: 0,
+  modeling: 0,
+  design: 0,
+  attention: 0,
+};
+
+const EMPTY_GAME_STATE: Omit<GameState, "lastTickAt"> = {
+  skills: { ...DEFAULT_SKILLS },
+  inventory: [],
+  workTime: 1,
+  studyTime: 1,
+  gramBalance: 0,
+  jobDropPity: 0,
+  activeBankProduct: null,
+};
+
+const playerGameStateByUserId = new Map<string, GameState>();
+const ENERGY_REGEN_PER_SECOND = 0.002; // 0.2% per second (full recovery in ~8.3 minutes)
+
+const CITY_CURRENCY: Record<string, string> = {
+  "РЎР°РЅ-Р¤СЂР°РЅС†РёСЃРєРѕ": "$",
+  "РЎРёРЅРіР°РїСѓСЂ": "S$",
+  "РЎР°РЅРєС‚-РџРµС‚РµСЂР±СѓСЂРі": "в‚Ѕ",
+  "РЎРµСѓР»": "в‚©",
+};
+
+export const GRM_PER_LOCAL_CURRENCY_BY_CITY: Record<string, number> = {
+  "РЎР°РЅ-Р¤СЂР°РЅС†РёСЃРєРѕ": 1,
+  "РЎРёРЅРіР°РїСѓСЂ": 0.74,
+  "РЎР°РЅРєС‚-РџРµС‚РµСЂР±СѓСЂРі": 0.011,
+  "РЎРµСѓР»": 0.00075,
+};
+
+// Backward compatibility for older UI strings. Do not use in new logic.
+export const GRAM_EXCHANGE_RATE = 1;
+
+const LEGACY_CITY_NAME_BY_ID: Record<string, string> = {
+  saint_petersburg: "РЎР°РЅРєС‚-РџРµС‚РµСЂР±СѓСЂРі",
+  seoul: "РЎРµСѓР»",
+  singapore: "РЎРёРЅРіР°РїСѓСЂ",
+  san_francisco: "РЎР°РЅ-Р¤СЂР°РЅС†РёСЃРєРѕ",
+};
+
+function normalizeCityForLegacyMaps(city: string): string {
+  const resolved = resolveCity(city);
+  if (!resolved) return city;
+  return LEGACY_CITY_NAME_BY_ID[resolved.id] ?? resolved.name;
+}
+
+export function getLocalToGramRate(city: string): number {
+  // TODO: Make this rate dynamic when economy.dynamicCurrencyEnabled is configured via admin settings.
+  const normalizedCity = normalizeCityForLegacyMaps(city);
+  return GRM_PER_LOCAL_CURRENCY_BY_CITY[normalizedCity] ?? 1;
+}
+
+export function getGramToLocalRate(city: string): number {
+  return 1 / getLocalToGramRate(city);
+}
+
+const JOBS_BY_CITY: Record<string, Job[]> = {
+  "РЎР°РЅ-Р¤СЂР°РЅС†РёСЃРєРѕ": [
+    {
+      name: "РЎС‚Р°Р¶РµСЂ iOS СЂР°Р·СЂР°Р±РѕС‚С‡РёРє",
+      minStats: { coding: 0 },
+      rankRequired: "Intern",
+      timeMinutes: 5,
+      reward: 10,
+      expReward: 20,
+      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° РїСЂРѕСЃС‚С‹С… С„СѓРЅРєС†РёР№ РґР»СЏ iOS РїСЂРёР»РѕР¶РµРЅРёР№",
+    },
+    {
+      name: "Junior iOS СЂР°Р·СЂР°Р±РѕС‚С‡РёРє",
+      minStats: { coding: 2, design: 1 },
+      rankRequired: "Junior",
+      timeMinutes: 5,
+      reward: 25,
+      expReward: 30,
+      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° РєРѕРјРїРѕРЅРµРЅС‚РѕРІ iOS РїСЂРёР»РѕР¶РµРЅРёР№",
+    },
+    {
+      name: "Middle iOS СЂР°Р·СЂР°Р±РѕС‚С‡РёРє",
+      minStats: { coding: 4, design: 2, analytics: 2 },
+      rankRequired: "Middle",
+      timeMinutes: 5,
+      reward: 45,
+      expReward: 40,
+      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° СЃР»РѕР¶РЅС‹С… С„СѓРЅРєС†РёР№ Рё РѕРїС‚РёРјРёР·Р°С†РёСЏ",
+    },
+  ],
+  "РЎРёРЅРіР°РїСѓСЂ": [
+    {
+      name: "РЎС‚Р°Р¶РµСЂ QA РёРЅР¶РµРЅРµСЂ",
+      minStats: { testing: 0 },
+      rankRequired: "Intern",
+      timeMinutes: 5,
+      reward: 15,
+      expReward: 20,
+      description: "Р‘Р°Р·РѕРІРѕРµ С‚РµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРѕР±РёР»СЊРЅС‹С… СѓСЃС‚СЂРѕР№СЃС‚РІ",
+    },
+    {
+      name: "Junior QA РёРЅР¶РµРЅРµСЂ",
+      minStats: { testing: 2, attention: 1 },
+      rankRequired: "Junior",
+      timeMinutes: 5,
+      reward: 30,
+      expReward: 30,
+      description: "РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ С„СѓРЅРєС†РёРѕРЅР°Р»Р° СѓСЃС‚СЂРѕР№СЃС‚РІ",
+    },
+    {
+      name: "Middle QA РёРЅР¶РµРЅРµСЂ",
+      minStats: { testing: 4, attention: 2, analytics: 2 },
+      rankRequired: "Middle",
+      timeMinutes: 5,
+      reward: 50,
+      expReward: 40,
+      description: "РђРІС‚РѕРјР°С‚РёР·Р°С†РёСЏ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ СѓСЃС‚СЂРѕР№СЃС‚РІ",
+    },
+  ],
+  "РЎР°РЅРєС‚-РџРµС‚РµСЂР±СѓСЂРі": [
+    {
+      name: "РЎС‚Р°Р¶РµСЂ UI/UX РґРёР·Р°Р№РЅРµСЂ",
+      minStats: { design: 0 },
+      rankRequired: "Intern",
+      timeMinutes: 5,
+      reward: 20,
+      expReward: 25,
+      description: "РЎРѕР·РґР°РЅРёРµ РїСЂРѕСЃС‚С‹С… СЌР»РµРјРµРЅС‚РѕРІ РёРЅС‚РµСЂС„РµР№СЃР°",
+    },
+    {
+      name: "Junior UI/UX РґРёР·Р°Р№РЅРµСЂ",
+      minStats: { design: 2, attention: 1 },
+      rankRequired: "Junior",
+      timeMinutes: 5,
+      reward: 35,
+      expReward: 35,
+      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° РёРЅС‚РµСЂС„РµР№СЃРѕРІ РїСЂРёР»РѕР¶РµРЅРёР№",
+    },
+    {
+      name: "Middle UI/UX РґРёР·Р°Р№РЅРµСЂ",
+      minStats: { design: 4, attention: 2, drawing: 2 },
+      rankRequired: "Middle",
+      timeMinutes: 5,
+      reward: 55,
+      expReward: 45,
+      description: "РЎРѕР·РґР°РЅРёРµ СЃР»РѕР¶РЅС‹С… РёРЅС‚РµСЂС„РµР№СЃРѕРІ",
+    },
+  ],
+  "РЎРµСѓР»": [
+    {
+      name: "РЎС‚Р°Р¶РµСЂ Game Developer",
+      minStats: { coding: 0 },
+      rankRequired: "Intern",
+      timeMinutes: 5,
+      reward: 22,
+      expReward: 25,
+      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° РїСЂРѕСЃС‚С‹С… РёРіСЂРѕРІС‹С… РјРµС…Р°РЅРёРє",
+    },
+    {
+      name: "Junior K-Game Dev",
+      minStats: { coding: 2, modeling: 1 },
+      rankRequired: "Junior",
+      timeMinutes: 5,
+      reward: 40,
+      expReward: 35,
+      description: "Р Р°Р±РѕС‚Р° РЅР°Рґ K-Pop РёРіСЂРѕРІС‹РјРё РїСЂРѕРµРєС‚Р°РјРё",
+    },
+    {
+      name: "Middle Engine Developer",
+      minStats: { coding: 5, modeling: 3, analytics: 2 },
+      rankRequired: "Middle",
+      timeMinutes: 5,
+      reward: 65,
+      expReward: 50,
+      description: "РћРїС‚РёРјРёР·Р°С†РёСЏ РёРіСЂРѕРІС‹С… РґРІРёР¶РєРѕРІ",
+    },
+  ],
+};
+
+const SHOP_ITEMS: ShopItem[] = [
+  {
+    id: "coding-book",
+    name: "РЈС‡РµР±РЅРёРє РїРѕ РїСЂРѕРіСЂР°РјРјРёСЂРѕРІР°РЅРёСЋ",
+    price: 100,
+    stats: { coding: 1 },
+    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +1 РљРѕРґРёРЅРі",
+    rarity: "Common",
+    type: "consumable",
+  },
+  {
+    id: "testing-course",
+    name: "РљСѓСЂСЃ РїРѕ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЋ",
+    price: 100,
+    stats: { testing: 1 },
+    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +1 РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ",
+    rarity: "Common",
+    type: "consumable",
+  },
+  {
+    id: "analytics-book",
+    name: "РљРЅРёРіР° РїРѕ Р°РЅР°Р»РёС‚РёРєРµ",
+    price: 100,
+    stats: { analytics: 1 },
+    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +1 РђРЅР°Р»РёС‚РёРєР°",
+    rarity: "Common",
+    type: "consumable",
+  },
+  {
+    id: "drawing-album",
+    name: "РђР»СЊР±РѕРј РґР»СЏ СЂРёСЃРѕРІР°РЅРёСЏ",
+    price: 100,
+    stats: { drawing: 1 },
+    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +1 Р РёСЃРѕРІР°РЅРёРµ",
+    rarity: "Common",
+    type: "consumable",
+  },
+  {
+    id: "advanced-coding",
+    name: "РџСЂРѕРґРІРёРЅСѓС‚С‹Р№ РєСѓСЂСЃ РїСЂРѕРіСЂР°РјРјРёСЂРѕРІР°РЅРёСЏ",
+    price: 500,
+    stats: { coding: 3 },
+    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +3 РљРѕРґРёРЅРі",
+    rarity: "Rare",
+    type: "consumable",
+  },
+  {
+    id: "gaming-keyboard",
+    name: "рџЋ® РњРµС…Р°РЅРёС‡РµСЃРєР°СЏ РєР»Р°РІРёР°С‚СѓСЂР°",
+    price: 250,
+    stats: { coding: 1, testing: 1 },
+    description: "Р­РєРёРїРёСЂРѕРІРєР°: +1 РљРѕРґРёРЅРі, +1 РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ",
+    rarity: "Uncommon",
+    type: "gear",
+  },
+  {
+    id: "gaming-mouse",
+    name: "рџ–±пёЏ РџСЂРѕРіСЂР°РјРјРёСЂСѓРµРјР°СЏ РјС‹С€СЊ",
+    price: 200,
+    stats: { testing: 1, attention: 1 },
+    description: "Р­РєРёРїРёСЂРѕРІРєР°: +1 РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ, +1 Р’РЅРёРјР°РЅРёРµ",
+    rarity: "Uncommon",
+    type: "gear",
+  },
+  {
+    id: "monitor-uhd",
+    name: "рџ–ҐпёЏ 4K РњРѕРЅРёС‚РѕСЂ",
+    price: 800,
+    stats: { design: 2, drawing: 2 },
+    description: "Р­РєРёРїРёСЂРѕРІРєР°: +2 Р”РёР·Р°Р№РЅ, +2 Р РёСЃРѕРІР°РЅРёРµ",
+    rarity: "Rare",
+    type: "gear",
+  },
+  {
+    id: "headphones-pro",
+    name: "рџЋ§ РџСЂРѕС„РµСЃСЃРёРѕРЅР°Р»СЊРЅС‹Рµ РЅР°СѓС€РЅРёРєРё",
+    price: 300,
+    stats: { attention: 2, coding: 1 },
+    description: "Р­РєРёРїРёСЂРѕРІРєР°: +2 Р’РЅРёРјР°РЅРёРµ, +1 РљРѕРґРёРЅРі",
+    rarity: "Uncommon",
+    type: "gear",
+  },
+  {
+    id: "laptop-pro",
+    name: "рџ’» MacBook Pro",
+    price: 2000,
+    stats: { coding: 3, design: 2, testing: 1 },
+    description: "Р­РєРёРїРёСЂРѕРІРєР°: +3 РљРѕРґРёРЅРі, +2 Р”РёР·Р°Р№РЅ, +1 РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ",
+    rarity: "Epic",
+    type: "gear",
+  },
+];
+
+const CREDIT_PROGRAMS: BankProgram[] = [
+  {
+    name: "РЎС‚Р°РЅРґР°СЂС‚РЅС‹Р№ РєСЂРµРґРёС‚",
+    minLevel: 1,
+    minAmount: 10000,
+    maxAmount: 100000,
+    interest: 15,
+    description: "Р‘Р°Р·РѕРІС‹Р№ РєСЂРµРґРёС‚ СЃ РјРёРЅРёРјР°Р»СЊРЅС‹РјРё С‚СЂРµР±РѕРІР°РЅРёСЏРјРё",
+  },
+  {
+    name: "РџСЂРµРјРёСѓРј РєСЂРµРґРёС‚",
+    minLevel: 10,
+    minAmount: 50000,
+    maxAmount: 500000,
+    interest: 12,
+    description: "РљСЂРµРґРёС‚ СЃ СѓР»СѓС‡С€РµРЅРЅС‹РјРё СѓСЃР»РѕРІРёСЏРјРё",
+  },
+  {
+    name: "VIP РєСЂРµРґРёС‚",
+    minLevel: 25,
+    minAmount: 200000,
+    maxAmount: 2000000,
+    interest: 10,
+    description: "Р­РєСЃРєР»СЋР·РёРІРЅС‹Р№ РєСЂРµРґРёС‚ РґР»СЏ РѕРїС‹С‚РЅС‹С… РёРіСЂРѕРєРѕРІ",
+  },
+];
+
+const DEPOSIT_PROGRAMS: BankProgram[] = [
+  {
+    name: "РЎР±РµСЂРµРіР°С‚РµР»СЊРЅС‹Р№ РІРєР»Р°Рґ",
+    minLevel: 1,
+    minAmount: 1000,
+    maxAmount: 100000,
+    interest: 10,
+    description: "РќР°РґРµР¶РЅС‹Р№ РІРєР»Р°Рґ СЃ РіР°СЂР°РЅС‚РёСЂРѕРІР°РЅРЅС‹Рј РґРѕС…РѕРґРѕРј",
+  },
+  {
+    name: "РќР°РєРѕРїРёС‚РµР»СЊРЅС‹Р№ РІРєР»Р°Рґ",
+    minLevel: 10,
+    minAmount: 50000,
+    maxAmount: 500000,
+    interest: 12,
+    description: "Р’РєР»Р°Рґ СЃ РїРѕРІС‹С€РµРЅРЅРѕР№ РїСЂРѕС†РµРЅС‚РЅРѕР№ СЃС‚Р°РІРєРѕР№",
+  },
+  {
+    name: "РџСЂРµРјРёСѓРј РІРєР»Р°Рґ",
+    minLevel: 25,
+    minAmount: 200000,
+    maxAmount: 2000000,
+    interest: 15,
+    description: "РњР°РєСЃРёРјР°Р»СЊРЅС‹Р№ РґРѕС…РѕРґ РґР»СЏ РєСЂСѓРїРЅС‹С… СЃСѓРјРј",
+  },
+];
+
+function getDefaultGameState(): GameState {
+  return {
+    ...EMPTY_GAME_STATE,
+    skills: { ...DEFAULT_SKILLS },
+    inventory: [],
+    lastTickAt: Date.now(),
+  };
+}
+
+function cloneInventoryItem(item: GameInventoryItem): GameInventoryItem {
+  return {
+    ...item,
+    stats: { ...(item.stats || {}) },
+  };
+}
+
+function sanitizeNumericStatMap(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const num = Number(value);
+    if (Number.isFinite(num)) out[key] = num;
+  }
+  return out;
+}
+
+function sanitizeSkills(raw: unknown): Skills {
+  const source = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    coding: Number(source.coding ?? 0) || 0,
+    testing: Number(source.testing ?? 0) || 0,
+    analytics: Number(source.analytics ?? 0) || 0,
+    drawing: Number(source.drawing ?? 0) || 0,
+    modeling: Number(source.modeling ?? 0) || 0,
+    design: Number(source.design ?? 0) || 0,
+    attention: Number(source.attention ?? 0) || 0,
+  };
+}
+
+function sanitizeInventoryItem(raw: unknown): GameInventoryItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const id = String(source.id ?? "").trim();
+  const name = String(source.name ?? "").trim();
+  const type = String(source.type ?? "").trim() as InventoryItemType;
+  if (!id || !name) return null;
+  if (!["consumable", "gear", "part", "gadget"].includes(type)) return null;
+
+  return {
+    id,
+    name,
+    type,
+    stats: sanitizeNumericStatMap(source.stats),
+    rarity: String(source.rarity ?? "Common"),
+    quantity: Math.max(1, Math.floor(Number(source.quantity ?? 1) || 1)),
+    isEquipped: Boolean(source.isEquipped),
+    durability: source.durability !== undefined ? Number(source.durability) : undefined,
+    maxDurability: source.maxDurability !== undefined ? Number(source.maxDurability) : undefined,
+  };
+}
+
+function sanitizeBankProduct(raw: unknown): GameBankProduct | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const type = String(source.type ?? "") as BankProductType;
+  if (type !== "credit" && type !== "deposit") return null;
+
+  const amount = Number(source.amount ?? 0);
+  const daysLeft = Number(source.daysLeft ?? 0);
+  const totalDays = Number(source.totalDays ?? 0);
+  const totalReturn = Number(source.totalReturn ?? 0);
+  const name = String(source.name ?? "").trim();
+
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  if (!Number.isFinite(daysLeft) || daysLeft <= 0) return null;
+  if (!Number.isFinite(totalDays) || totalDays <= 0) return null;
+  if (!Number.isFinite(totalReturn) || totalReturn <= 0) return null;
+  if (!name) return null;
+
+  return { type, amount, daysLeft, totalDays, totalReturn, name };
+}
+
+function addInventoryItem(state: GameState, item: GameInventoryItem) {
+  const existing = state.inventory.find((current) => current.id === item.id && current.type === item.type);
+  if (existing) {
+    existing.quantity = Math.max(1, (existing.quantity || 1) + Math.max(1, item.quantity || 1));
+    return;
+  }
+
+  state.inventory.push(cloneInventoryItem(item));
+}
+
+function removeOneInventoryItem(state: GameState, item: GameInventoryItem) {
+  if (item.quantity > 1) {
+    item.quantity -= 1;
+    return;
+  }
+  state.inventory = state.inventory.filter((inv) => inv !== item);
+}
+
+function adjustSkillByItemStats(state: GameState, item: GameInventoryItem, multiplier: 1 | -1) {
+  for (const [key, value] of Object.entries(item.stats || {})) {
+    if (!(key in state.skills)) continue;
+    const skillKey = key as SkillName;
+    const next = state.skills[skillKey] + Number(value) * multiplier;
+    state.skills[skillKey] = Number(next.toFixed(2));
+  }
+}
+
+function findInventoryItemByRef(state: GameState, ref: string) {
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+
+  if (/^\d+$/.test(trimmed)) {
+    const index = Number(trimmed) - 1;
+    if (index >= 0 && index < state.inventory.length) return state.inventory[index];
+    return null;
+  }
+
+  return state.inventory.find((item) => item.id === trimmed) ?? null;
+}
+
+function findShopItemByRef(ref: string) {
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+
+  if (/^\d+$/.test(trimmed)) {
+    const index = Number(trimmed) - 1;
+    if (index >= 0 && index < SHOP_ITEMS.length) return SHOP_ITEMS[index];
+    return null;
+  }
+
+  return SHOP_ITEMS.find((item) => item.id === trimmed) ?? null;
+}
+
+function findJobByRef(city: string, ref: string) {
+  const normalizedCity = normalizeCityForLegacyMaps(city);
+  const jobs = JOBS_BY_CITY[normalizedCity] ?? [];
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+
+  if (/^\d+$/.test(trimmed)) {
+    const index = Number(trimmed) - 1;
+    if (index >= 0 && index < jobs.length) return jobs[index];
+    return null;
+  }
+
+  return jobs.find((job) => job.name.toLowerCase() === trimmed.toLowerCase()) ?? null;
+}
+
+function findBankProgramByRef(type: BankProductType, ref: string) {
+  const programs = type === "credit" ? CREDIT_PROGRAMS : DEPOSIT_PROGRAMS;
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+
+  if (/^\d+$/.test(trimmed)) {
+    const index = Number(trimmed) - 1;
+    if (index >= 0 && index < programs.length) return programs[index];
+    return null;
+  }
+
+  return programs.find((program) => program.name.toLowerCase() === trimmed.toLowerCase()) ?? null;
+}
+
+function resolveCityBonus(user: User): CityBonus {
+  const rep = user.reputation;
+  const city = user.city;
+  const bonus: CityBonus = { failureRateReduction: 0, salaryBoost: 0, skillGrowthBoost: 0, xpBoost: 0 };
+
+  if (city === "РЎР°РЅРєС‚-РџРµС‚РµСЂР±СѓСЂРі") {
+    if (rep >= 100) bonus.failureRateReduction = 10;
+    if (rep >= 300) bonus.skillGrowthBoost = 5;
+    if (rep >= 600) bonus.failureRateReduction = 20;
+    if (rep >= 1000) bonus.failureRateReduction = 25;
+  }
+
+  if (city === "РЎР°РЅ-Р¤СЂР°РЅС†РёСЃРєРѕ") {
+    if (rep >= 100) bonus.salaryBoost = 8;
+    if (rep >= 300) bonus.xpBoost = 12;
+    if (rep >= 600) bonus.salaryBoost = 12;
+    if (rep >= 1000) bonus.salaryBoost = 15;
+  }
+
+  if (city === "РЎРёРЅРіР°РїСѓСЂ") {
+    if (rep >= 100) bonus.failureRateReduction = 15;
+    if (rep >= 300) bonus.salaryBoost = 6;
+    if (rep >= 600) bonus.failureRateReduction = 18;
+    if (rep >= 1000) bonus.skillGrowthBoost = 9;
+  }
+
+  if (city === "РЎРµСѓР»") {
+    if (rep >= 100) bonus.salaryBoost = 10;
+    if (rep >= 300) bonus.skillGrowthBoost = 7;
+    if (rep >= 600) bonus.xpBoost = 5;
+    if (rep >= 1000) bonus.failureRateReduction = 30;
+  }
+
+  return bonus;
+}
+
+function applyExperience(user: User, gain: number) {
+  let level = user.level;
+  let experience = user.experience + gain;
+
+  while (experience >= 100) {
+    level += 1;
+    experience -= 100;
+  }
+
+  return { level, experience };
+}
+
+function getOrCreateState(userId: string): GameState {
+  const current = playerGameStateByUserId.get(userId);
+  if (current) {
+    if (!Number.isFinite(Number((current as any).gramBalance))) {
+      current.gramBalance = 0;
+    }
+    return current;
+  }
+
+  const created = getDefaultGameState();
+  playerGameStateByUserId.set(userId, created);
+  return created;
+}
+
+async function advanceState(user: User, state: GameState): Promise<GameTickResult> {
+  const now = Date.now();
+  const elapsedSeconds = Math.max(0, Math.floor((now - state.lastTickAt) / 1000));
+  state.lastTickAt = now;
+
+  const notices: string[] = [];
+  if (elapsedSeconds <= 0) return { user, notices };
+
+  state.workTime = Math.min(1, Number((state.workTime + elapsedSeconds * ENERGY_REGEN_PER_SECOND).toFixed(4)));
+  state.studyTime = Math.min(1, Number((state.studyTime + elapsedSeconds * ENERGY_REGEN_PER_SECOND).toFixed(4)));
+
+  if (!state.activeBankProduct) return { user, notices };
+
+  const nextDaysLeft = state.activeBankProduct.daysLeft - elapsedSeconds / 60;
+  if (nextDaysLeft > 0) {
+    state.activeBankProduct.daysLeft = nextDaysLeft;
+    return { user, notices };
+  }
+
+  const completedProduct = state.activeBankProduct;
+  state.activeBankProduct = null;
+
+  if (completedProduct.type === "deposit") {
+    const updated = await storage.updateUser(user.id, {
+      balance: user.balance + Math.round(completedProduct.totalReturn),
+    });
+    notices.push(`вњ… Р’РєР»Р°Рґ Р·Р°РІРµСЂС€РµРЅ: +${getCurrencySymbol(updated.city)}${Math.round(completedProduct.totalReturn)}`);
+    return { user: updated, notices };
+  }
+
+  const creditDue = Math.round(completedProduct.totalReturn);
+  if (user.balance >= creditDue) {
+    const updated = await storage.updateUser(user.id, {
+      balance: user.balance - creditDue,
+    });
+    notices.push(`вњ… РљСЂРµРґРёС‚ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РїРѕРіР°С€РµРЅ: -${getCurrencySymbol(updated.city)}${creditDue}`);
+    return { user: updated, notices };
+  }
+
+  const updated = await storage.updateUser(user.id, {
+    balance: 0,
+    reputation: Math.max(0, user.reputation - 25),
+  });
+  notices.push("вљ пёЏ РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ РґР»СЏ РїРѕРіР°С€РµРЅРёСЏ РєСЂРµРґРёС‚Р°. Р‘Р°Р»Р°РЅСЃ РѕР±РЅСѓР»РµРЅ, СЂРµРїСѓС‚Р°С†РёСЏ СЃРЅРёР¶РµРЅР°.");
+  return { user: updated, notices };
+}
+
+async function loadContext(userId: string) {
+  const user = await storage.getUser(userId);
+  if (!user) return null;
+  const state = getOrCreateState(userId);
+  const tick = await advanceState(user, state);
+  return { user: tick.user, state, notices: tick.notices };
+}
+
+function createPartInventoryItem(part: ReturnType<typeof rollRandomPartDrop>) {
+  if (!part) return null;
+  const rarity = part.rarity as RarityName;
+  const icon = RARITY_LEVELS[rarity]?.icon ?? "";
+  return {
+    id: part.id,
+    name: icon ? `${icon} ${part.name}` : part.name,
+    stats: part.stats as Record<string, number>,
+    rarity: part.rarity,
+    quantity: 1,
+    type: "part" as const,
+  };
+}
+
+export function getCurrencySymbol(city: string) {
+  const resolved = resolveCity(city);
+  if (resolved?.currencySymbol) return resolved.currencySymbol;
+  const normalizedCity = normalizeCityForLegacyMaps(city);
+  return CITY_CURRENCY[normalizedCity] ?? "$";
+}
+
+export function listJobsByCity(city: string) {
+  const normalizedCity = normalizeCityForLegacyMaps(city);
+  return JOBS_BY_CITY[normalizedCity] ?? [];
+}
+
+export function getJobWorkEnergyCost(job: Job) {
+  if (job.expReward >= 45) return 0.24;
+  if (job.expReward >= 30) return 0.18;
+  return 0.12;
+}
+
+export function listShopItems() {
+  return SHOP_ITEMS;
+}
+
+export function listCreditPrograms() {
+  return CREDIT_PROGRAMS;
+}
+
+export function listDepositPrograms() {
+  return DEPOSIT_PROGRAMS;
+}
+
+export async function getUserWithGameState(userId: string) {
+  const context = await loadContext(userId);
+  if (!context) return null;
+
+  return {
+    user: context.user,
+    game: {
+      skills: context.state.skills,
+      inventory: context.state.inventory,
+      workTime: context.state.workTime,
+      studyTime: context.state.studyTime,
+      gramBalance: context.state.gramBalance,
+      activeBankProduct: context.state.activeBankProduct,
+      jobDropPity: context.state.jobDropPity,
+    },
+    notices: context.notices,
+  };
+}
+
+export function applyGameStatePatch(userId: string, payload: any) {
+  const state = getOrCreateState(userId);
+  if (!payload || typeof payload !== "object") return state;
+
+  if ("skills" in payload) {
+    state.skills = sanitizeSkills(payload.skills);
+  }
+
+  if ("inventory" in payload && Array.isArray(payload.inventory)) {
+    state.inventory = payload.inventory
+      .map((item: unknown) => sanitizeInventoryItem(item))
+      .filter(Boolean) as GameInventoryItem[];
+  }
+
+  if ("workTime" in payload && Number.isFinite(Number(payload.workTime))) {
+    const value = Number(payload.workTime);
+    state.workTime = value > 1 ? Math.max(0, Math.min(1, value / 100)) : Math.max(0, Math.min(1, value));
+  }
+
+  if ("studyTime" in payload && Number.isFinite(Number(payload.studyTime))) {
+    const value = Number(payload.studyTime);
+    state.studyTime = value > 1 ? Math.max(0, Math.min(1, value / 100)) : Math.max(0, Math.min(1, value));
+  }
+
+  if ("gramBalance" in payload && Number.isFinite(Number(payload.gramBalance))) {
+    state.gramBalance = Math.max(0, Number(Number(payload.gramBalance).toFixed(2)));
+  }
+
+  if ("activeBankProduct" in payload) {
+    state.activeBankProduct = sanitizeBankProduct(payload.activeBankProduct);
+  }
+
+  state.lastTickAt = Date.now();
+  return state;
+}
+
+export async function performQuickWork(userId: string) {
+  await assertFeatureEnabled("jobs", "Jobs are disabled by admin settings");
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  let user = context.user;
+  const notices = [...context.notices];
+
+  if (state.workTime < 0.3) {
+    throw new Error("РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЌРЅРµСЂРіРёРё РґР»СЏ СЂР°Р±РѕС‚С‹ (РЅСѓР¶РЅРѕ РјРёРЅРёРјСѓРј 30%)");
+  }
+
+  const settings = await getGameSettings();
+  const bonus = settings.systems.cityBonusesEnabled ? resolveCityBonus(user) : { failureRateReduction: 0, salaryBoost: 0, skillGrowthBoost: 0, xpBoost: 0 };
+  let moneyGained = Math.floor(Math.random() * 50) + 30;
+  let expGained = Math.floor(Math.random() * 10) + 5;
+
+  if (user.personality === "workaholic") expGained = Math.floor(expGained * 1.2);
+  if (user.personality === "businessman") moneyGained = Math.floor(moneyGained * 1.15);
+
+  moneyGained = Math.floor(moneyGained * (1 + bonus.salaryBoost / 100));
+  expGained = Math.floor(expGained * (1 + bonus.xpBoost / 100));
+  moneyGained = Math.max(1, Math.floor(moneyGained * Math.max(0.1, settings.multipliers.workIncomeMultiplier)));
+  expGained = Math.max(1, Math.floor(expGained * Math.max(0.1, settings.multipliers.workXpMultiplier)));
+
+  const nextLevel = applyExperience(user, expGained);
+  user = await storage.updateUser(user.id, {
+    balance: user.balance + moneyGained,
+    reputation: (user.reputation || 0) + 2,
+    level: nextLevel.level,
+    experience: nextLevel.experience,
+  });
+
+  state.workTime = Math.max(0, state.workTime - 0.3);
+
+  const droppedPart = rollRandomPartDrop(22);
+  const partItem = createPartInventoryItem(droppedPart);
+  if (partItem) {
+    addInventoryItem(state, partItem);
+    notices.push(`рџЋЃ РќР°Р№РґРµРЅР° РґРµС‚Р°Р»СЊ: ${droppedPart?.name} (${droppedPart?.rarity})`);
+  }
+
+  return { user, state, notices, moneyGained, expGained, droppedPart };
+}
+
+export async function performStudy(userId: string) {
+  await assertFeatureEnabled("education", "Education is disabled by admin settings");
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  let user = context.user;
+  const notices = [...context.notices];
+
+  if (state.studyTime < 0.3) {
+    throw new Error("РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЌРЅРµСЂРіРёРё РґР»СЏ СѓС‡РµР±С‹ (РЅСѓР¶РЅРѕ РјРёРЅРёРјСѓРј 30%)");
+  }
+
+  const skillBoosts: SkillName[] = ["coding", "testing", "analytics"];
+  const boostedSkill = skillBoosts[Math.floor(Math.random() * skillBoosts.length)];
+  const settings = await getGameSettings();
+  const bonus = settings.systems.cityBonusesEnabled ? resolveCityBonus(user) : { failureRateReduction: 0, salaryBoost: 0, skillGrowthBoost: 0, xpBoost: 0 };
+
+  let skillIncrease = 1;
+  if (bonus.skillGrowthBoost > 0 && Math.random() * 100 < bonus.skillGrowthBoost) {
+    skillIncrease = 2;
+  }
+  if (user.personality === "lucky" && Math.random() < 0.2) {
+    skillIncrease += 1;
+  }
+
+  state.skills[boostedSkill] = Number((state.skills[boostedSkill] + skillIncrease).toFixed(2));
+  state.studyTime = Math.max(0, state.studyTime - 0.3);
+
+  user = await storage.updateUser(user.id, {
+    reputation: (user.reputation || 0) + 3,
+  });
+
+  notices.push(`рџ“љ РќР°РІС‹Рє ${boostedSkill} СѓРІРµР»РёС‡РµРЅ РЅР° +${skillIncrease}`);
+
+  return { user, state, notices, boostedSkill, skillIncrease };
+}
+
+export async function completeJob(userId: string, jobRef: string) {
+  await assertFeatureEnabled("jobs", "Jobs are disabled by admin settings");
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  let user = context.user;
+  const notices = [...context.notices];
+
+  const job = findJobByRef(user.city, jobRef);
+  if (!job) throw new Error("Вакансия не найдена");
+  const energyCost = getJobWorkEnergyCost(job);
+  if (state.workTime < energyCost) {
+    throw new Error(`Недостаточно энергии для работы. Нужно ${Math.round(energyCost * 100)}%, доступно ${Math.round(state.workTime * 100)}%.`);
+  }
+
+  let finalMoney = job.reward;
+  let finalExp = job.expReward;
+
+  if (user.personality === "workaholic") finalExp = Math.floor(finalExp * 1.2);
+  if (user.personality === "businessman") finalMoney = Math.floor(finalMoney * 1.15);
+  const settings = await getGameSettings();
+  finalMoney = Math.max(1, Math.floor(finalMoney * Math.max(0.1, settings.multipliers.workIncomeMultiplier)));
+  finalExp = Math.max(1, Math.floor(finalExp * Math.max(0.1, settings.multipliers.workXpMultiplier)));
+
+  const expState = applyExperience(user, finalExp);
+  user = await storage.updateUser(user.id, {
+    balance: user.balance + finalMoney,
+    reputation: (user.reputation || 0) + 2,
+    level: expState.level,
+    experience: expState.experience,
+  });
+
+  const baseChance = job.expReward >= 45 ? 50 : job.expReward >= 30 ? 38 : 28;
+  const effectiveChance = Math.min(85, baseChance + state.jobDropPity * 15);
+  const droppedPart = rollRandomPartDrop(effectiveChance);
+
+  if (droppedPart) {
+    const partItem = createPartInventoryItem(droppedPart);
+    if (partItem) addInventoryItem(state, partItem);
+    state.jobDropPity = 0;
+    notices.push(`рџЋЃ Р—Р° РІР°РєР°РЅСЃРёСЋ РїРѕР»СѓС‡РµРЅР° РґРµС‚Р°Р»СЊ: ${droppedPart.name} (${droppedPart.rarity})`);
+  } else {
+    state.jobDropPity = Math.min(state.jobDropPity + 1, 4);
+  }
+
+  state.workTime = Math.max(0, Number((state.workTime - energyCost).toFixed(4)));
+  return { user, state, notices, job, finalMoney, finalExp, effectiveChance, droppedPart, energyCost };
+}
+
+export async function buyShopItem(userId: string, itemRef: string) {
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  let user = context.user;
+  const notices = [...context.notices];
+
+  const item = findShopItemByRef(itemRef);
+  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+  if (user.balance < item.price) throw new Error("РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ");
+
+  user = await storage.updateUser(user.id, {
+    balance: user.balance - item.price,
+  });
+
+  addInventoryItem(state, {
+    id: item.id,
+    name: item.name,
+    stats: { ...item.stats },
+    rarity: item.rarity,
+    quantity: 1,
+    type: item.type,
+  });
+
+  notices.push(`рџ›Ќ РљСѓРїР»РµРЅРѕ: ${item.name}`);
+  return { user, state, notices, item };
+}
+
+export async function useInventoryItem(userId: string, itemRef: string) {
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  const notices = [...context.notices];
+  const item = findInventoryItemByRef(state, itemRef);
+  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+
+  if (item.type === "consumable") {
+    adjustSkillByItemStats(state, item, 1);
+    removeOneInventoryItem(state, item);
+    notices.push(`вњ… РСЃРїРѕР»СЊР·РѕРІР°РЅ РїСЂРµРґРјРµС‚: ${item.name}`);
+    return { user: context.user, state, notices, item };
+  }
+
+  throw new Error("Р­С‚РѕС‚ РїСЂРµРґРјРµС‚ РЅРµР»СЊР·СЏ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РєРѕРјР°РЅРґРѕР№ /use");
+}
+
+export async function toggleGearItem(userId: string, itemRef: string) {
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  const notices = [...context.notices];
+  const item = findInventoryItemByRef(state, itemRef);
+  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+  if (item.type !== "gear") throw new Error("РљРѕРјР°РЅРґР° /equip СЂР°Р±РѕС‚Р°РµС‚ С‚РѕР»СЊРєРѕ РґР»СЏ СЌРєРёРїРёСЂРѕРІРєРё");
+
+  const willEquip = !item.isEquipped;
+  adjustSkillByItemStats(state, item, willEquip ? 1 : -1);
+  item.isEquipped = willEquip;
+
+  notices.push(willEquip ? `рџџў Р­РєРёРїРёСЂРѕРІР°РЅРѕ: ${item.name}` : `вљЄ РЎРЅСЏС‚Рѕ: ${item.name}`);
+  return { user: context.user, state, notices, item, isEquipped: willEquip };
+}
+
+export async function serviceGadgetItem(userId: string, itemRef: string) {
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  let user = context.user;
+  const notices = [...context.notices];
+  const item = findInventoryItemByRef(state, itemRef);
+  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+  if (item.type !== "gadget") throw new Error("РћР±СЃР»СѓР¶РёРІР°РЅРёРµ РґРѕСЃС‚СѓРїРЅРѕ С‚РѕР»СЊРєРѕ РґР»СЏ РіР°РґР¶РµС‚РѕРІ");
+
+  const maxDurability = Math.max(1, Math.round(item.maxDurability ?? 100));
+  const currentDurability = Math.max(0, Math.round(item.durability ?? maxDurability));
+  const missingDurability = Math.max(0, maxDurability - currentDurability);
+  if (missingDurability <= 0) throw new Error("Р“Р°РґР¶РµС‚ СѓР¶Рµ РІ РёРґРµР°Р»СЊРЅРѕРј СЃРѕСЃС‚РѕСЏРЅРёРё");
+
+  const serviceCost = Math.max(20, missingDurability * 5);
+  if (user.balance < serviceCost) throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ. РќСѓР¶РЅРѕ: ${getCurrencySymbol(user.city)}${serviceCost}`);
+
+  user = await storage.updateUser(user.id, {
+    balance: user.balance - serviceCost,
+  });
+
+  item.durability = maxDurability;
+  notices.push(`рџ”§ Р“Р°РґР¶РµС‚ РѕР±СЃР»СѓР¶РµРЅ: ${item.name} (-${getCurrencySymbol(user.city)}${serviceCost})`);
+  return { user, state, notices, item, serviceCost };
+}
+
+export function estimateInventorySellPrice(item: GameInventoryItem) {
+  const rarityKey = (String(item.rarity || "Common").trim() || "Common") as RarityName;
+  const rarityMultiplier = RARITY_LEVELS[rarityKey]?.multiplier ?? 1;
+  const statScore = Object.values(item.stats || {}).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+
+  if (item.type === "part") {
+    const catalogPrice = getPartPrice(item.id);
+    const fallbackBase = Math.max(80, Math.round(140 + statScore * 120));
+    const basePrice = catalogPrice > 0 ? catalogPrice : fallbackBase;
+    const qualityRate = Math.min(0.25, statScore * 0.04);
+    return Math.max(1, Math.round(basePrice * (0.35 + qualityRate)));
+  }
+
+  if (item.type === "gadget") {
+    const durabilityMax = Math.max(1, Number(item.maxDurability ?? 100));
+    const durabilityNow = Math.max(0, Number(item.durability ?? durabilityMax));
+    const durabilityRatio = Math.min(1, durabilityNow / durabilityMax);
+    const gadgetBase = Math.max(250, Math.round(260 + statScore * 180));
+    const conditionRate = 0.4 + durabilityRatio * 0.3;
+    return Math.max(1, Math.round(gadgetBase * rarityMultiplier * conditionRate));
+  }
+
+  return 0;
+}
+
+export async function sellInventoryItem(userId: string, itemRef: string) {
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  let user = context.user;
+  const notices = [...context.notices];
+  const item = findInventoryItemByRef(state, itemRef);
+  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+  if (item.type !== "part" && item.type !== "gadget") {
+    throw new Error("РџСЂРѕРґР°РІР°С‚СЊ РјРѕР¶РЅРѕ С‚РѕР»СЊРєРѕ Р·Р°РїС‡Р°СЃС‚Рё Рё РіР°РґР¶РµС‚С‹");
+  }
+  const salePrice = estimateInventorySellPrice(item);
+  removeOneInventoryItem(state, item);
+
+  user = await storage.updateUser(user.id, {
+    balance: user.balance + salePrice,
+  });
+
+  notices.push(`рџ’ё РџСЂРѕРґР°РЅРѕ: ${item.name} (+${getCurrencySymbol(user.city)}${salePrice})`);
+  return { user, state, notices, item, salePrice };
+}
+
+export async function openBankProduct(
+  userId: string,
+  type: BankProductType,
+  programRef: string,
+  amount: number,
+  days: number,
+) {
+  await assertFeatureEnabled("bank", "Bank is disabled by admin settings");
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  let user = context.user;
+  const notices = [...context.notices];
+
+  if (state.activeBankProduct) {
+    throw new Error("РЎРЅР°С‡Р°Р»Р° Р·Р°РєСЂРѕР№ С‚РµРєСѓС‰РёР№ РєСЂРµРґРёС‚/РІРєР»Р°Рґ");
+  }
+
+  const program = findBankProgramByRef(type, programRef);
+  if (!program) throw new Error("Р‘Р°РЅРєРѕРІСЃРєР°СЏ РїСЂРѕРіСЂР°РјРјР° РЅРµ РЅР°Р№РґРµРЅР°");
+  if (user.level < program.minLevel) throw new Error(`РўСЂРµР±СѓРµС‚СЃСЏ СѓСЂРѕРІРµРЅСЊ ${program.minLevel}+`);
+  if (amount < program.minAmount || amount > program.maxAmount) {
+    throw new Error(`РЎСѓРјРјР° РґРѕР»Р¶РЅР° Р±С‹С‚СЊ РѕС‚ ${program.minAmount} РґРѕ ${program.maxAmount}`);
+  }
+  if (days < 7 || days > 90) throw new Error("РЎСЂРѕРє РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РѕС‚ 7 РґРѕ 90 РґРЅРµР№");
+
+  const totalReturn = Math.round(amount * (1 + (program.interest / 100) * (days / 365)));
+
+  if (type === "credit") {
+    user = await storage.updateUser(user.id, { balance: user.balance + amount });
+    state.activeBankProduct = {
+      type: "credit",
+      amount,
+      daysLeft: days,
+      totalDays: days,
+      totalReturn,
+      name: program.name,
+    };
+    notices.push(
+      `вњ… РљСЂРµРґРёС‚ РѕРґРѕР±СЂРµРЅ: +${getCurrencySymbol(user.city)}${amount}. Р§РµСЂРµР· ${days} РґРЅРµР№ Рє РІРѕР·РІСЂР°С‚Сѓ ${getCurrencySymbol(user.city)}${totalReturn}`,
+    );
+    return { user, state, notices, program, totalReturn };
+  }
+
+  if (user.balance < amount) throw new Error("РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ РґР»СЏ РІРєР»Р°РґР°");
+  user = await storage.updateUser(user.id, { balance: user.balance - amount });
+  state.activeBankProduct = {
+    type: "deposit",
+    amount,
+    daysLeft: days,
+    totalDays: days,
+    totalReturn,
+    name: program.name,
+  };
+  notices.push(
+    `вњ… Р’РєР»Р°Рґ РѕС‚РєСЂС‹С‚: -${getCurrencySymbol(user.city)}${amount}. Р§РµСЂРµР· ${days} РґРЅРµР№ РїРѕР»СѓС‡РёС‚Рµ ${getCurrencySymbol(user.city)}${totalReturn}`,
+  );
+  return { user, state, notices, program, totalReturn };
+}
+
+export async function closeBankProduct(userId: string, action: BankEarlyAction) {
+  await assertFeatureEnabled("bank", "Bank is disabled by admin settings");
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  let user = context.user;
+  const notices = [...context.notices];
+  const active = state.activeBankProduct;
+  if (!active) throw new Error("РќРµС‚ Р°РєС‚РёРІРЅРѕРіРѕ Р±Р°РЅРєРѕРІСЃРєРѕРіРѕ РїСЂРѕРґСѓРєС‚Р°");
+
+  const daysPassed = active.totalDays - Math.ceil(active.daysLeft);
+  const daysPassedPercent = daysPassed / active.totalDays;
+  const totalInterest = active.totalReturn - active.amount;
+  const interestForPassed = Math.round(totalInterest * daysPassedPercent);
+
+  if (action === "repay" && active.type === "credit") {
+    const amountToRepay = active.amount + interestForPassed;
+    if (user.balance < amountToRepay) {
+      throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ. РќСѓР¶РЅРѕ: ${getCurrencySymbol(user.city)}${amountToRepay}`);
+    }
+    user = await storage.updateUser(user.id, { balance: user.balance - amountToRepay });
+    state.activeBankProduct = null;
+    notices.push(`вњ… РљСЂРµРґРёС‚ РїРѕРіР°С€РµРЅ РґРѕСЃСЂРѕС‡РЅРѕ: -${getCurrencySymbol(user.city)}${amountToRepay}`);
+    return { user, state, notices, amount: amountToRepay };
+  }
+
+  if (action === "withdraw" && active.type === "deposit") {
+    const amountToReceive = active.amount + interestForPassed;
+    user = await storage.updateUser(user.id, { balance: user.balance + amountToReceive });
+    state.activeBankProduct = null;
+    notices.push(`вњ… Р’РєР»Р°Рґ СЃРЅСЏС‚ РґРѕСЃСЂРѕС‡РЅРѕ: +${getCurrencySymbol(user.city)}${amountToReceive}`);
+    return { user, state, notices, amount: amountToReceive };
+  }
+
+  throw new Error("Р”Р»СЏ РєСЂРµРґРёС‚Р° РёСЃРїРѕР»СЊР·СѓР№ /repay, РґР»СЏ РІРєР»Р°РґР° вЂ” /withdraw");
+}
+
+export async function exchangeCurrencyToGram(userId: string, amountCurrency: number) {
+  await assertFeatureEnabled("gram", "GRAM exchange is disabled by admin settings");
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  const notices = [...context.notices];
+  const user = context.user;
+  const normalizedAmount = Math.floor(Number(amountCurrency));
+
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    throw new Error("РЎСѓРјРјР° РѕР±РјРµРЅР° РґРѕР»Р¶РЅР° Р±С‹С‚СЊ Р±РѕР»СЊС€Рµ 0");
+  }
+  if (user.balance < normalizedAmount) {
+    throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ. РќСѓР¶РЅРѕ: ${getCurrencySymbol(user.city)}${normalizedAmount}`);
+  }
+
+  const cityRate = getLocalToGramRate(user.city);
+  const gramReceived = Number((normalizedAmount * cityRate).toFixed(2));
+  const updatedUser = await storage.updateUser(user.id, {
+    balance: user.balance - normalizedAmount,
+  });
+  state.gramBalance = Number((state.gramBalance + gramReceived).toFixed(2));
+  notices.push(`рџ’± РћР±РјРµРЅ: -${getCurrencySymbol(updatedUser.city)}${normalizedAmount}, +${gramReceived} GRM`);
+
+  return {
+    user: updatedUser,
+    state,
+    notices,
+    amountCurrency: normalizedAmount,
+    amountGram: gramReceived,
+    direction: "to_gram" as const,
+  };
+}
+
+export async function exchangeGramToCurrency(userId: string, amountGram: number) {
+  await assertFeatureEnabled("gram", "GRAM exchange is disabled by admin settings");
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  const notices = [...context.notices];
+  const user = context.user;
+  const normalizedGram = Number(Number(amountGram).toFixed(2));
+
+  if (!Number.isFinite(normalizedGram) || normalizedGram <= 0) {
+    throw new Error("РљРѕР»РёС‡РµСЃС‚РІРѕ GRM РґРѕР»Р¶РЅРѕ Р±С‹С‚СЊ Р±РѕР»СЊС€Рµ 0");
+  }
+  if (state.gramBalance + 1e-9 < normalizedGram) {
+    throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ GRM. Р”РѕСЃС‚СѓРїРЅРѕ: ${state.gramBalance.toFixed(2)} GRM`);
+  }
+
+  const cityRate = getLocalToGramRate(user.city);
+  const currencyReceived = Math.floor(normalizedGram / cityRate);
+  state.gramBalance = Number(Math.max(0, state.gramBalance - normalizedGram).toFixed(2));
+  const updatedUser = await storage.updateUser(user.id, {
+    balance: user.balance + currencyReceived,
+  });
+  notices.push(`рџ’± РћР±РјРµРЅ: -${normalizedGram} GRM, +${getCurrencySymbol(updatedUser.city)}${currencyReceived}`);
+
+  return {
+    user: updatedUser,
+    state,
+    notices,
+    amountCurrency: currencyReceived,
+    amountGram: normalizedGram,
+    direction: "from_gram" as const,
+  };
+}
+
+export async function spendGram(userId: string, amountGram: number, reason: string = "РЎРїРёСЃР°РЅРёРµ GRAM") {
+  await assertFeatureEnabled("gram", "GRAM operations are disabled by admin settings");
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+
+  const { state } = context;
+  const notices = [...context.notices];
+  const normalizedGram = Number(Number(amountGram).toFixed(2));
+
+  if (!Number.isFinite(normalizedGram) || normalizedGram <= 0) {
+    throw new Error("РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ СЃСѓРјРјР° GRM");
+  }
+  if (state.gramBalance + 1e-9 < normalizedGram) {
+    throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ GRM. РќСѓР¶РЅРѕ: ${normalizedGram}, РґРѕСЃС‚СѓРїРЅРѕ: ${state.gramBalance.toFixed(2)}`);
+  }
+
+  state.gramBalance = Number(Math.max(0, state.gramBalance - normalizedGram).toFixed(2));
+  notices.push(`рџЄ™ ${reason}: -${normalizedGram} GRM`);
+  return { user: context.user, state, notices, amountGram: normalizedGram };
+}
+
+export async function getPlayerGameSnapshot(userId: string) {
+  const context = await loadContext(userId);
+  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  return context;
+}
+
+export function clearPlayerGameState(userId: string) {
+  playerGameStateByUserId.delete(userId);
+}
+
+

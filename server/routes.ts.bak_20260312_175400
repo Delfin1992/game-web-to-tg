@@ -1,0 +1,1700 @@
+// server/routes.ts
+import type { Express } from "express";
+import { type Server } from "http";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
+import { storage } from "./storage";
+import { insertMessageSchema, insertUserSchema } from "../shared/schema";
+import { GADGET_BLUEPRINTS, getAvailableBlueprints, RARITY_QUALITY_MULTIPLIERS, type BlueprintStatus } from "../shared/gadgets";
+import { applyGameStatePatch, getUserWithGameState, spendGram } from "./game-engine";
+import { ALL_PARTS } from "../client/src/lib/parts";
+import {
+  TELEGRAM_PENDING_PASSWORD_PREFIX,
+  buildPlayerRegistrationState,
+  buildRegistrationOptions,
+  completeRegistration,
+  resolveRegistrationCityName,
+  resolveRegistrationPersonalityId,
+  saveRegistrationProgress,
+} from "./registration";
+import {
+  TUTORIAL_DEMO_BLUEPRINT,
+  TUTORIAL_DEMO_COMPANY_NAME,
+  TUTORIAL_STEP_CONTENT,
+  getTutorialActiveStep,
+  getTutorialProgressText,
+  type TutorialEventType,
+} from "../shared/tutorial";
+import {
+  applyTutorialEvent,
+  assignTutorialDemoCompany,
+  clearTutorialDemoCompany,
+  completeTutorial,
+  getTutorialState,
+  startTutorial,
+} from "./tutorial";
+import { assertFeatureEnabled, getGameSettings, updateGameSettings } from "./game-settings";
+import type { GameSettingsPatch } from "../shared/game-settings";
+
+type CompanyBlueprintState = {
+  blueprintId: string;
+  status: BlueprintStatus;
+  progressHours: number;
+  startedAt?: number;
+  completedAt?: number;
+};
+
+type ProducedGadget = {
+  id: string;
+  blueprintId: string;
+  companyId: string;
+  name: string;
+  category: string;
+  stats: Record<string, number>;
+  quality: number;
+  minPrice: number;
+  maxPrice: number;
+  durability: number;
+  maxDurability: number;
+  producedAt: number;
+};
+
+type MarketListing = {
+  id: string;
+  gadgetId: string;
+  companyId: string;
+  companyName: string;
+  sellerUserId: string;
+  saleType: "fixed" | "auction";
+  price?: number;
+  startingPrice?: number;
+  currentBid?: number;
+  currentBidderId?: string;
+  auctionEndsAt?: number;
+  minIncrement?: number;
+  status: "active" | "sold" | "expired";
+  salePrice?: number;
+  createdAt: number;
+  sold: boolean;
+};
+
+type CityContractStatus = "open" | "in_progress" | "completed";
+type CityContractKind = "gadget_delivery" | "parts_supply" | "skill_research";
+
+type CityContract = {
+  id: string;
+  city: string;
+  title: string;
+  customer: string;
+  kind: CityContractKind;
+  category: string;
+  requiredQuantity: number;
+  minQuality: number;
+  requiredPartType?: string;
+  requiredSkill?: "coding" | "design" | "analytics" | "testing";
+  requiredSkillPoints?: number;
+  rewardMoney: number;
+  rewardOrk: number;
+  expiresAt: number;
+  status: CityContractStatus;
+  assignedCompanyId?: string;
+  completedAt?: number;
+};
+
+const companyBlueprints = new Map<string, CompanyBlueprintState>();
+const companyGadgets = new Map<string, ProducedGadget[]>();
+const marketListings: MarketListing[] = [];
+const cityContracts = new Map<string, CityContract[]>();
+const MARKET_FEE_RATE = 0.08;
+
+const PASSIVE_INCOME = {
+  tier1: { referrals: 1, percentage: 0.5, cap: 100 },
+  tier2: { referrals: 5, percentage: 1.0, cap: 300 },
+  tier3: { referrals: 10, percentage: 1.5, cap: 600 },
+  tier4: { referrals: 25, percentage: 2.0, cap: 1000 },
+  tier5: { referrals: 50, percentage: 3.0, cap: 2000 },
+} as const;
+
+const userReferralCodes = new Map<string, string>();
+const referralCodeToUserId = new Map<string, string>();
+const referredByUserId = new Map<string, string>();
+const referralChildrenByUserId = new Map<string, Set<string>>();
+const referralClaimHistory = new Map<string, Set<string>>();
+
+const telegramIdToUserId = new Map<string, string>();
+const userIdToTelegramId = new Map<string, string>();
+const deviceRegistrationTimestamps = new Map<string, number[]>();
+const ipRegistrationTimestamps = new Map<string, number[]>();
+
+function serializeSafeUser(user: any) {
+  const { password, tutorialState, ...safeUser } = user;
+  return {
+    ...safeUser,
+    ...buildPlayerRegistrationState(user),
+  };
+}
+
+export function bindTelegramIdToUser(telegramId: string, userId: string) {
+  const prevUserId = telegramIdToUserId.get(telegramId);
+  if (prevUserId && prevUserId !== userId) {
+    userIdToTelegramId.delete(prevUserId);
+  }
+  const prevTelegramId = userIdToTelegramId.get(userId);
+  if (prevTelegramId && prevTelegramId !== telegramId) {
+    telegramIdToUserId.delete(prevTelegramId);
+  }
+  telegramIdToUserId.set(telegramId, userId);
+  userIdToTelegramId.set(userId, telegramId);
+}
+
+export function getUserIdByTelegramId(telegramId: string) {
+  return telegramIdToUserId.get(telegramId);
+}
+
+export function getTelegramIdByUserId(userId: string) {
+  return userIdToTelegramId.get(userId);
+}
+
+export function unbindTelegramByUserId(userId: string) {
+  const telegramId = userIdToTelegramId.get(userId);
+  if (telegramId) {
+    telegramIdToUserId.delete(telegramId);
+  }
+  userIdToTelegramId.delete(userId);
+}
+
+export function unbindTelegramByTelegramId(telegramId: string) {
+  const userId = telegramIdToUserId.get(telegramId);
+  telegramIdToUserId.delete(telegramId);
+  if (userId) {
+    userIdToTelegramId.delete(userId);
+  }
+}
+
+function resolveAdminPassword(req: any) {
+  return String(
+    req.headers["x-admin-password"]
+    ?? req.body?.adminPassword
+    ?? req.query?.adminPassword
+    ?? "",
+  ).trim();
+}
+
+function assertAdminRequest(req: any, res: any) {
+  const expected = String(process.env.ADMIN_PASSWORD || process.env.TELEGRAM_ADMIN_PASSWORD || "admin123").trim();
+  const provided = resolveAdminPassword(req);
+  if (!provided || provided !== expected) {
+    res.status(403).json({ error: "Admin access denied" });
+    return false;
+  }
+  return true;
+}
+
+
+type TelegramAuthUser = {
+  id: number;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+  language_code?: string;
+};
+
+function parseTelegramInitData(initDataRaw: string) {
+  const params = new URLSearchParams(initDataRaw);
+  const hash = params.get("hash");
+  if (!hash) return null;
+
+  const items: string[] = [];
+  params.forEach((value, key) => {
+    if (key === "hash") return;
+    items.push(`${key}=${value}`);
+  });
+  items.sort();
+
+  return {
+    hash,
+    dataCheckString: items.join("\n"),
+    authDate: Number(params.get("auth_date") ?? 0),
+    startParam: params.get("start_param") ?? undefined,
+    userRaw: params.get("user") ?? undefined,
+  };
+}
+
+function verifyTelegramInitData(initDataRaw: string, botToken: string) {
+  const parsed = parseTelegramInitData(initDataRaw);
+  if (!parsed) return { ok: false as const, reason: "hash_missing" };
+
+  const secretKey = createHmac("sha256", "WebAppData").update(botToken).digest();
+  const expectedHash = createHmac("sha256", secretKey).update(parsed.dataCheckString).digest("hex");
+
+  const expected = Buffer.from(expectedHash, "utf8");
+  const actual = Buffer.from(parsed.hash, "utf8");
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    return { ok: false as const, reason: "hash_mismatch" };
+  }
+
+  const maxAgeSeconds = 24 * 60 * 60;
+  if (!parsed.authDate || Math.floor(Date.now() / 1000) - parsed.authDate > maxAgeSeconds) {
+    return { ok: false as const, reason: "auth_expired" };
+  }
+
+  return { ok: true as const, parsed };
+}
+
+function buildTelegramUsernameCandidates(user: TelegramAuthUser) {
+  const candidates: string[] = [];
+
+  if (user.username && user.username.trim().length > 0) {
+    const normalized = user.username.replace(/[^a-zA-Z0-9_]/g, "").toLowerCase();
+    if (normalized) candidates.push(`tg_${normalized}`.slice(0, 30));
+  }
+
+  candidates.push(`tg_${user.id}`);
+  return Array.from(new Set(candidates));
+}
+
+async function generateUniqueUsername(base: string) {
+  const normalized = base.slice(0, 28);
+  if (!(await storage.usernameExists(normalized))) return normalized;
+
+  for (let i = 0; i < 10; i++) {
+    const candidate = `${normalized.slice(0, 24)}_${randomBytes(2).toString("hex")}`;
+    if (!(await storage.usernameExists(candidate))) return candidate;
+  }
+
+  return `${normalized.slice(0, 20)}_${Date.now().toString(36)}`;
+}
+
+function cleanupOldTimestamps(items: number[], now = Date.now()) {
+  const dayAgo = now - 24 * 60 * 60 * 1000;
+  return items.filter((ts) => ts >= dayAgo);
+}
+
+function resolvePassiveTier(referralsCount: number) {
+  if (referralsCount >= PASSIVE_INCOME.tier5.referrals) return PASSIVE_INCOME.tier5;
+  if (referralsCount >= PASSIVE_INCOME.tier4.referrals) return PASSIVE_INCOME.tier4;
+  if (referralsCount >= PASSIVE_INCOME.tier3.referrals) return PASSIVE_INCOME.tier3;
+  if (referralsCount >= PASSIVE_INCOME.tier2.referrals) return PASSIVE_INCOME.tier2;
+  return PASSIVE_INCOME.tier1;
+}
+
+function generateReferralCode(username: string) {
+  const normalized = username.replace(/\s+/g, "").toUpperCase().slice(0, 6) || "PLAYER";
+  const random = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `${normalized}-${random}`;
+}
+
+const CITY_CONTRACT_TEMPLATES = [
+  { title: "Городская цифровизация", customer: "Мэрия", category: "tablets", qty: 2, quality: 1.2, reward: 2200, ork: 1, ttlHours: 48 },
+  { title: "Оснащение колл-центра", customer: "Телеком Корп", category: "smartphones", qty: 3, quality: 1.1, reward: 2600, ork: 1, ttlHours: 48 },
+  { title: "Поставка для аналитиков", customer: "Data Group", category: "laptops", qty: 2, quality: 1.4, reward: 3600, ork: 2, ttlHours: 72 },
+  { title: "Носимые устройства для фитнеса", customer: "HealthLab", category: "smartwatches", qty: 3, quality: 1.25, reward: 2400, ork: 1, ttlHours: 48 },
+  { title: "Майнинговый пилот", customer: "EnergyTech", category: "asic_miners", qty: 1, quality: 1.6, reward: 4200, ork: 2, ttlHours: 72 },
+] as const;
+
+function buildContractsForCity(city: string): CityContract[] {
+  const now = Date.now();
+  return CITY_CONTRACT_TEMPLATES.map((template) => ({
+    id: randomUUID(),
+    city,
+    title: template.title,
+    customer: template.customer,
+    category: template.category,
+    requiredQuantity: template.qty,
+    minQuality: template.quality,
+    rewardMoney: template.reward,
+    rewardOrk: template.ork,
+    expiresAt: now + template.ttlHours * 60 * 60 * 1000,
+    status: "open",
+  }));
+}
+
+function getContractsByCity(city: string): CityContract[] {
+  const existing = cityContracts.get(city) ?? [];
+  const now = Date.now();
+
+  const active = existing.filter((contract) => contract.status === "completed" || contract.expiresAt > now);
+  const hasOpenContracts = active.some((contract) => contract.status !== "completed");
+  if (!hasOpenContracts) {
+    const replenished = buildContractsForCity(city);
+    cityContracts.set(city, replenished);
+    return replenished;
+  }
+
+  cityContracts.set(city, active);
+  return active;
+}
+
+function removeProducedGadget(companyId: string, gadgetId: string): ProducedGadget | null {
+  const produced = companyGadgets.get(companyId) ?? [];
+  const index = produced.findIndex((gadget) => gadget.id === gadgetId);
+  if (index < 0) return null;
+  const [removed] = produced.splice(index, 1);
+  companyGadgets.set(companyId, produced);
+  return removed;
+}
+
+function isTutorialCompany(company: any) {
+  return Boolean(company?.isTutorial);
+}
+
+function buildTutorialBlueprintView() {
+  return {
+    id: TUTORIAL_DEMO_BLUEPRINT.id,
+    name: TUTORIAL_DEMO_BLUEPRINT.name,
+    category: TUTORIAL_DEMO_BLUEPRINT.category,
+    requirements: { coding: 0, design: 0, analytics: 0 },
+    time: TUTORIAL_DEMO_BLUEPRINT.timeSeconds / 3600,
+    description: "Tutorial blueprint",
+    baseStats: { ...TUTORIAL_DEMO_BLUEPRINT.baseStats },
+    production: {
+      costGram: TUTORIAL_DEMO_BLUEPRINT.costGram,
+      parts: {},
+    },
+    tutorialTimeSeconds: TUTORIAL_DEMO_BLUEPRINT.timeSeconds,
+  };
+}
+
+async function syncTutorialBlueprintState(company: any, state: CompanyBlueprintState | undefined) {
+  if (!state || !isTutorialCompany(company) || state.status !== "in_progress") return state;
+  const startedAt = Number(state.startedAt || Date.now());
+  const elapsedMs = Math.max(0, Date.now() - startedAt);
+  const elapsedSeconds = Math.min(TUTORIAL_DEMO_BLUEPRINT.timeSeconds, Math.floor(elapsedMs / 1000));
+  state.progressHours = elapsedSeconds;
+
+  if (elapsedMs < TUTORIAL_DEMO_BLUEPRINT.timeSeconds * 1000) {
+    return state;
+  }
+
+  state.status = "production_ready";
+  state.completedAt = Date.now();
+  const tutorialOwnerId = String(company.tutorialOwnerId || company.ownerId);
+  await applyTutorialEvent(tutorialOwnerId, "demo_blueprint_done");
+
+  return state;
+}
+
+async function settleExpiredAuctions() {
+  const now = Date.now();
+  const settings = await getGameSettings();
+  const feeRate = (settings.economy.commissionsEnabled ? MARKET_FEE_RATE : 0)
+    + (settings.economy.taxesEnabled ? 0.05 : 0);
+  for (const listing of marketListings) {
+    if (listing.saleType !== "auction" || listing.status !== "active" || !listing.auctionEndsAt) continue;
+    if (listing.auctionEndsAt > now) continue;
+
+    if (!listing.currentBid || !listing.currentBidderId) {
+      listing.status = "expired";
+      continue;
+    }
+
+    const buyer = await storage.getUser(listing.currentBidderId);
+    const company = await storage.getCompany(listing.companyId);
+    if (!buyer || !company || buyer.balance < listing.currentBid) {
+      listing.status = "expired";
+      continue;
+    }
+
+    const netIncome = Math.floor(listing.currentBid * (1 - feeRate));
+    await storage.updateUser(buyer.id, { balance: buyer.balance - listing.currentBid });
+    await storage.updateCompany(company.id, { balance: company.balance + netIncome });
+    removeProducedGadget(listing.companyId, listing.gadgetId);
+
+    listing.status = "sold";
+    listing.sold = true;
+    listing.salePrice = listing.currentBid;
+  }
+}
+
+const LEVEL_REQUIREMENTS = [
+  { level: 1, ork: 0, cost: 1000, minPlayers: 1, warehouse: 50 },
+  { level: 2, ork: 100, cost: 2000, minPlayers: 1, warehouse: 100 },
+  { level: 3, ork: 250, cost: 5000, minPlayers: 1, warehouse: 120 },
+  { level: 4, ork: 450, cost: 10000, minPlayers: 1, warehouse: 150 },
+  { level: 5, ork: 700, cost: 20000, minPlayers: 1, warehouse: 200 },
+  { level: 6, ork: 1000, cost: 35000, minPlayers: 1, warehouse: 250 },
+  { level: 7, ork: 1400, cost: 60000, minPlayers: 1, warehouse: 300 },
+  { level: 8, ork: 1900, cost: 100000, minPlayers: 1, warehouse: 350 },
+  { level: 9, ork: 2500, cost: 160000, minPlayers: 1, warehouse: 400 },
+  { level: 10, ork: 3200, cost: 250000, minPlayers: 1, warehouse: 500 },
+];
+
+export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+
+  // ✅ РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ
+  app.post("/api/register", async (req, res) => {
+    try {
+      const { referralCode, deviceFingerprint, telegramId } = req.body ?? {};
+      const ip = req.ip || req.socket.remoteAddress || "unknown";
+      const now = Date.now();
+
+      if (typeof telegramId === "string" && telegramId.trim().length > 0) {
+        if (telegramIdToUserId.has(telegramId)) {
+          return res.status(409).json({ error: "Этот Telegram аккаунт уже зарегистрирован" });
+        }
+      }
+
+      if (typeof deviceFingerprint === "string" && deviceFingerprint.trim().length > 0) {
+        const existing = cleanupOldTimestamps(deviceRegistrationTimestamps.get(deviceFingerprint) ?? [], now);
+        if (existing.length >= 1) {
+          return res.status(429).json({ error: "С этого устройства уже создан аккаунт за последние 24 часа" });
+        }
+        if ((deviceRegistrationTimestamps.get(deviceFingerprint) ?? []).length >= 2) {
+          return res.status(429).json({ error: "Превышен лимит аккаунтов для устройства" });
+        }
+      }
+
+      const ipHistory = cleanupOldTimestamps(ipRegistrationTimestamps.get(ip) ?? [], now);
+      if (ipHistory.length >= 3) {
+        return res.status(429).json({ error: "Слишком много регистраций с этого IP за сутки" });
+      }
+
+      const parsed = insertUserSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid data" });
+      }
+
+      const resolvedCity = resolveRegistrationCityName(parsed.data.city);
+      const resolvedPersonality = resolveRegistrationPersonalityId(parsed.data.personality);
+      if (!resolvedCity || !resolvedPersonality) {
+        return res.status(400).json({ error: "Invalid registration data" });
+      }
+
+      const exists = await storage.usernameExists(parsed.data.username);
+      if (exists) {
+        return res.status(409).json({ error: "Username already exists" });
+      }
+
+      const user = await storage.createUser({
+        ...parsed.data,
+        city: resolvedCity,
+        personality: resolvedPersonality,
+      });
+
+      const code = generateReferralCode(user.username);
+      userReferralCodes.set(user.id, code);
+      referralCodeToUserId.set(code, user.id);
+
+      if (typeof referralCode === "string" && referralCode.trim().length > 0) {
+        const referrerId = referralCodeToUserId.get(referralCode.trim());
+        if (referrerId && referrerId !== user.id) {
+          referredByUserId.set(user.id, referrerId);
+          const children = referralChildrenByUserId.get(referrerId) ?? new Set<string>();
+          children.add(user.id);
+          referralChildrenByUserId.set(referrerId, children);
+
+          const referrer = await storage.getUser(referrerId);
+          if (referrer) {
+            await storage.updateUser(referrer.id, { balance: referrer.balance + 200 });
+          }
+          await storage.updateUser(user.id, { balance: user.balance + 100 });
+          user.balance += 100;
+        }
+      }
+
+      if (typeof telegramId === "string" && telegramId.trim().length > 0) {
+        bindTelegramIdToUser(telegramId, user.id);
+      }
+      if (typeof deviceFingerprint === "string" && deviceFingerprint.trim().length > 0) {
+        const history = deviceRegistrationTimestamps.get(deviceFingerprint) ?? [];
+        history.push(now);
+        deviceRegistrationTimestamps.set(deviceFingerprint, history);
+      }
+      ipHistory.push(now);
+      ipRegistrationTimestamps.set(ip, ipHistory);
+
+      res.status(201).json({ ...serializeSafeUser(user), referralCode: code });
+    } catch (error) {
+      console.error("Registration error:", error);
+      res.status(500).json({ error: "Registration failed" });
+    }
+  });
+
+  // ✅ ПРОВЕРКА НИКА
+  app.get("/api/check-username/:username", async (req, res) => {
+    const exists = await storage.usernameExists(req.params.username);
+    res.json({ exists, available: !exists });
+  });
+
+  app.get("/api/registration/options", async (_req, res) => {
+    try {
+      res.json(await buildRegistrationOptions());
+    } catch (error) {
+      console.error("Failed to load registration options:", error);
+      res.status(500).json({ error: "Failed to load registration options" });
+    }
+  });
+
+  app.get("/api/game-settings", async (_req, res) => {
+    try {
+      res.json(await getGameSettings());
+    } catch (error) {
+      console.error("Failed to load game settings:", error);
+      res.status(500).json({ error: "Failed to load game settings" });
+    }
+  });
+
+  app.get("/api/admin/game-settings", async (req, res) => {
+    if (!assertAdminRequest(req, res)) return;
+    try {
+      res.json(await getGameSettings());
+    } catch (error) {
+      console.error("Failed to load admin game settings:", error);
+      res.status(500).json({ error: "Failed to load admin game settings" });
+    }
+  });
+
+  app.patch("/api/admin/game-settings", async (req, res) => {
+    if (!assertAdminRequest(req, res)) return;
+    try {
+      const patch = (req.body ?? {}) as GameSettingsPatch;
+      res.json(await updateGameSettings(patch));
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to update game settings" });
+    }
+  });
+
+  app.post("/api/telegram/auth", async (req, res) => {
+    try {
+      const initData = typeof req.body?.initData === "string" ? req.body.initData : "";
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+      let telegramUser: TelegramAuthUser | null = null;
+      let startParam: string | undefined;
+
+      if (initData && botToken) {
+        const verified = verifyTelegramInitData(initData, botToken);
+        if (!verified.ok) {
+          return res.status(401).json({ error: "Invalid Telegram initData", code: verified.reason });
+        }
+
+        startParam = verified.parsed.startParam;
+        if (verified.parsed.userRaw) {
+          telegramUser = JSON.parse(verified.parsed.userRaw) as TelegramAuthUser;
+        }
+      } else if (req.body?.user && typeof req.body.user.id === "number") {
+        telegramUser = req.body.user as TelegramAuthUser;
+        startParam = typeof req.body?.startParam === "string" ? req.body.startParam : undefined;
+      }
+
+      if (!telegramUser || typeof telegramUser.id !== "number") {
+        return res.status(400).json({ error: "Telegram user is required" });
+      }
+
+      const telegramId = String(telegramUser.id);
+      const mappedUserId = getUserIdByTelegramId(telegramId);
+      if (mappedUserId) {
+        const mappedUser = await storage.getUser(mappedUserId);
+        if (mappedUser) {
+          return res.json({ ...serializeSafeUser(mappedUser), isNewUser: false });
+        }
+      }
+
+      const usernameCandidates = buildTelegramUsernameCandidates(telegramUser);
+      for (const candidate of usernameCandidates) {
+        const existing = await storage.getUserByUsername(candidate);
+        if (existing) {
+          bindTelegramIdToUser(telegramId, existing.id);
+          return res.json({ ...serializeSafeUser(existing), isNewUser: false });
+        }
+      }
+
+      const stableUsername = usernameCandidates[usernameCandidates.length - 1] ?? `tg_${telegramId}`;
+      const username = await generateUniqueUsername(stableUsername);
+      const created = await storage.createUser({
+        username,
+        password: `${TELEGRAM_PENDING_PASSWORD_PREFIX}${randomUUID()}`,
+        city: "Санкт-Петербург",
+        personality: "",
+        gender: "",
+      });
+
+      const code = generateReferralCode(created.username);
+      userReferralCodes.set(created.id, code);
+      referralCodeToUserId.set(code, created.id);
+      bindTelegramIdToUser(telegramId, created.id);
+
+      const referralCode = startParam?.startsWith("ref_") ? startParam.slice(4) : undefined;
+      if (referralCode) {
+        const referrerId = referralCodeToUserId.get(referralCode.trim());
+        if (referrerId && referrerId !== created.id) {
+          referredByUserId.set(created.id, referrerId);
+          const children = referralChildrenByUserId.get(referrerId) ?? new Set<string>();
+          children.add(created.id);
+          referralChildrenByUserId.set(referrerId, children);
+
+          const referrer = await storage.getUser(referrerId);
+          if (referrer) {
+            await storage.updateUser(referrer.id, { balance: referrer.balance + 200 });
+          }
+          await storage.updateUser(created.id, { balance: created.balance + 100 });
+          created.balance += 100;
+        }
+      }
+
+      res.status(201).json({ ...serializeSafeUser(created), isNewUser: true, referralCode: code });
+    } catch (error) {
+      console.error("Telegram auth failed:", error);
+      res.status(500).json({ error: "Telegram auth failed" });
+    }
+  });
+
+  app.get("/api/referrals/:userId", async (req, res) => {
+    const user = await storage.getUser(req.params.userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const referrals = Array.from(referralChildrenByUserId.get(user.id) ?? []);
+    const referralUsers = (await Promise.all(referrals.map((id) => storage.getUser(id)))).filter(Boolean) as any[];
+    const tier = resolvePassiveTier(referrals.length);
+    const estimatedRaw = referralUsers.reduce((sum, refUser) => sum + refUser.balance * (tier.percentage / 100), 0);
+    const estimatedTodayIncome = Math.min(tier.cap, Math.floor(estimatedRaw));
+
+    res.json({
+      referralCode: userReferralCodes.get(user.id) ?? null,
+      referredBy: referredByUserId.get(user.id) ?? null,
+      referralsCount: referrals.length,
+      tier,
+      estimatedTodayIncome,
+      passiveIncomeConfig: PASSIVE_INCOME,
+      referrals: referralUsers.map((u) => ({ id: u.id, username: u.username, level: u.level, balance: u.balance })),
+    });
+  });
+
+  app.post("/api/referrals/:userId/claim", async (req, res) => {
+    const user = await storage.getUser(req.params.userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const dayKey = new Date().toISOString().slice(0, 10);
+    const claimedDays = referralClaimHistory.get(user.id) ?? new Set<string>();
+    if (claimedDays.has(dayKey)) {
+      return res.status(400).json({ error: "Пассивный доход уже получен сегодня" });
+    }
+
+    const referrals = Array.from(referralChildrenByUserId.get(user.id) ?? []);
+    const referralUsers = (await Promise.all(referrals.map((id) => storage.getUser(id)))).filter(Boolean) as any[];
+    if (referralUsers.length === 0) {
+      return res.status(400).json({ error: "Нет рефералов для начисления" });
+    }
+
+    const tier = resolvePassiveTier(referralUsers.length);
+    const rawIncome = referralUsers.reduce((sum, refUser) => sum + refUser.balance * (tier.percentage / 100), 0);
+    const payout = Math.min(tier.cap, Math.floor(rawIncome));
+    if (payout <= 0) {
+      return res.status(400).json({ error: "Нет доступного пассивного дохода" });
+    }
+
+    const updated = await storage.updateUser(user.id, { balance: user.balance + payout });
+    claimedDays.add(dayKey);
+    referralClaimHistory.set(user.id, claimedDays);
+
+    const { password, ...safeUser } = updated;
+    res.json({ ok: true, payout, tier, user: safeUser });
+  });
+
+  // ✅ ПОЛУЧЕНИЕ ПОЛЬЗОВАТЕЛЯ
+  app.get("/api/users/:id", async (req, res) => {
+    const snapshot = await getUserWithGameState(req.params.id);
+    if (!snapshot) return res.status(404).json({ error: "User not found" });
+
+    const { user, game, notices } = snapshot;
+    const tutorial = await getTutorialState(user.id);
+    res.json({
+      ...serializeSafeUser(user),
+      skills: game.skills,
+      inventory: game.inventory,
+      workTime: Math.round(game.workTime * 100),
+      studyTime: Math.round(game.studyTime * 100),
+      gramBalance: game.gramBalance,
+      activeBankProduct: game.activeBankProduct,
+      jobDropPity: game.jobDropPity,
+      tutorial,
+      notices,
+    });
+  });
+
+  // ✅ СОХРАНЕНИЕ ПРОГРЕССА ПОЛЬЗОВАТЕЛЯ
+  app.patch("/api/users/:id", async (req, res) => {
+    try {
+      const updates = req.body ?? {};
+      const userPatch: Record<string, unknown> = {};
+      if (typeof updates.level === "number") userPatch.level = updates.level;
+      if (typeof updates.experience === "number") userPatch.experience = updates.experience;
+      if (typeof updates.balance === "number") userPatch.balance = updates.balance;
+      if (typeof updates.reputation === "number") userPatch.reputation = updates.reputation;
+      if (typeof updates.city === "string") userPatch.city = updates.city;
+      if (typeof updates.personality === "string") userPatch.personality = updates.personality;
+      if (typeof updates.gender === "string") userPatch.gender = updates.gender;
+
+      await storage.updateUser(req.params.id, userPatch as any);
+
+      applyGameStatePatch(req.params.id, {
+        skills: updates.skills,
+        inventory: updates.inventory,
+        workTime: updates.workTime,
+        studyTime: updates.studyTime,
+        gramBalance: updates.gramBalance,
+        activeBankProduct: updates.activeBankProduct,
+      });
+
+      const snapshot = await getUserWithGameState(req.params.id);
+      if (!snapshot) return res.status(404).json({ error: "User not found" });
+
+      const { user, game, notices } = snapshot;
+      const tutorial = await getTutorialState(user.id);
+      res.json({
+        ...serializeSafeUser(user),
+        skills: game.skills,
+        inventory: game.inventory,
+        workTime: Math.round(game.workTime * 100),
+        studyTime: Math.round(game.studyTime * 100),
+        gramBalance: game.gramBalance,
+        activeBankProduct: game.activeBankProduct,
+        jobDropPity: game.jobDropPity,
+        tutorial,
+        notices,
+      });
+    } catch (error) {
+      console.error("Failed to update user:", error);
+      res.status(500).json({ error: "Failed to update user" });
+    }
+  });
+
+  app.patch("/api/users/:id/registration", async (req, res) => {
+    try {
+      const user = await storage.getUser(req.params.id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      const payload = {
+        username: typeof req.body?.username === "string" ? req.body.username : undefined,
+        cityId: typeof req.body?.cityId === "string" ? req.body.cityId : undefined,
+        city: typeof req.body?.city === "string" ? req.body.city : undefined,
+        personalityId: typeof req.body?.personalityId === "string" ? req.body.personalityId : undefined,
+        personality: typeof req.body?.personality === "string" ? req.body.personality : undefined,
+        gender: typeof req.body?.gender === "string" ? req.body.gender : undefined,
+      };
+
+      const updated = req.body?.action === "complete"
+        ? await completeRegistration(user.id, payload)
+        : await saveRegistrationProgress(user.id, payload);
+
+      const snapshot = await getUserWithGameState(updated.id);
+      if (!snapshot) return res.status(404).json({ error: "User not found" });
+
+      const { user: refreshedUser, game, notices } = snapshot;
+      const tutorial = await getTutorialState(refreshedUser.id);
+      res.json({
+        ...serializeSafeUser(refreshedUser),
+        skills: game.skills,
+        inventory: game.inventory,
+        workTime: Math.round(game.workTime * 100),
+        studyTime: Math.round(game.studyTime * 100),
+        gramBalance: game.gramBalance,
+        activeBankProduct: game.activeBankProduct,
+        jobDropPity: game.jobDropPity,
+        tutorial,
+        notices,
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to update registration" });
+    }
+  });
+
+  app.get("/api/tutorial/:userId", async (req, res) => {
+    try {
+      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
+      const state = await getTutorialState(req.params.userId);
+      if (!state) return res.status(404).json({ error: "User not found" });
+
+      const activeStep = getTutorialActiveStep(state);
+      res.json({
+        state,
+        activeStep,
+        progressText: getTutorialProgressText(state),
+        stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
+      });
+    } catch (error) {
+      console.error("Failed to load tutorial state:", error);
+      res.status(500).json({ error: "Failed to load tutorial state" });
+    }
+  });
+
+  app.post("/api/tutorial/:userId/start", async (req, res) => {
+    try {
+      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
+      const result = await startTutorial(req.params.userId);
+      const activeStep = getTutorialActiveStep(result.state);
+      res.json({
+        ...result,
+        activeStep,
+        progressText: getTutorialProgressText(result.state),
+        stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to start tutorial" });
+    }
+  });
+
+  app.post("/api/tutorial/:userId/event", async (req, res) => {
+    try {
+      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
+      const eventType = String(req.body?.eventType || "") as TutorialEventType;
+      const supported: TutorialEventType[] = [
+        "first_job_done",
+        "first_education_started",
+        "demo_company_created",
+        "demo_blueprint_done",
+        "demo_gadget_produced",
+        "demo_gadget_sold",
+      ];
+      if (!supported.includes(eventType)) {
+        return res.status(400).json({ error: "Unsupported tutorial event" });
+      }
+
+      const result = await applyTutorialEvent(req.params.userId, eventType);
+      const activeStep = getTutorialActiveStep(result.state);
+      res.json({
+        ...result,
+        activeStep,
+        progressText: getTutorialProgressText(result.state),
+        stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to apply tutorial event" });
+    }
+  });
+
+  app.post("/api/tutorial/:userId/demo-company", async (req, res) => {
+    try {
+      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
+      await assertFeatureEnabled("demoCompany", "Demo companies are disabled by admin settings");
+      await assertFeatureEnabled("tutorialDemoCompany", "Tutorial demo company is disabled by admin settings");
+      const user = await storage.getUser(req.params.userId);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      const tutorialState = await getTutorialState(user.id);
+      if (!tutorialState || !tutorialState.isActive || tutorialState.isCompleted) {
+        return res.status(400).json({ error: "Tutorial is not active" });
+      }
+      if (tutorialState.currentStep < 3) {
+        return res.status(400).json({ error: "Demo company unlocks after job and education tutorial steps" });
+      }
+
+      let company = await storage.getTutorialCompanyByOwner(user.id);
+      if (!company) {
+        company = await storage.createCompany(
+          {
+            name: TUTORIAL_DEMO_COMPANY_NAME,
+            city: user.city,
+            isTutorial: true,
+            tutorialOwnerId: user.id,
+          },
+          user.id,
+          user.username,
+        );
+      }
+      const tutorialCapitalTarget = 30000;
+      if (Number(company.balance ?? 0) < tutorialCapitalTarget) {
+        company = await storage.updateCompany(company.id, { balance: tutorialCapitalTarget });
+      }
+
+      const tutorial = await assignTutorialDemoCompany(user.id, company.id);
+      const activeStep = getTutorialActiveStep(tutorial.state);
+      res.json({
+        company,
+        tutorial: {
+          ...tutorial,
+          activeStep,
+          progressText: getTutorialProgressText(tutorial.state),
+          stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
+        },
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to create tutorial company" });
+    }
+  });
+
+  app.post("/api/tutorial/:userId/demo-sell", async (req, res) => {
+    try {
+      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
+      const state = await getTutorialState(req.params.userId);
+      if (!state) return res.status(404).json({ error: "User not found" });
+      if (!state.demoCompanyId) return res.status(400).json({ error: "Demo company not found" });
+      if (!state.isActive || state.isCompleted) {
+        return res.status(400).json({ error: "Tutorial is not active" });
+      }
+      if (state.currentStep < 6) {
+        return res.status(400).json({ error: "Selling unlocks after producing tutorial gadget" });
+      }
+
+      const company = await storage.getCompany(state.demoCompanyId);
+      if (!company || !isTutorialCompany(company)) {
+        return res.status(404).json({ error: "Tutorial company not found" });
+      }
+      if (String(company.tutorialOwnerId || company.ownerId) !== req.params.userId) {
+        return res.status(403).json({ error: "Not tutorial owner" });
+      }
+
+      const produced = companyGadgets.get(company.id) ?? [];
+      const demoGadget = produced.find((item) => item.name === TUTORIAL_DEMO_BLUEPRINT.name) ?? produced[0];
+      if (!demoGadget) {
+        return res.status(400).json({ error: "No produced demo gadget to sell" });
+      }
+
+      const sold = removeProducedGadget(company.id, demoGadget.id);
+      const tutorial = await applyTutorialEvent(req.params.userId, "demo_gadget_sold");
+      const activeStep = getTutorialActiveStep(tutorial.state);
+      res.json({
+        soldGadget: sold,
+        tutorial: {
+          ...tutorial,
+          activeStep,
+          progressText: getTutorialProgressText(tutorial.state),
+          stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
+        },
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to sell tutorial gadget" });
+    }
+  });
+
+  app.post("/api/tutorial/:userId/complete", async (req, res) => {
+    try {
+      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
+      const before = await getTutorialState(req.params.userId);
+      const demoCompanyId = before?.demoCompanyId ?? null;
+
+      const result = await completeTutorial(req.params.userId);
+
+      if (demoCompanyId) {
+        const demoCompany = await storage.getCompany(demoCompanyId);
+        if (demoCompany && isTutorialCompany(demoCompany)) {
+          await storage.deleteCompany(demoCompany.id);
+        }
+        companyBlueprints.delete(demoCompanyId);
+        companyGadgets.delete(demoCompanyId);
+      }
+      await clearTutorialDemoCompany(req.params.userId);
+
+      const activeStep = getTutorialActiveStep(result.state);
+      res.json({
+        ...result,
+        activeStep,
+        progressText: getTutorialProgressText(result.state),
+        stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to complete tutorial" });
+    }
+  });
+
+  // ✅ ГЛОБАЛЬНЫЙ РЕЙТИНГ ИГРОКОВ
+  app.get("/api/leaderboard/players", async (req, res) => {
+    try {
+      await assertFeatureEnabled("leaderboards", "Leaderboards are disabled by admin settings");
+      const sort = String(req.query.sort ?? "level");
+      const users = await storage.getUsers();
+
+      const sorted = [...users].sort((a, b) => {
+        if (sort === "reputation") return b.reputation - a.reputation;
+        if (sort === "wealth") return b.balance - a.balance;
+        return b.level - a.level;
+      });
+
+      res.json(sorted.slice(0, 50).map(({ password, ...u }) => u));
+    } catch (error) {
+      console.error("Failed to load players leaderboard:", error);
+      res.status(500).json({ error: "Failed to load players leaderboard" });
+    }
+  });
+
+  // ✅ ГЛОБАЛЬНЫЙ РЕЙТИНГ КОМПАНИЙ
+  app.get("/api/leaderboard/companies", async (req, res) => {
+    try {
+      await assertFeatureEnabled("leaderboards", "Leaderboards are disabled by admin settings");
+      const sort = String(req.query.sort ?? "level");
+      const companies = (await storage.getAllCompanies()).filter((company) => !isTutorialCompany(company));
+
+      const sorted = [...companies].sort((a, b) => {
+        if (sort === "wealth") return b.balance - a.balance;
+        if (sort === "blueprints") return b.ork - a.ork;
+        return b.level - a.level;
+      });
+
+      res.json(
+        sorted.slice(0, 50).map((c) => ({
+          ...c,
+          developedBlueprints: c.ork,
+        }))
+      );
+    } catch (error) {
+      console.error("Failed to load companies leaderboard:", error);
+      res.status(500).json({ error: "Failed to load companies leaderboard" });
+    }
+  });
+
+  // ✅ СОЗДАНИЕ КОМПАНИИ
+  app.post("/api/company", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const { name, ownerId, username, city } = req.body;
+      console.log("🏢 Creating company:", { name, ownerId, username, city });
+
+      const company = await storage.createCompany({ name, city }, ownerId, username);
+      console.log("✅ Company created:", company.id);
+      res.json(company);
+    } catch (error) {
+      console.error("Create company error:", error);
+      res.status(500).json({ error: "Failed to create company" });
+    }
+  });
+
+  // ✅ ПОЛУЧЕНИЕ ВСЕХ КОМПАНИЙ
+  app.get("/api/companies", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const companies = (await storage.getAllCompanies()).filter((company) => !isTutorialCompany(company));
+      res.json(companies);
+    } catch (error) {
+      console.error("Get all companies error:", error);
+      res.status(500).json({ error: "Failed to get companies" });
+    }
+  });
+
+  // ✅ ПОЛУЧЕНИЕ КОМПАНИЙ ПО ГОРОДУ
+  app.get("/api/companies/city/:city", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const companies = (await storage.getCompaniesByCity(req.params.city)).filter((company) => !isTutorialCompany(company));
+      res.json(companies);
+    } catch (error) {
+      console.error("Get companies error:", error);
+      res.status(500).json({ error: "Failed to get companies" });
+    }
+  });
+
+  // ✅ ПОЛУЧЕНИЕ КОМПАНИИ ПО ID
+  app.get("/api/companies/:id", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      res.json(company);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get company" });
+    }
+  });
+
+  app.post("/api/companies/:id/join", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const { userId, username } = req.body;
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      if (isTutorialCompany(company)) {
+        return res.status(400).json({ error: "Tutorial company is private and cannot accept join requests" });
+      }
+      const request = await storage.createJoinRequest({
+        companyId: req.params.id,
+        userId,
+        username,
+      });
+      res.json(request);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to create join request" });
+    }
+  });
+
+  app.get("/api/companies/:id/requests", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      if (isTutorialCompany(company)) {
+        return res.status(400).json({ error: "Tutorial company does not have join requests" });
+      }
+      const requests = await storage.getJoinRequestsByCompany(req.params.id);
+      res.json(requests);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get join requests" });
+    }
+  });
+
+  app.post("/api/companies/requests/:id/respond", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const { status, companyId, userId, username } = req.body;
+      const company = await storage.getCompany(companyId);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      if (isTutorialCompany(company)) {
+        return res.status(400).json({ error: "Tutorial company does not support recruiting" });
+      }
+      await storage.updateJoinRequestStatus(req.params.id, status);
+
+      if (status === "accepted") {
+        await storage.addCompanyMember({
+          companyId,
+          userId,
+          username,
+          role: "member",
+        });
+      }
+
+      res.sendStatus(200);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to respond to request" });
+    }
+  });
+
+  app.post("/api/companies/:id/leave", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      if (isTutorialCompany(company)) {
+        return res.status(400).json({ error: "Tutorial company cannot be managed via regular leave flow" });
+      }
+      const { userId } = req.body;
+      await storage.removeCompanyMember(req.params.id, userId);
+      res.sendStatus(200);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to leave company" });
+    }
+  });
+
+  app.post("/api/company/:id/upgrade", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).send("Company not found");
+      if (isTutorialCompany(company)) return res.status(400).send("Tutorial company cannot be upgraded");
+
+      const nextLevel = company.level + 1;
+      const reqs = LEVEL_REQUIREMENTS.find(r => r.level === nextLevel);
+
+      if (!reqs) return res.status(400).send("Max level reached");
+
+      const members = await storage.getCompanyMembers(company.id);
+      const memberCount = members.length || 1;
+
+      if (company.ork < reqs.ork) return res.status(400).send(`Need ${reqs.ork} ORK`);
+      if (company.balance < reqs.cost) return res.status(400).send(`Need ${reqs.cost} balance`);
+      if (memberCount < 1) return res.status(400).send(`Need 1 player`);
+
+      const updated = await storage.updateCompany(company.id, {
+        level: nextLevel,
+        balance: company.balance - reqs.cost,
+        warehouseCapacity: reqs.warehouse,
+      });
+
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to upgrade company" });
+    }
+  });
+
+  app.post("/api/company/:id/expand-warehouse", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).send("Company not found");
+      if (isTutorialCompany(company)) return res.status(400).send("Tutorial company cannot expand warehouse");
+
+      const capacity = Number(company.warehouseCapacity) || 50;
+      if (company.level === 1 && capacity < 100) {
+        const cost = 1000;
+        if (company.balance < cost) return res.status(400).send("Not enough balance");
+
+        const updated = await storage.updateCompany(company.id, {
+          balance: company.balance - cost,
+          warehouseCapacity: 100
+        });
+        return res.json(updated);
+      }
+
+      res.status(400).send("Expansion not available");
+    } catch (error) {
+      res.status(500).json({ error: "Failed to expand warehouse" });
+    }
+  });
+
+  app.get("/api/companies/:id/blueprints", async (req, res) => {
+    try {
+      await assertFeatureEnabled("blueprints", "Blueprints are disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Blueprints are disabled by admin settings" });
+    }
+    const company = await storage.getCompany(req.params.id);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+
+    const current = await syncTutorialBlueprintState(company, companyBlueprints.get(company.id));
+    res.json({
+      available: isTutorialCompany(company) ? [buildTutorialBlueprintView()] : getAvailableBlueprints(company.level),
+      active: current ?? null,
+      produced: companyGadgets.get(company.id) ?? [],
+    });
+  });
+
+  app.post("/api/companies/:id/blueprints/start", async (req, res) => {
+    try {
+      await assertFeatureEnabled("blueprints", "Blueprints are disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Blueprints are disabled by admin settings" });
+    }
+    const { userId, blueprintId } = req.body ?? {};
+    const company = await storage.getCompany(req.params.id);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+    if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can start blueprint" });
+
+    const isTutorial = isTutorialCompany(company);
+    if (isTutorial) {
+      try {
+        await assertFeatureEnabled("tutorialFreeBlueprint", "Tutorial free blueprint is disabled by admin settings");
+      } catch (error: any) {
+        return res.status(403).json({
+          error: error?.message || "Tutorial free blueprint is disabled by admin settings",
+          // TODO: Add paid tutorial blueprint flow when free blueprint is disabled.
+        });
+      }
+    }
+    if (isTutorial) {
+      const tutorialState = await getTutorialState(String(company.tutorialOwnerId || company.ownerId));
+      if (!tutorialState || !tutorialState.isActive || tutorialState.isCompleted || tutorialState.currentStep < 4) {
+        return res.status(400).json({ error: "Tutorial blueprint is locked for current tutorial step" });
+      }
+    }
+    const normalizedBlueprintId = isTutorial
+      ? (String(blueprintId || TUTORIAL_DEMO_BLUEPRINT.id))
+      : String(blueprintId || "");
+    const blueprint = isTutorial
+      ? (normalizedBlueprintId === TUTORIAL_DEMO_BLUEPRINT.id ? buildTutorialBlueprintView() : null)
+      : GADGET_BLUEPRINTS.find((b) => b.id === normalizedBlueprintId);
+    if (!blueprint) return res.status(404).json({ error: "Blueprint not found" });
+
+    if (!isTutorial) {
+      const settings = await getGameSettings();
+      const blueprintCost = Math.max(
+        1,
+        Math.round((Number(blueprint.production?.costGram || 1) * 25) * Math.max(0.1, settings.multipliers.blueprintCostMultiplier)),
+      );
+      if (company.balance < blueprintCost) {
+        return res.status(400).json({ error: `Not enough company balance for blueprint start (${blueprintCost})` });
+      }
+      await storage.updateCompany(company.id, { balance: company.balance - blueprintCost });
+      // TODO: Persist blueprint development ledger/history for auditing economy changes.
+    }
+
+    companyBlueprints.set(company.id, {
+      blueprintId: normalizedBlueprintId,
+      status: "in_progress",
+      progressHours: 0,
+      startedAt: Date.now(),
+    });
+
+    res.json(companyBlueprints.get(company.id));
+  });
+
+  app.post("/api/companies/:id/blueprints/progress", async (req, res) => {
+    try {
+      await assertFeatureEnabled("blueprints", "Blueprints are disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Blueprints are disabled by admin settings" });
+    }
+    const { userId, hours = 24 } = req.body ?? {};
+    const company = await storage.getCompany(req.params.id);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+    if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can progress blueprint" });
+
+    const state = companyBlueprints.get(company.id);
+    if (!state) return res.status(400).json({ error: "No active blueprint" });
+
+    if (isTutorialCompany(company)) {
+      const synced = await syncTutorialBlueprintState(company, state);
+      return res.json(synced);
+    }
+
+    const blueprint = GADGET_BLUEPRINTS.find((b) => b.id === state.blueprintId);
+    if (!blueprint) return res.status(404).json({ error: "Blueprint not found" });
+
+    const settings = await getGameSettings();
+    const speedMultiplier = Math.max(0.1, settings.multipliers.productionSpeedMultiplier);
+    state.progressHours += Number(hours) * speedMultiplier;
+    if (state.progressHours >= blueprint.time) {
+      state.status = "production_ready";
+      state.completedAt = Date.now();
+      const updated = await storage.updateCompany(company.id, { ork: company.ork + 1 });
+      return res.json({ ...state, company: updated });
+    }
+
+    return res.json(state);
+  });
+
+  app.post("/api/companies/:id/produce", async (req, res) => {
+    try {
+      await assertFeatureEnabled("production", "Production is disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Production is disabled by admin settings" });
+    }
+    const { userId, parts = [] } = req.body ?? {};
+    const company = await storage.getCompany(req.params.id);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+    if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can produce gadgets" });
+
+    const state = await syncTutorialBlueprintState(company, companyBlueprints.get(company.id));
+    if (!state || state.status !== "production_ready") {
+      return res.status(400).json({ error: "Blueprint not ready" });
+    }
+
+    const isTutorial = isTutorialCompany(company);
+    const tutorialOwnerId = String(company.tutorialOwnerId || company.ownerId);
+    if (isTutorial) {
+      const tutorialState = await getTutorialState(tutorialOwnerId);
+      if (!tutorialState || !tutorialState.isActive || tutorialState.isCompleted || tutorialState.currentStep < 5) {
+        return res.status(400).json({ error: "Tutorial production is locked for current tutorial step" });
+      }
+    }
+    const blueprint = isTutorial
+      ? buildTutorialBlueprintView()
+      : GADGET_BLUEPRINTS.find((b) => b.id === state.blueprintId);
+    if (!blueprint) return res.status(404).json({ error: "Blueprint not found" });
+
+    if (!isTutorial) {
+      const reqParts = blueprint.production.parts;
+      for (const [partType, quantity] of Object.entries(reqParts)) {
+        const found = parts.filter((p: any) => p.type === partType).length;
+        if (found < quantity) return res.status(400).json({ error: `Недостаточно деталей типа ${partType}` });
+      }
+    }
+
+    if (isTutorial) {
+      try {
+        await assertFeatureEnabled(
+          "tutorialProductionWithoutParts",
+          "Tutorial production without parts is disabled by admin settings",
+        );
+      } catch (error: any) {
+        return res.status(403).json({ error: error?.message || "Tutorial production settings block this action" });
+      }
+    }
+
+    let gramPayment = null as Awaited<ReturnType<typeof spendGram>> | null;
+    if (!isTutorial) {
+      try {
+        gramPayment = await spendGram(userId, blueprint.production.costGram, `Производство ${blueprint.name}`);
+      } catch (error: any) {
+        return res.status(400).json({ error: error?.message || "Недостаточно GRAM для производства" });
+      }
+    }
+
+    const quality = isTutorial
+      ? 1
+      : parts.length
+      ? parts.reduce((sum: number, p: any) => sum + (RARITY_QUALITY_MULTIPLIERS[p.rarity as keyof typeof RARITY_QUALITY_MULTIPLIERS] ?? 1), 0) / parts.length
+      : 1;
+
+    const stats = Object.fromEntries(
+      Object.entries(blueprint.baseStats).map(([k, v]) => [k, Number((v * quality).toFixed(2))]),
+    );
+
+    const basePrice = isTutorial ? TUTORIAL_DEMO_BLUEPRINT.minPrice : blueprint.production.costGram * 10;
+    const settings = await getGameSettings();
+    const sellPriceMultiplier = Math.max(0.1, settings.multipliers.gadgetSellPriceMultiplier);
+    const gadget: ProducedGadget = {
+      id: randomUUID(),
+      blueprintId: blueprint.id,
+      companyId: company.id,
+      name: blueprint.name,
+      category: blueprint.category,
+      stats,
+      quality: Number(quality.toFixed(2)),
+      minPrice: isTutorial ? TUTORIAL_DEMO_BLUEPRINT.minPrice : Math.round(basePrice * quality * 0.9 * sellPriceMultiplier),
+      maxPrice: isTutorial ? TUTORIAL_DEMO_BLUEPRINT.maxPrice : Math.round(basePrice * quality * 1.4 * sellPriceMultiplier),
+      durability: 100,
+      maxDurability: 100,
+      producedAt: Date.now(),
+    };
+
+    const produced = companyGadgets.get(company.id) ?? [];
+    produced.push(gadget);
+    companyGadgets.set(company.id, produced);
+    if (isTutorial) {
+      await applyTutorialEvent(tutorialOwnerId, "demo_gadget_produced");
+    }
+
+    res.json({
+      ...gadget,
+      gramSpent: isTutorial ? 0 : blueprint.production.costGram,
+      gramBalance: gramPayment?.state.gramBalance ?? null,
+    });
+  });
+
+  app.post("/api/companies/:id/market/list", async (req, res) => {
+    try {
+      await assertFeatureEnabled("market", "Market is disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Market is disabled by admin settings" });
+    }
+    const { userId, gadgetId, price, mode = "fixed", durationHours = 2 } = req.body ?? {};
+    const company = await storage.getCompany(req.params.id);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+    if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can create listings" });
+    if (isTutorialCompany(company)) {
+      return res.status(400).json({ error: "Tutorial company cannot list gadgets on market" });
+    }
+
+    const produced = companyGadgets.get(company.id) ?? [];
+    const gadget = produced.find((g) => g.id === gadgetId);
+    if (!gadget) return res.status(404).json({ error: "Gadget not found" });
+    // TODO: Apply dynamic gadget price bands when economy.dynamicGadgetPricesEnabled is wired to market analytics.
+    if (mode !== "fixed" && mode !== "auction") {
+      return res.status(400).json({ error: "mode должен быть fixed или auction" });
+    }
+
+    if (mode === "auction" && gadget.quality < 2) {
+      return res.status(400).json({ error: "Аукцион доступен только для редких гаджетов (quality >= 2.0)" });
+    }
+
+    if (price < gadget.minPrice || price > gadget.maxPrice) {
+      return res.status(400).json({ error: `Цена/стартовая цена должна быть в диапазоне ${gadget.minPrice}-${gadget.maxPrice}` });
+    }
+
+    const normalizedDuration = Math.max(2, Math.min(12, Number(durationHours) || 2));
+
+    const listing: MarketListing = {
+      id: randomUUID(),
+      gadgetId,
+      companyId: company.id,
+      companyName: company.name,
+      sellerUserId: userId,
+      saleType: mode,
+      price: mode === "fixed" ? price : undefined,
+      startingPrice: mode === "auction" ? price : undefined,
+      currentBid: mode === "auction" ? price : undefined,
+      currentBidderId: undefined,
+      auctionEndsAt: mode === "auction" ? Date.now() + normalizedDuration * 60 * 60 * 1000 : undefined,
+      minIncrement: mode === "auction" ? Math.max(10, Math.floor(price * 0.05)) : undefined,
+      status: "active",
+      createdAt: Date.now(),
+      sold: false,
+    };
+
+    marketListings.unshift(listing);
+    res.json(listing);
+  });
+
+  app.get("/api/market", async (_req, res) => {
+    try {
+      await assertFeatureEnabled("market", "Market is disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Market is disabled by admin settings" });
+    }
+    await settleExpiredAuctions();
+    const enriched = marketListings
+      .filter((l) => l.status === "active")
+      .map((listing) => {
+        const gadget = Array.from(companyGadgets.values()).flat().find((g) => g.id === listing.gadgetId);
+        return { ...listing, gadget };
+      });
+
+    res.json(enriched);
+  });
+
+  app.post("/api/market/buy", async (req, res) => {
+    try {
+      await assertFeatureEnabled("market", "Market is disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Market is disabled by admin settings" });
+    }
+    await settleExpiredAuctions();
+    const { listingId, buyerId } = req.body ?? {};
+    const listing = marketListings.find((l) => l.id === listingId && l.status === "active");
+    if (!listing) return res.status(404).json({ error: "Listing not found" });
+    if (listing.saleType !== "fixed" || !listing.price) {
+      return res.status(400).json({ error: "Этот лот продается через аукцион" });
+    }
+
+    const buyer = await storage.getUser(buyerId);
+    if (!buyer) return res.status(404).json({ error: "Buyer not found" });
+    if (buyer.balance < listing.price) return res.status(400).json({ error: "Недостаточно средств" });
+
+    const company = await storage.getCompany(listing.companyId);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+
+    const settings = await getGameSettings();
+    const feeRate = (settings.economy.commissionsEnabled ? MARKET_FEE_RATE : 0)
+      + (settings.economy.taxesEnabled ? 0.05 : 0);
+    const netIncome = Math.floor(listing.price * (1 - feeRate));
+    const fee = listing.price - netIncome;
+    await storage.updateUser(buyer.id, { balance: buyer.balance - listing.price });
+    await storage.updateCompany(company.id, { balance: company.balance + netIncome });
+    const purchasedGadget = removeProducedGadget(listing.companyId, listing.gadgetId);
+    listing.status = "sold";
+    listing.sold = true;
+    listing.salePrice = listing.price;
+
+    res.json({ ok: true, fee, netIncome, purchasedGadget });
+  });
+
+  app.post("/api/market/bid", async (req, res) => {
+    try {
+      await assertFeatureEnabled("market", "Market is disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Market is disabled by admin settings" });
+    }
+    await settleExpiredAuctions();
+    const { listingId, bidderId, amount } = req.body ?? {};
+    const listing = marketListings.find((l) => l.id === listingId && l.status === "active");
+    if (!listing) return res.status(404).json({ error: "Listing not found" });
+    if (listing.saleType !== "auction") return res.status(400).json({ error: "Ставки доступны только для аукциона" });
+    if (!listing.auctionEndsAt || listing.auctionEndsAt <= Date.now()) return res.status(400).json({ error: "Аукцион завершен" });
+
+    const bidder = await storage.getUser(bidderId);
+    if (!bidder) return res.status(404).json({ error: "Bidder not found" });
+
+    const minNext = (listing.currentBid ?? listing.startingPrice ?? 0) + (listing.minIncrement ?? 10);
+    if (Number(amount) < minNext) {
+      return res.status(400).json({ error: `Минимальная ставка: ${minNext}` });
+    }
+
+    if (bidder.balance < Number(amount)) {
+      return res.status(400).json({ error: "Недостаточно средств для ставки" });
+    }
+
+    listing.currentBid = Number(amount);
+    listing.currentBidderId = bidderId;
+
+    res.json({ ok: true, listing });
+  });
+
+  app.get("/api/city-contracts/:city", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Companies are disabled by admin settings" });
+    }
+    const contracts = getContractsByCity(req.params.city);
+    res.json(contracts);
+  });
+
+  app.post("/api/city-contracts/:contractId/accept", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Companies are disabled by admin settings" });
+    }
+    const { userId, companyId } = req.body ?? {};
+    if (!userId || !companyId) return res.status(400).json({ error: "userId и companyId обязательны" });
+
+    const company = await storage.getCompany(companyId);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+    if (isTutorialCompany(company)) {
+      return res.status(400).json({ error: "Tutorial company cannot accept city contracts" });
+    }
+
+    const membership = await storage.getMemberByUserId(companyId, userId);
+    if (!membership) return res.status(403).json({ error: "Только участник компании может принять контракт" });
+
+    const contracts = getContractsByCity(company.city);
+    const contract = contracts.find((item) => item.id === req.params.contractId);
+    if (!contract) return res.status(404).json({ error: "Контракт не найден" });
+    if (contract.status === "completed") return res.status(400).json({ error: "Контракт уже завершен" });
+    if (contract.assignedCompanyId && contract.assignedCompanyId !== companyId) {
+      return res.status(400).json({ error: "Контракт уже принят другой компанией" });
+    }
+
+    contract.status = "in_progress";
+    contract.assignedCompanyId = companyId;
+    res.json(contract);
+  });
+
+  app.post("/api/city-contracts/:contractId/deliver", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Companies are disabled by admin settings" });
+    }
+    const { userId, companyId } = req.body ?? {};
+    if (!userId || !companyId) return res.status(400).json({ error: "userId и companyId обязательны" });
+
+    const company = await storage.getCompany(companyId);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+    if (isTutorialCompany(company)) {
+      return res.status(400).json({ error: "Tutorial company cannot deliver city contracts" });
+    }
+
+    const membership = await storage.getMemberByUserId(companyId, userId);
+    if (!membership) return res.status(403).json({ error: "Только участник компании может сдавать контракт" });
+
+    const contracts = getContractsByCity(company.city);
+    const contract = contracts.find((item) => item.id === req.params.contractId);
+    if (!contract) return res.status(404).json({ error: "Контракт не найден" });
+    if (contract.assignedCompanyId !== companyId) return res.status(400).json({ error: "Контракт не закреплен за вашей компанией" });
+    if (contract.status === "completed") return res.status(400).json({ error: "Контракт уже завершен" });
+
+    const produced = companyGadgets.get(company.id) ?? [];
+    const listedIds = new Set(
+      marketListings.filter((listing) => listing.status === "active").map((listing) => listing.gadgetId)
+    );
+    const eligible = produced.filter(
+      (gadget) =>
+        gadget.category === contract.category &&
+        gadget.quality >= contract.minQuality &&
+        !listedIds.has(gadget.id)
+    );
+
+    if (eligible.length < contract.requiredQuantity) {
+      return res.status(400).json({
+        error: `Нужно ${contract.requiredQuantity} гаджет(ов) категории ${contract.category} с качеством от ${contract.minQuality}`,
+      });
+    }
+
+    const selectedIds = new Set(eligible.slice(0, contract.requiredQuantity).map((gadget) => gadget.id));
+    const left = produced.filter((gadget) => !selectedIds.has(gadget.id));
+    companyGadgets.set(company.id, left);
+
+    contract.status = "completed";
+    contract.completedAt = Date.now();
+
+    const updatedCompany = await storage.updateCompany(company.id, {
+      balance: company.balance + contract.rewardMoney,
+      ork: company.ork + contract.rewardOrk,
+    });
+
+    res.json({
+      contract,
+      consumedGadgets: Array.from(selectedIds),
+      company: updatedCompany,
+    });
+  });
+
+  app.get("/api/messages", async (req, res) => {
+    try {
+      await assertFeatureEnabled("chat", "Chat is disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Chat is disabled by admin settings" });
+    }
+    const messages = await storage.getMessages();
+    res.json(messages);
+  });
+
+  app.post("/api/messages", async (req, res) => {
+    try {
+      await assertFeatureEnabled("chat", "Chat is disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Chat is disabled by admin settings" });
+    }
+    const parsed = insertMessageSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json(parsed.error);
+    const message = await storage.createMessage(parsed.data);
+    res.json(message);
+  });
+
+  app.post("/api/admin/reset-db", async (req, res) => {
+    if (!assertAdminRequest(req, res)) return;
+    try {
+      await storage.resetAllData();
+      res.sendStatus(200);
+    } catch (e) {
+      res.status(500).send("Failed to reset database");
+    }
+  });
+
+  return httpServer;
+}
