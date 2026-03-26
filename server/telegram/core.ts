@@ -1,1 +1,1 @@
-export { startTelegramBot } from "../telegram";
+export { startTelegramBot } from "./bot";

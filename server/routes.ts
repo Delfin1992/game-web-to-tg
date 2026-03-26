@@ -3,6 +3,20 @@ import type { Express } from "express";
 import { type Server } from "http";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import { storage } from "./storage";
+import {
+  bindTelegramIdToUser,
+  getTelegramIdByUserId,
+  getUserIdByTelegramId,
+  unbindTelegramByTelegramId,
+  unbindTelegramByUserId,
+} from "./telegram-bindings";
+export {
+  bindTelegramIdToUser,
+  getTelegramIdByUserId,
+  getUserIdByTelegramId,
+  unbindTelegramByTelegramId,
+  unbindTelegramByUserId,
+} from "./telegram-bindings";
 import { insertMessageSchema, insertUserSchema } from "../shared/schema";
 import {
   countRegistrationSkillPoints,
@@ -18,7 +32,8 @@ import {
   getUserWithGameState,
   spendGram,
 } from "./game-engine";
-import { ALL_PARTS } from "../client/src/lib/parts";
+import { companyWarehousePartsByCompanyId } from "./telegram/state";
+import { ALL_PARTS, getPartPrice } from "../client/src/lib/parts";
 import {
   COMPANY_MINING_DEFAULT_PLAN_ID,
   COMPANY_MINING_PLANS,
@@ -151,6 +166,28 @@ type CompanyBlueprintState = {
   completedAt?: number;
 };
 
+type CompanyProductionOrder = {
+  id: string;
+  companyId: string;
+  kind: "standard" | "exclusive";
+  blueprintId: string;
+  blueprintName: string;
+  category: string;
+  quantity: number;
+  startedAt: number;
+  readyAt: number;
+  status: "in_progress" | "ready_to_claim";
+  quality: number;
+  stats: Record<string, number>;
+  minPrice: number;
+  maxPrice: number;
+  gramCost: number;
+  isExclusive?: boolean;
+  exclusiveBonusType?: "finance" | "xp" | "skills";
+  exclusiveBonusValue?: number;
+  exclusiveBonusLabel?: string;
+};
+
 type ProducedGadget = {
   id: string;
   blueprintId: string;
@@ -202,7 +239,13 @@ function buildCompanyDisplayName(name: string, emoji: string) {
 
 type MarketListing = {
   id: string;
-  gadgetId: string;
+  listingKind: "gadget" | "part";
+  gadgetId?: string;
+  partRef?: string;
+  partId?: string;
+  partName?: string;
+  partRarity?: string;
+  partType?: string;
   companyId: string;
   companyName: string;
   sellerUserId: string;
@@ -256,6 +299,159 @@ const companyBlueprints = new Map<string, CompanyBlueprintState>();
 const companyGadgets = new Map<string, ProducedGadget[]>();
 const exclusiveProjectByCompanyId = new Map<string, ExclusiveProjectState>();
 const exclusiveCatalogByCompanyId = new Map<string, ExclusiveBlueprintDefinition[]>();
+const companyProductionOrders = new Map<string, CompanyProductionOrder>();
+
+const STANDARD_PRODUCTION_BASE_SECONDS: Record<string, number> = {
+  smartphones: 12 * 60,
+  smartwatches: 10 * 60,
+  tablets: 16 * 60,
+  laptops: 22 * 60,
+  asic_miners: 28 * 60,
+};
+
+const EXCLUSIVE_PRODUCTION_BASE_SECONDS: Record<string, number> = {
+  smartphones: 18 * 60,
+  smartwatches: 15 * 60,
+  tablets: 24 * 60,
+  laptops: 30 * 60,
+  asic_miners: 36 * 60,
+};
+
+function getCompanyWarehouseParts(companyId: string) {
+  return companyWarehousePartsByCompanyId.get(companyId) ?? [];
+}
+
+function setCompanyWarehouseParts(companyId: string, parts: any[]) {
+  companyWarehousePartsByCompanyId.set(companyId, parts);
+}
+
+function removeCompanyWarehousePartForMarket(companyId: string, ref: string) {
+  const [partId = "", rarity = "Common"] = String(ref || "").split("::");
+  if (!partId) return null;
+  const next = [...getCompanyWarehouseParts(companyId)];
+  const index = next.findIndex((item) => String(item?.id || "") === partId && String(item?.rarity || "Common") === rarity);
+  if (index < 0) return null;
+  const item = next[index];
+  const available = Math.max(1, Number(item?.quantity || 1));
+  const removed = {
+    id: partId,
+    name: String(item?.name || ALL_PARTS[partId as keyof typeof ALL_PARTS]?.name || partId),
+    type: String(item?.type || ALL_PARTS[partId as keyof typeof ALL_PARTS]?.type || "unknown"),
+    rarity: String(item?.rarity || rarity),
+    quantity: 1,
+  };
+  if (available <= 1) next.splice(index, 1);
+  else next[index] = { ...item, quantity: available - 1 };
+  setCompanyWarehouseParts(companyId, next);
+  return removed;
+}
+
+function restoreCompanyWarehousePartFromMarket(
+  companyId: string,
+  part: { id: string; name: string; type: string; rarity: string; quantity?: number } | null | undefined,
+) {
+  if (!part?.id) return;
+  const next = [...getCompanyWarehouseParts(companyId)];
+  const existingIndex = next.findIndex((item) => String(item?.id || "") === part.id && String(item?.rarity || "Common") === String(part.rarity || "Common"));
+  if (existingIndex >= 0) {
+    next[existingIndex] = {
+      ...next[existingIndex],
+      quantity: Math.max(1, Number(next[existingIndex]?.quantity || 1)) + Math.max(1, Number(part.quantity || 1)),
+    };
+  } else {
+    next.push({
+      id: part.id,
+      name: part.name,
+      type: part.type,
+      rarity: part.rarity,
+      quantity: Math.max(1, Number(part.quantity || 1)),
+    });
+  }
+  setCompanyWarehouseParts(companyId, next);
+}
+
+function buildPlayerInventoryPartFromMarket(part: { id: string; name: string; rarity: string; type: string }) {
+  const partDef = ALL_PARTS[part.id as keyof typeof ALL_PARTS];
+  return {
+    id: part.id,
+    name: part.name,
+    type: "part" as const,
+    rarity: part.rarity,
+    quantity: 1,
+    stats: partDef?.stats ?? {},
+  };
+}
+
+function buildCompanyWarehouseUnitRefs(
+  companyId: string,
+  requiredPartType?: string | null,
+): Array<{ ref: string; id: string; rarity: string; type: string }> {
+  const parts = getCompanyWarehouseParts(companyId);
+  const refs: Array<{ ref: string; id: string; rarity: string; type: string }> = [];
+  for (const item of parts) {
+    const itemType = String(item?.type || ALL_PARTS[item?.id as keyof typeof ALL_PARTS]?.type || "");
+    if (requiredPartType && itemType !== requiredPartType) continue;
+    const quantity = Math.max(1, Number(item?.quantity || 1));
+    const rarity = String(item?.rarity || ALL_PARTS[item?.id as keyof typeof ALL_PARTS]?.rarity || "Common");
+    const id = String(item?.id || "");
+    for (let unitIndex = 0; unitIndex < quantity; unitIndex += 1) {
+      refs.push({
+        ref: `${id}::${rarity}::${unitIndex + 1}`,
+        id,
+        rarity,
+        type: itemType,
+      });
+    }
+  }
+  return refs;
+}
+
+function consumeCompanyWarehousePartRefs(companyId: string, partRefs: string[]) {
+  const consumeCounter = new Map<string, number>();
+  for (const ref of partRefs) {
+    const [id = "", rarity = "Common"] = String(ref || "").split("::");
+    if (!id) continue;
+    const key = `${id}::${rarity}`;
+    consumeCounter.set(key, (consumeCounter.get(key) ?? 0) + 1);
+  }
+
+  const next = [...getCompanyWarehouseParts(companyId)];
+  for (let index = 0; index < next.length; index += 1) {
+    const item = next[index];
+    const key = `${String(item?.id || "")}::${String(item?.rarity || "Common")}`;
+    const toConsume = consumeCounter.get(key) ?? 0;
+    if (toConsume <= 0) continue;
+    const available = Math.max(1, Number(item?.quantity || 1));
+    const left = Math.max(0, available - toConsume);
+    consumeCounter.set(key, Math.max(0, toConsume - available));
+    if (left > 0) {
+      next[index] = { ...item, quantity: left };
+      continue;
+    }
+    next.splice(index, 1);
+    index -= 1;
+  }
+
+  const remaining = Array.from(consumeCounter.values()).some((value) => value > 0);
+  if (remaining) {
+    throw new Error("Не удалось списать выбранные детали со склада компании");
+  }
+  setCompanyWarehouseParts(companyId, next);
+}
+
+async function getCompanyContractSkillTotal(
+  companyId: string,
+  requiredSkill: "coding" | "design" | "analytics" | "testing",
+) {
+  const members = await storage.getCompanyMembers(companyId);
+  const memberIds = Array.from(new Set(members.map((member) => String(member.userId || "")).filter(Boolean)));
+  let total = 0;
+  for (const memberId of memberIds) {
+    const snapshot = await getUserWithGameState(memberId);
+    total += Math.max(0, Number((snapshot?.game as any)?.skills?.[requiredSkill] ?? 0));
+  }
+  return total;
+}
 
 function createEmptyExclusiveResearchMap(): ExclusiveResearchMap {
   return {
@@ -329,8 +525,6 @@ const referredByUserId = new Map<string, string>();
 const referralChildrenByUserId = new Map<string, Set<string>>();
 const referralClaimHistory = new Map<string, Set<string>>();
 
-const telegramIdToUserId = new Map<string, string>();
-const userIdToTelegramId = new Map<string, string>();
 const deviceRegistrationTimestamps = new Map<string, number[]>();
 const ipRegistrationTimestamps = new Map<string, number[]>();
 
@@ -351,42 +545,6 @@ function serializeSafeUser(user: any) {
   };
 }
 
-export function bindTelegramIdToUser(telegramId: string, userId: string) {
-  const prevUserId = telegramIdToUserId.get(telegramId);
-  if (prevUserId && prevUserId !== userId) {
-    userIdToTelegramId.delete(prevUserId);
-  }
-  const prevTelegramId = userIdToTelegramId.get(userId);
-  if (prevTelegramId && prevTelegramId !== telegramId) {
-    telegramIdToUserId.delete(prevTelegramId);
-  }
-  telegramIdToUserId.set(telegramId, userId);
-  userIdToTelegramId.set(userId, telegramId);
-}
-
-export function getUserIdByTelegramId(telegramId: string) {
-  return telegramIdToUserId.get(telegramId);
-}
-
-export function getTelegramIdByUserId(userId: string) {
-  return userIdToTelegramId.get(userId);
-}
-
-export function unbindTelegramByUserId(userId: string) {
-  const telegramId = userIdToTelegramId.get(userId);
-  if (telegramId) {
-    telegramIdToUserId.delete(telegramId);
-  }
-  userIdToTelegramId.delete(userId);
-}
-
-export function unbindTelegramByTelegramId(telegramId: string) {
-  const userId = telegramIdToUserId.get(telegramId);
-  telegramIdToUserId.delete(telegramId);
-  if (userId) {
-    userIdToTelegramId.delete(userId);
-  }
-}
 
 function resolveAdminPassword(req: any) {
   return String(
@@ -947,6 +1105,27 @@ async function transferProducedGadgetToPlayerInventory(userId: string, gadget: P
   return gadget;
 }
 
+async function transferMarketPartToPlayerInventory(
+  userId: string,
+  part: { id: string; name: string; rarity: string; type: string } | null,
+) {
+  if (!part) return null;
+  const snapshot = await getUserWithGameState(userId);
+  if (!snapshot) return null;
+  const inventory = Array.isArray((snapshot.game as any)?.inventory) ? [...((snapshot.game as any).inventory)] : [];
+  const existingIndex = inventory.findIndex((item) => item?.type === "part" && item?.id === part.id && String(item?.rarity || "Common") === String(part.rarity || "Common"));
+  if (existingIndex >= 0) {
+    inventory[existingIndex] = {
+      ...inventory[existingIndex],
+      quantity: Math.max(1, Number(inventory[existingIndex]?.quantity || 1)) + 1,
+    };
+  } else {
+    inventory.unshift(buildPlayerInventoryPartFromMarket(part));
+  }
+  applyGameStatePatch(userId, { inventory });
+  return part;
+}
+
 function isLeadershipRole(role: string | null | undefined) {
   const normalized = String(role || "").toLowerCase();
   return normalized === "owner" || normalized === "manager" || normalized === "cto";
@@ -1067,6 +1246,95 @@ function buildTutorialInventoryGadget(producedAt: number, isExclusive: boolean) 
   };
 }
 
+function parseBlueprintTierFromId(blueprintId: string) {
+  const tier = Number(String(blueprintId || "").split("-").at(-1) || "1");
+  return Number.isFinite(tier) && tier > 0 ? tier : 1;
+}
+
+function getBlueprintTierMultiplier(blueprintId: string) {
+  const tier = parseBlueprintTierFromId(blueprintId);
+  if (tier <= 2) return 1;
+  if (tier <= 4) return 1.25;
+  if (tier <= 6) return 1.55;
+  if (tier <= 8) return 1.9;
+  return 2.3;
+}
+
+function getProductionQuantityMultiplier(quantity: number) {
+  return 1 + Math.max(0, quantity - 1) * 0.7;
+}
+
+function getBatchQualityPenalty(quantity: number) {
+  return Math.max(0, Math.max(0, quantity - 3) * 0.015);
+}
+
+function syncCompanyProductionOrder(companyId: string) {
+  const order = companyProductionOrders.get(companyId);
+  if (!order) return null;
+  if (order.status === "in_progress" && Date.now() >= Number(order.readyAt || 0)) {
+    order.status = "ready_to_claim";
+    companyProductionOrders.set(companyId, order);
+  }
+  return order;
+}
+
+function getCompanyWarehouseUsedSlotsForClaim(company: any, producedCount: number) {
+  const warehouseParts = Array.isArray(company?.warehouse) ? company.warehouse : [];
+  const partSlots = warehouseParts.reduce(
+    (sum: number, item: any) => sum + Math.max(0, Math.floor(Number(item?.quantity) || 0)),
+    0,
+  );
+  return Math.max(0, producedCount) + partSlots;
+}
+
+async function ensureCompanyWarehouseCanClaimProduction(company: any, quantity: number) {
+  const produced = companyGadgets.get(company.id) ?? [];
+  const capacity = Math.max(0, Number(company.warehouseCapacity) || 50);
+  const used = getCompanyWarehouseUsedSlotsForClaim(company, produced.length);
+  const free = Math.max(0, capacity - used);
+  return {
+    ok: free >= Math.max(1, quantity),
+    free,
+  };
+}
+
+function buildProducedGadgetsFromOrder(input: {
+  order: CompanyProductionOrder;
+  companyId: string;
+  testing: number;
+  attention: number;
+}) {
+  const created: ProducedGadget[] = [];
+  for (let index = 0; index < input.order.quantity; index += 1) {
+    const gadgetCondition = createGadgetConditionProfile({
+      rarity: input.order.isExclusive ? "Rare" : "Rare",
+      quality: input.order.quality,
+      testing: input.testing,
+      attention: input.attention,
+    });
+    created.push({
+      id: randomUUID(),
+      blueprintId: input.order.blueprintId,
+      companyId: input.companyId,
+      name: input.order.blueprintName,
+      category: input.order.category,
+      stats: Object.fromEntries(
+        Object.entries(input.order.stats).map(([key, value]) => [key, Number(value.toFixed ? value.toFixed(2) : Number(value || 0).toFixed(2))]),
+      ),
+      quality: Number(input.order.quality.toFixed(2)),
+      minPrice: input.order.minPrice,
+      maxPrice: input.order.maxPrice,
+      ...gadgetCondition,
+      producedAt: Date.now(),
+      isExclusive: input.order.isExclusive,
+      exclusiveBonusType: input.order.exclusiveBonusType,
+      exclusiveBonusValue: input.order.exclusiveBonusValue,
+      exclusiveBonusLabel: input.order.exclusiveBonusLabel,
+    });
+  }
+  return created;
+}
+
 async function syncTutorialBlueprintState(company: any, state: CompanyBlueprintState | undefined) {
   if (!state || !isTutorialCompany(company) || state.status !== "in_progress") return state;
   const startedAt = Number(state.startedAt || Date.now());
@@ -1086,6 +1354,41 @@ async function syncTutorialBlueprintState(company: any, state: CompanyBlueprintS
   return state;
 }
 
+function calculateStandardProductionDurationSeconds(input: {
+  blueprintId: string;
+  category: string;
+  quantity: number;
+  departmentEffects: CompanyDepartmentEffects;
+  ceoAdvanced: string | null;
+}) {
+  const base = STANDARD_PRODUCTION_BASE_SECONDS[input.category] ?? 12 * 60;
+  const tierMultiplier = getBlueprintTierMultiplier(input.blueprintId);
+  const quantityMultiplier = getProductionQuantityMultiplier(input.quantity);
+  const engineerSpeed = input.ceoAdvanced === "engineer" ? 1.05 : 1;
+  const speedDivisor = Math.max(
+    0.1,
+    Number(input.departmentEffects.productionSpeedMultiplier || 1) * engineerSpeed,
+  );
+  return Math.max(6 * 60, Math.ceil((base * tierMultiplier * quantityMultiplier) / speedDivisor));
+}
+
+function calculateExclusiveProductionDurationSeconds(input: {
+  blueprintId: string;
+  category: string;
+  quantity: number;
+  departmentEffects: CompanyDepartmentEffects;
+  ceoAdvanced: string | null;
+}) {
+  const base = EXCLUSIVE_PRODUCTION_BASE_SECONDS[input.category] ?? 18 * 60;
+  const quantityMultiplier = getProductionQuantityMultiplier(input.quantity);
+  const engineerSpeed = input.ceoAdvanced === "engineer" ? 1.08 : 1;
+  const speedDivisor = Math.max(
+    0.1,
+    Number(input.departmentEffects.productionSpeedMultiplier || 1) * engineerSpeed,
+  );
+  return Math.max(8 * 60, Math.ceil((base * quantityMultiplier) / speedDivisor));
+}
+
 async function settleExpiredAuctions() {
   const now = Date.now();
   const settings = await getGameSettings();
@@ -1094,6 +1397,15 @@ async function settleExpiredAuctions() {
     if (listing.auctionEndsAt > now) continue;
 
     if (!listing.currentBid || !listing.currentBidderId) {
+      if (listing.listingKind === "part" && listing.partId) {
+        restoreCompanyWarehousePartFromMarket(listing.companyId, {
+          id: listing.partId,
+          name: String(listing.partName || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.name || listing.partId),
+          type: String(listing.partType || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.type || "unknown"),
+          rarity: String(listing.partRarity || "Common"),
+          quantity: 1,
+        });
+      }
       listing.status = "expired";
       continue;
     }
@@ -1101,6 +1413,15 @@ async function settleExpiredAuctions() {
     const buyer = await storage.getUser(listing.currentBidderId);
     const company = await storage.getCompany(listing.companyId);
     if (!buyer || !company || buyer.balance < listing.currentBid) {
+      if (listing.listingKind === "part" && listing.partId) {
+        restoreCompanyWarehousePartFromMarket(listing.companyId, {
+          id: listing.partId,
+          name: String(listing.partName || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.name || listing.partId),
+          type: String(listing.partType || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.type || "unknown"),
+          rarity: String(listing.partRarity || "Common"),
+          quantity: 1,
+        });
+      }
       listing.status = "expired";
       continue;
     }
@@ -1117,10 +1438,19 @@ async function settleExpiredAuctions() {
     }
     await storage.updateUser(buyer.id, { balance: buyer.balance - listing.currentBid });
     await storage.updateCompany(company.id, { balance: company.balance + netIncome });
-    await transferProducedGadgetToPlayerInventory(
-      buyer.id,
-      removeProducedGadget(listing.companyId, listing.gadgetId),
-    );
+    if (listing.listingKind === "part") {
+      await transferMarketPartToPlayerInventory(buyer.id, listing.partId ? {
+        id: listing.partId,
+        name: String(listing.partName || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.name || listing.partId),
+        rarity: String(listing.partRarity || "Common"),
+        type: String(listing.partType || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.type || "unknown"),
+      } : null);
+    } else {
+      await transferProducedGadgetToPlayerInventory(
+        buyer.id,
+        removeProducedGadget(listing.companyId, String(listing.gadgetId || "")),
+      );
+    }
 
     listing.status = "sold";
     listing.sold = true;
@@ -1158,7 +1488,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const now = Date.now();
 
       if (typeof telegramId === "string" && telegramId.trim().length > 0) {
-        if (telegramIdToUserId.has(telegramId)) {
+        if (getUserIdByTelegramId(telegramId)) {
           return res.status(409).json({ error: "Этот Telegram аккаунт уже зарегистрирован" });
         }
       }
@@ -2109,10 +2439,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const energyCost = selectedBoosts.includes("energy_drink")
         ? Number((baseEnergyCost * PVP_DUEL_CONFIG.process.energyDrinkMultiplier).toFixed(4))
         : baseEnergyCost;
-      const workTime = Number(snapshot.game.workTime || 0);
-      if (workTime < energyCost) {
-        return res.status(400).json({ error: `Недостаточно энергии работы. Нужно ${Math.round(energyCost * 100)}%` });
-      }
       const skills = readDuelSkills(snapshot);
       const skillSum = skills.analytics + skills.design + skills.drawing + skills.coding + skills.modeling + skills.testing + skills.attention;
 
@@ -2814,10 +3140,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!company) return res.status(404).json({ error: "Company not found" });
 
     const current = await syncTutorialBlueprintState(company, companyBlueprints.get(company.id));
+    const productionOrder = syncCompanyProductionOrder(company.id);
     res.json({
       available: isTutorialCompany(company) ? [buildTutorialBlueprintView()] : getAvailableBlueprints(company.level),
       active: current ?? null,
       produced: companyGadgets.get(company.id) ?? [],
+      productionOrder,
     });
   });
 
@@ -2825,10 +3153,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const company = await storage.getCompany(req.params.id);
       if (!company) return res.status(404).json({ error: "Company not found" });
+      const productionOrder = syncCompanyProductionOrder(company.id);
       res.json({
         active: getExclusiveProject(company.id),
         catalog: getExclusiveCatalog(company.id),
         produced: (companyGadgets.get(company.id) ?? []).filter((item) => item.isExclusive),
+        productionOrder,
       });
     } catch (error: any) {
       res.status(500).json({ error: error?.message || "Failed to load exclusive gadgets" });
@@ -3028,6 +3358,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const blueprintId = String(req.body?.blueprintId || "");
       const quantity = Math.max(1, Math.min(5, Math.floor(Number(req.body?.quantity || 1))));
       if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can produce exclusive gadgets" });
+      const activeOrder = syncCompanyProductionOrder(company.id);
+      if (activeOrder) {
+        return res.status(400).json({
+          error: activeOrder.status === "ready_to_claim"
+            ? "У компании уже есть готовая партия. Сначала заберите выпуск."
+            : "У компании уже идет производство партии.",
+        });
+      }
       const catalog = getExclusiveCatalog(company.id);
       const blueprint = catalog.find((item) => item.id === blueprintId);
       if (!blueprint) return res.status(404).json({ error: "Эксклюзивный чертеж не найден" });
@@ -3042,77 +3380,60 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.updateCompany(company.id, {
         balance: Number(company.balance || 0) - gramCost,
       });
-      const produced = companyGadgets.get(company.id) ?? [];
-      const ownerSnapshot = await getUserWithGameState(userId);
-      const creatorTesting = Number(ownerSnapshot?.game.skills.testing || 0);
-      const creatorAttention = Number(ownerSnapshot?.game.skills.attention || 0);
-      const created: ProducedGadget[] = [];
-      for (let i = 0; i < actualQuantity; i += 1) {
-        const quality = Number((1 + departmentEffects.gadgetQualityBonus + blueprint.successChance * 0.35).toFixed(2));
-        const gadgetCondition = createGadgetConditionProfile({
-          rarity: "Exclusive",
-          quality,
-          testing: creatorTesting,
-          attention: creatorAttention,
-        });
-        created.push({
-          id: randomUUID(),
-          blueprintId: blueprint.id,
-          companyId: company.id,
-          name: blueprint.name,
-          category: blueprint.category,
-          stats: Object.fromEntries(Object.entries(blueprint.baseStats).map(([key, value]) => [key, Number((Number(value) * quality).toFixed(2))])),
-          quality,
-          minPrice: Math.round(blueprint.productionCostGram * quality * 6),
-          maxPrice: Math.round(blueprint.productionCostGram * quality * 9),
-          ...gadgetCondition,
-          producedAt: Date.now(),
-          isExclusive: true,
-          exclusiveBonusType: blueprint.bonusType,
-          exclusiveBonusValue: blueprint.bonusValue,
-          exclusiveBonusLabel: blueprint.bonusLabel,
-        });
-      }
-      produced.unshift(...created);
-      companyGadgets.set(company.id, produced);
+      const ceoUser = await storage.getUser(company.ownerId);
+      const ceoAdvanced = ceoUser ? getAdvancedPersonalityId(ceoUser) : null;
+      const quality = Number(
+        (
+          (1 + departmentEffects.gadgetQualityBonus + blueprint.successChance * 0.35)
+          * (1 - getBatchQualityPenalty(actualQuantity))
+        ).toFixed(2),
+      );
+      const durationSeconds = calculateExclusiveProductionDurationSeconds({
+        blueprintId: blueprint.id,
+        category: blueprint.category,
+        quantity: actualQuantity,
+        departmentEffects,
+        ceoAdvanced,
+      });
+      const startedAt = Date.now();
+      const order: CompanyProductionOrder = {
+        id: randomUUID(),
+        companyId: company.id,
+        kind: "exclusive",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        category: blueprint.category,
+        quantity: actualQuantity,
+        startedAt,
+        readyAt: startedAt + durationSeconds * 1000,
+        status: "in_progress",
+        quality,
+        stats: Object.fromEntries(
+          Object.entries(blueprint.baseStats).map(([key, value]) => [key, Number((Number(value) * quality).toFixed(2))]),
+        ),
+        minPrice: Math.round(blueprint.productionCostGram * quality * 6),
+        maxPrice: Math.round(blueprint.productionCostGram * quality * 9),
+        gramCost,
+        isExclusive: true,
+        exclusiveBonusType: blueprint.bonusType,
+        exclusiveBonusValue: blueprint.bonusValue,
+        exclusiveBonusLabel: blueprint.bonusLabel,
+      };
+      companyProductionOrders.set(company.id, order);
 
       blueprint.remainingUnits -= actualQuantity;
       setExclusiveCatalog(company.id, catalog.map((item) => (item.id === blueprint.id ? { ...blueprint } : item)));
 
-      let bonusApplied: Record<string, unknown> = {};
-      if (blueprint.bonusType === "finance") {
-        const companyBonus = blueprint.bonusValue * actualQuantity;
-        await storage.updateCompany(company.id, { balance: Number(company.balance || 0) + companyBonus });
-        bonusApplied = { financeGrm: companyBonus };
-      } else if (blueprint.bonusType === "xp") {
-        const owner = await storage.getUser(userId);
-        if (owner) {
-          const levelState = applyExperienceGainForLevel(owner, blueprint.bonusValue * actualQuantity);
-          await storage.updateUser(userId, { level: levelState.level, experience: levelState.experience });
-        }
-        bonusApplied = { xp: blueprint.bonusValue * actualQuantity };
-      } else {
-        const skillName = blueprint.bonusSkill || getExclusiveSkillRewardSkill(blueprint.dominantProfessionId);
-        const snapshot = await getUserWithGameState(userId);
-        if (snapshot) {
-          const game = snapshot.game as any;
-          const skills = { ...(game.skills ?? {}) };
-          skills[skillName] = Number(skills[skillName] || 0) + blueprint.bonusValue * actualQuantity;
-          applyGameStatePatch(userId, { skills });
-        }
-        bonusApplied = { skill: skillName, amount: blueprint.bonusValue * actualQuantity };
-      }
-
       const gadgetWear = await applyGadgetWear(userId, {
         cause: "production",
-        qualityHint: Number(created[0]?.quality || 1),
+        qualityHint: Number(order.quality || 1),
       });
       res.json({
-        ok: true,
-        produced: created,
+        started: true,
+        order,
+        durationSeconds,
         blueprint: { ...blueprint },
         companyBalance: Number(company.balance || 0) - gramCost,
-        bonusApplied,
         gadgetWear: gadgetWear.report,
       });
     } catch (error: any) {
@@ -3274,10 +3595,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (error: any) {
       return res.status(403).json({ error: error?.message || "Production is disabled by admin settings" });
     }
-    const { userId, parts = [] } = req.body ?? {};
+    const { userId, parts = [], quantity = 1 } = req.body ?? {};
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
     if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can produce gadgets" });
+    const activeOrder = syncCompanyProductionOrder(company.id);
+    if (activeOrder) {
+      return res.status(400).json({
+        error: activeOrder.status === "ready_to_claim"
+          ? "У компании уже есть готовая партия. Сначала заберите выпуск."
+          : "У компании уже идет производство партии.",
+      });
+    }
     const ceoUser = await storage.getUser(company.ownerId);
     const ceoAdvanced = ceoUser ? getAdvancedPersonalityId(ceoUser) : null;
 
@@ -3318,15 +3647,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     }
 
-    let gramPayment = null as Awaited<ReturnType<typeof spendGram>> | null;
+    const actualQuantity = Math.max(1, Math.min(10, Math.floor(Number(quantity) || 1)));
+    let productionGramCost = 0;
+    let companyBalanceAfterProduction: number | null = null;
     if (!isTutorial) {
       const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(company);
-      const productionGramCost = Math.max(1, Math.round(Number(blueprint.production.costGram || 1) * departmentEffects.productionCostMultiplier));
-      try {
-        gramPayment = await spendGram(userId, productionGramCost, `РџСЂРѕРёР·РІРѕРґСЃС‚РІРѕ ${blueprint.name}`);
-      } catch (error: any) {
-        return res.status(400).json({ error: error?.message || "РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ GRAM РґР»СЏ РїСЂРѕРёР·РІРѕРґСЃС‚РІР°" });
+      const batchDiscountMultiplier = Math.max(0.88, 1 - Math.max(0, actualQuantity - 1) * 0.02);
+      productionGramCost = Math.max(
+        1,
+        Math.round(
+          Number(blueprint.production.costGram || 1)
+          * actualQuantity
+          * batchDiscountMultiplier
+          * departmentEffects.productionCostMultiplier,
+        ),
+      );
+      if (Number(company.balance || 0) < productionGramCost) {
+        return res.status(400).json({ error: `Недостаточно GRM компании для производства (${productionGramCost} GRM)` });
       }
+      companyBalanceAfterProduction = Number(company.balance || 0) - productionGramCost;
+      await storage.updateCompany(company.id, {
+        balance: companyBalanceAfterProduction,
+      });
     }
 
     const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(company);
@@ -3336,6 +3678,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ? parts.reduce((sum: number, p: any) => sum + (RARITY_QUALITY_MULTIPLIERS[p.rarity as keyof typeof RARITY_QUALITY_MULTIPLIERS] ?? 1), 0) / parts.length
       : 1;
     quality *= 1 + departmentEffects.gadgetQualityBonus;
+    quality *= 1 - getBatchQualityPenalty(actualQuantity);
     if (!isTutorial && ceoAdvanced === "engineer") {
       quality *= 1.05;
     }
@@ -3370,70 +3713,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       0.1,
       settings.multipliers.gadgetSellPriceMultiplier * saleBoost * Math.max(0.1, 1 + demandModifier + priceModifier),
     );
-    const producedAt = Date.now();
-    const ownerSnapshot = await getUserWithGameState(userId);
-    const creatorTesting = Number(ownerSnapshot?.game.skills.testing || 0);
-    const creatorAttention = Number(ownerSnapshot?.game.skills.attention || 0);
-    const gadgetCondition = createGadgetConditionProfile({
-      rarity: "Rare",
-      quality,
-      testing: creatorTesting,
-      attention: creatorAttention,
-    });
-    const gadget: ProducedGadget = {
+    const durationSeconds = isTutorial
+      ? TUTORIAL_DEMO_BLUEPRINT.timeSeconds
+      : calculateStandardProductionDurationSeconds({
+          blueprintId: blueprint.id,
+          category: blueprint.category,
+          quantity: actualQuantity,
+          departmentEffects,
+          ceoAdvanced,
+        });
+    const startedAt = Date.now();
+    const order: CompanyProductionOrder = {
       id: randomUUID(),
-      blueprintId: blueprint.id,
       companyId: company.id,
-      name: blueprint.name,
+      kind: "standard",
+      blueprintId: blueprint.id,
+      blueprintName: blueprint.name,
       category: blueprint.category,
-      stats,
+      quantity: actualQuantity,
+      startedAt,
+      readyAt: startedAt + durationSeconds * 1000,
+      status: "in_progress",
       quality: Number(quality.toFixed(2)),
+      stats,
       minPrice: isTutorial ? TUTORIAL_DEMO_BLUEPRINT.minPrice : Math.round(basePrice * quality * 0.9 * sellPriceMultiplier),
       maxPrice: isTutorial ? TUTORIAL_DEMO_BLUEPRINT.maxPrice : Math.round(basePrice * quality * 1.4 * sellPriceMultiplier),
-      ...gadgetCondition,
-      producedAt,
+      gramCost: isTutorial ? 0 : productionGramCost,
     };
-
-    if (isTutorial) {
-      const registrationState = await getRegistrationFlowState(tutorialOwnerId);
-      const perfectInterview = Boolean(registrationState?.meta.perfectInterview);
-      const exclusiveRewardGranted = Boolean(registrationState?.meta.exclusiveRewardGranted);
-      if (perfectInterview && !exclusiveRewardGranted) {
-        gadget.isExclusive = true;
-        gadget.description = "Прототип лучшего стажера";
-      }
-    }
-
-    const produced = companyGadgets.get(company.id) ?? [];
-    produced.push(gadget);
-    companyGadgets.set(company.id, produced);
-    registerProductionSignal(String(blueprint.category || "all"), 1);
-    let inventoryReward: Record<string, unknown> | null = null;
-    if (isTutorial) {
-      const tutorialState = await getTutorialState(tutorialOwnerId);
-      if (tutorialState?.isActive && !tutorialState.isCompleted) {
-        await applyTutorialEvent(tutorialOwnerId, "demo_gadget_produced");
-      }
-
-      const registrationState = await getRegistrationFlowState(tutorialOwnerId);
-      if (registrationState?.registration.registrationFlow.currentStep === "first_craft") {
-        const ownerSnapshot = await getUserWithGameState(tutorialOwnerId);
-        if (ownerSnapshot) {
-          const rewardItem = buildTutorialInventoryGadget(producedAt, Boolean(gadget.isExclusive));
-          applyGameStatePatch(tutorialOwnerId, {
-            inventory: [...ownerSnapshot.game.inventory, rewardItem],
-          });
-          inventoryReward = rewardItem;
-          companyGadgets.set(company.id, (companyGadgets.get(company.id) ?? []).filter((item) => item.id !== gadget.id));
-        }
-        await markRegistrationFirstCraftCompleted(tutorialOwnerId, {
-          tutorialCompanyId: company.id,
-          exclusiveRewardGranted: Boolean(gadget.isExclusive),
-        });
-        await completeRegistration(tutorialOwnerId);
-        await storage.deleteCompany(company.id);
-      }
-    }
+    companyProductionOrders.set(company.id, order);
 
     const gadgetWear = await applyGadgetWear(String(userId), {
       cause: "production",
@@ -3441,10 +3748,118 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       severityMultiplier: isTutorial ? 0.7 : 1,
     });
     res.json({
-      ...gadget,
-      gramSpent: isTutorial ? 0 : blueprint.production.costGram,
-      gramBalance: gramPayment?.state.gramBalance ?? null,
-      inventoryReward,
+      started: true,
+      order,
+      durationSeconds,
+      gramSpent: order.gramCost,
+      companyBalance: companyBalanceAfterProduction,
+      gadgetWear: gadgetWear.report,
+    });
+  });
+
+  app.post("/api/companies/:id/production/claim", async (req, res) => {
+    try {
+      await assertFeatureEnabled("production", "Production is disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Production is disabled by admin settings" });
+    }
+
+    const company = await storage.getCompany(req.params.id);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+    const userId = String(req.body?.userId || "");
+    if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can claim production" });
+
+    const order = syncCompanyProductionOrder(company.id);
+    if (!order) return res.status(400).json({ error: "У компании нет активной производственной партии" });
+    if (order.status !== "ready_to_claim") {
+      const remainingSeconds = Math.max(1, Math.ceil((Number(order.readyAt || 0) - Date.now()) / 1000));
+      return res.status(400).json({ error: `Партия еще в производстве. Осталось около ${remainingSeconds} сек.` });
+    }
+
+    const warehouseCheck = await ensureCompanyWarehouseCanClaimProduction(company, order.quantity);
+    if (!warehouseCheck.ok) {
+      return res.status(400).json({ error: `Склад заполнен, добавить невозможно. Свободно слотов: ${warehouseCheck.free}.` });
+    }
+
+    const ownerSnapshot = await getUserWithGameState(userId);
+    const creatorTesting = Number(ownerSnapshot?.game.skills.testing || 0);
+    const creatorAttention = Number(ownerSnapshot?.game.skills.attention || 0);
+    const created = buildProducedGadgetsFromOrder({
+      order,
+      companyId: company.id,
+      testing: creatorTesting,
+      attention: creatorAttention,
+    });
+    const produced = companyGadgets.get(company.id) ?? [];
+    produced.push(...created);
+    companyGadgets.set(company.id, produced);
+    registerProductionSignal(String(order.category || "all"), order.quantity);
+    companyProductionOrders.delete(company.id);
+
+    if (isTutorialCompany(company)) {
+      const tutorialOwnerId = String(company.tutorialOwnerId || company.ownerId);
+      const tutorialState = await getTutorialState(tutorialOwnerId);
+      if (tutorialState?.isActive && !tutorialState.isCompleted) {
+        await applyTutorialEvent(tutorialOwnerId, "demo_gadget_produced");
+      }
+
+      const registrationState = await getRegistrationFlowState(tutorialOwnerId);
+      if (registrationState?.registration.registrationFlow.currentStep === "first_craft") {
+        const ownerTutorialSnapshot = await getUserWithGameState(tutorialOwnerId);
+        if (ownerTutorialSnapshot) {
+          const rewardItem = buildTutorialInventoryGadget(Date.now(), false);
+          applyGameStatePatch(tutorialOwnerId, {
+            inventory: [...ownerTutorialSnapshot.game.inventory, rewardItem],
+          });
+        }
+        await markRegistrationFirstCraftCompleted(tutorialOwnerId, {
+          tutorialCompanyId: company.id,
+          exclusiveRewardGranted: false,
+        });
+        await completeRegistration(tutorialOwnerId);
+        await storage.deleteCompany(company.id);
+      }
+    }
+
+    let bonusApplied: Record<string, unknown> | null = null;
+    if (order.isExclusive && order.exclusiveBonusType === "finance") {
+      const updatedCompany = await storage.getCompany(company.id);
+      if (updatedCompany) {
+        const financeBonus = Math.max(0, Number(order.exclusiveBonusValue || 0)) * order.quantity;
+        await storage.updateCompany(updatedCompany.id, {
+          balance: Number(updatedCompany.balance || 0) + financeBonus,
+        });
+        bonusApplied = { financeGrm: financeBonus };
+      }
+    } else if (order.isExclusive && order.exclusiveBonusType === "xp") {
+      const owner = await storage.getUser(company.ownerId);
+      if (owner) {
+        const levelState = applyExperienceGainForLevel(owner, Math.max(0, Number(order.exclusiveBonusValue || 0)) * order.quantity);
+        await storage.updateUser(owner.id, { level: levelState.level, experience: levelState.experience });
+        bonusApplied = { xp: Math.max(0, Number(order.exclusiveBonusValue || 0)) * order.quantity };
+      }
+    } else if (order.isExclusive && order.exclusiveBonusType === "skills") {
+      const ownerSnapshotForSkills = await getUserWithGameState(company.ownerId);
+      if (ownerSnapshotForSkills) {
+        const professionId = getPlayerProfessionId(ownerSnapshotForSkills.user);
+        const skillName = getExclusiveSkillRewardSkill(professionId);
+        const skills = { ...(ownerSnapshotForSkills.game as any).skills };
+        const gain = Math.max(0, Number(order.exclusiveBonusValue || 0)) * order.quantity;
+        skills[skillName] = Number(skills[skillName] || 0) + gain;
+        applyGameStatePatch(ownerSnapshotForSkills.user.id, { skills });
+        bonusApplied = { skill: skillName, amount: gain };
+      }
+    }
+
+    const gadgetWear = await applyGadgetWear(String(userId), {
+      cause: "production",
+      qualityHint: Number(order.quality || 1),
+    });
+    res.json({
+      ok: true,
+      produced: created,
+      order,
+      bonusApplied,
       gadgetWear: gadgetWear.report,
     });
   });
@@ -3455,7 +3870,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (error: any) {
       return res.status(403).json({ error: error?.message || "Market is disabled by admin settings" });
     }
-    const { userId, gadgetId, price, mode = "fixed", durationHours = 2 } = req.body ?? {};
+    const { userId, gadgetId, partRef, price, mode = "fixed", durationHours = 2 } = req.body ?? {};
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
     const membership = await storage.getMemberByUserId(company.id, userId);
@@ -3466,26 +3881,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const produced = companyGadgets.get(company.id) ?? [];
-    const gadget = produced.find((g) => g.id === gadgetId);
-    if (!gadget) return res.status(404).json({ error: "Gadget not found" });
+    const gadget = gadgetId ? produced.find((g) => g.id === gadgetId) : null;
+    const listedPart = partRef ? removeCompanyWarehousePartForMarket(company.id, String(partRef)) : null;
+    if (!gadget && !listedPart) return res.status(404).json({ error: "Лот не найден на складе компании" });
     // TODO: Apply dynamic gadget price bands when economy.dynamicGadgetPricesEnabled is wired to market analytics.
     if (mode !== "fixed" && mode !== "auction") {
+      if (listedPart) restoreCompanyWarehousePartFromMarket(company.id, listedPart);
       return res.status(400).json({ error: "mode РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ fixed РёР»Рё auction" });
     }
 
-    if (mode === "auction" && gadget.quality < 2) {
+    if (mode === "auction" && gadget && gadget.quality < 2) {
+      if (listedPart) restoreCompanyWarehousePartFromMarket(company.id, listedPart);
       return res.status(400).json({ error: "РђСѓРєС†РёРѕРЅ РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ РґР»СЏ СЂРµРґРєРёС… РіР°РґР¶РµС‚РѕРІ (quality >= 2.0)" });
     }
 
-    if (price < gadget.minPrice || price > gadget.maxPrice) {
-      return res.status(400).json({ error: `Р¦РµРЅР°/СЃС‚Р°СЂС‚РѕРІР°СЏ С†РµРЅР° РґРѕР»Р¶РЅР° Р±С‹С‚СЊ РІ РґРёР°РїР°Р·РѕРЅРµ ${gadget.minPrice}-${gadget.maxPrice}` });
+    const minPrice = gadget
+      ? gadget.minPrice
+      : Math.max(10, Math.floor(getPartPrice(String(listedPart?.id || "")) * 0.85));
+    const maxPrice = gadget
+      ? gadget.maxPrice
+      : Math.max(minPrice, Math.ceil(getPartPrice(String(listedPart?.id || "")) * 2.4));
+
+    if (price < minPrice || price > maxPrice) {
+      if (listedPart) restoreCompanyWarehousePartFromMarket(company.id, listedPart);
+      return res.status(400).json({ error: `Р¦РµРЅР°/СЃС‚Р°СЂС‚РѕРІР°СЏ С†РµРЅР° РґРѕР»Р¶РЅР° Р±С‹С‚СЊ РІ РґРёР°РїР°Р·РѕРЅРµ ${minPrice}-${maxPrice}` });
     }
 
     const normalizedDuration = Math.max(2, Math.min(12, Number(durationHours) || 2));
 
     const listing: MarketListing = {
       id: randomUUID(),
-      gadgetId,
+      listingKind: listedPart ? "part" : "gadget",
+      gadgetId: gadget ? String(gadgetId) : undefined,
+      partRef: listedPart ? String(partRef) : undefined,
+      partId: listedPart?.id,
+      partName: listedPart?.name,
+      partRarity: listedPart?.rarity,
+      partType: listedPart?.type,
       companyId: company.id,
       companyName: company.name,
       sellerUserId: userId,
@@ -3515,8 +3947,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const enriched = marketListings
       .filter((l) => l.status === "active")
       .map((listing) => {
-        const gadget = Array.from(companyGadgets.values()).flat().find((g) => g.id === listing.gadgetId);
-        return { ...listing, gadget };
+        const gadget = listing.listingKind === "gadget"
+          ? Array.from(companyGadgets.values()).flat().find((g) => g.id === listing.gadgetId)
+          : undefined;
+        const part = listing.listingKind === "part" && listing.partId
+          ? {
+              id: listing.partId,
+              name: String(listing.partName || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.name || listing.partId),
+              rarity: String(listing.partRarity || "Common"),
+              type: String(listing.partType || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.type || "unknown"),
+              basePrice: getPartPrice(listing.partId),
+            }
+          : undefined;
+        return { ...listing, gadget, part };
       });
 
     res.json(enriched);
@@ -3561,15 +4004,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const fee = listing.price - netIncome;
     await storage.updateUser(buyer.id, { balance: buyer.balance - listing.price });
     await storage.updateCompany(company.id, { balance: company.balance + netIncome });
-    const purchasedGadget = await transferProducedGadgetToPlayerInventory(
-      buyerId,
-      removeProducedGadget(listing.companyId, listing.gadgetId),
-    );
+    const purchasedItem = listing.listingKind === "part"
+      ? await transferMarketPartToPlayerInventory(
+          buyerId,
+          listing.partId ? {
+            id: listing.partId,
+            name: String(listing.partName || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.name || listing.partId),
+            rarity: String(listing.partRarity || "Common"),
+            type: String(listing.partType || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.type || "unknown"),
+          } : null,
+        )
+      : await transferProducedGadgetToPlayerInventory(
+          buyerId,
+          removeProducedGadget(listing.companyId, String(listing.gadgetId || "")),
+        );
     listing.status = "sold";
     listing.sold = true;
     listing.salePrice = listing.price;
 
-    res.json({ ok: true, fee, netIncome, purchasedGadget });
+    res.json({ ok: true, fee, netIncome, purchasedItem });
   });
 
   app.post("/api/market/bid", async (req, res) => {
@@ -3674,73 +4127,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     let consumedGadgets: string[] = [];
     let consumedPartsCount = 0;
+    let consumedPartRefs: string[] = [];
     if (contract.kind === "parts_supply") {
       const requiredType = String(contract.requiredPartType || "").trim();
       if (!requiredType) {
         return res.status(400).json({ error: "Тип запчастей для контракта не задан" });
       }
-      const snapshot = await getUserWithGameState(userId);
-      if (!snapshot) return res.status(404).json({ error: "User not found" });
-      const inventory = [...(snapshot.game.inventory ?? [])];
-
-      const matchingPartIds: string[] = [];
-      for (const item of inventory) {
-        if (item.type !== "part") continue;
-        const partDef = ALL_PARTS[item.id];
-        if (!partDef || partDef.type !== requiredType) continue;
-        const qty = Math.max(1, Number(item.quantity || 1));
-        for (let i = 0; i < qty; i += 1) {
-          matchingPartIds.push(item.id);
-        }
-      }
-      if (matchingPartIds.length < contract.requiredQuantity) {
+      const availablePartRefs = buildCompanyWarehouseUnitRefs(company.id, requiredType);
+      if (availablePartRefs.length < contract.requiredQuantity) {
         return res.status(400).json({
-          error: `Нужно ${contract.requiredQuantity} запчастей типа ${requiredType}. Доступно: ${matchingPartIds.length}`,
+          error: `Нужно ${contract.requiredQuantity} запчастей типа ${requiredType} на складе компании. Доступно: ${availablePartRefs.length}`,
         });
       }
 
-      const toConsume = new Map<string, number>();
-      for (const id of matchingPartIds.slice(0, contract.requiredQuantity)) {
-        toConsume.set(id, (toConsume.get(id) ?? 0) + 1);
+      const requestedPartRefs = Array.isArray(req.body?.partRefs)
+        ? req.body.partRefs.map((value: unknown) => String(value || "").trim()).filter(Boolean)
+        : [];
+      const chosenPartRefs = requestedPartRefs.length
+        ? requestedPartRefs
+        : availablePartRefs.slice(0, contract.requiredQuantity).map((item) => item.ref);
+
+      if (chosenPartRefs.length !== contract.requiredQuantity) {
+        return res.status(400).json({
+          error: `Нужно выбрать ровно ${contract.requiredQuantity} запчастей для сдачи контракта`,
+        });
       }
-      const nextInventory = [];
-      for (const item of inventory) {
-        if (item.type !== "part") {
-          nextInventory.push(item);
-          continue;
-        }
-        const want = toConsume.get(item.id) ?? 0;
-        if (want <= 0) {
-          nextInventory.push(item);
-          continue;
-        }
-        const qty = Math.max(1, Number(item.quantity || 1));
-        const leftQty = Math.max(0, qty - want);
-        toConsume.set(item.id, Math.max(0, want - qty));
-        if (leftQty > 0) {
-          nextInventory.push({ ...item, quantity: leftQty });
-        }
+
+      const availableSet = new Set(availablePartRefs.map((item) => item.ref));
+      if (chosenPartRefs.some((ref: string) => !availableSet.has(ref))) {
+        return res.status(400).json({ error: "Часть выбранных деталей уже отсутствует на складе компании" });
       }
-      applyGameStatePatch(userId, { inventory: nextInventory });
+
+      consumeCompanyWarehousePartRefs(company.id, chosenPartRefs);
       consumedPartsCount = contract.requiredQuantity;
+      consumedPartRefs = chosenPartRefs;
     } else if (contract.kind === "skill_research") {
       const requiredSkill = contract.requiredSkill;
       const requiredPoints = Math.max(0, Number(contract.requiredSkillPoints ?? 0));
       if (!requiredSkill || requiredPoints <= 0) {
         return res.status(400).json({ error: "Параметры контракта по навыкам не заданы" });
       }
-      const snapshot = await getUserWithGameState(userId);
-      if (!snapshot) return res.status(404).json({ error: "User not found" });
-      const currentPoints = Math.max(0, Number(snapshot.game.skills?.[requiredSkill] ?? 0));
+      const currentPoints = await getCompanyContractSkillTotal(company.id, requiredSkill);
       if (currentPoints < requiredPoints) {
         return res.status(400).json({
-          error: `Недостаточно навыка ${requiredSkill}. Нужно ${requiredPoints}, у вас ${currentPoints}`,
+          error: `Недостаточно суммарного навыка компании ${requiredSkill}. Нужно ${requiredPoints}, у компании ${currentPoints}`,
         });
       }
     } else {
       const produced = companyGadgets.get(company.id) ?? [];
       const listedIds = new Set(
-        marketListings.filter((listing) => listing.status === "active").map((listing) => listing.gadgetId)
+        marketListings
+          .filter((listing) => listing.status === "active" && listing.listingKind === "gadget" && listing.gadgetId)
+          .map((listing) => String(listing.gadgetId))
       );
       const eligible = produced.filter(
         (gadget) =>
@@ -3773,6 +4211,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       contract,
       consumedGadgets,
       consumedPartsCount,
+      consumedPartRefs,
       company: updatedCompany,
     });
   });

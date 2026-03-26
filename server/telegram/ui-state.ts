@@ -1,1 +1,1 @@
-export * from "../runtime/telegram-state";
+export * from "./state";

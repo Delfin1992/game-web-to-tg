@@ -56,7 +56,15 @@ async function main() {
   httpServer.listen(port, () => {
     console.log("Server running successfully");
     console.log(`Server URL: http://localhost:${port}`);
-    console.log(`Storage mode: ${storageMode === "postgres" ? "PostgreSQL (Drizzle ORM)" : "In-memory fallback"}`);
+    console.log(
+      `Storage mode: ${
+        storageMode === "postgres"
+          ? "PostgreSQL (Drizzle ORM)"
+          : storageMode === "memory-persistent"
+          ? "Local persistent storage"
+          : "In-memory fallback"
+      }`,
+    );
     startTelegramBot(httpServer);
   });
 }

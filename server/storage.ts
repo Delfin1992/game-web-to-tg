@@ -1,4 +1,6 @@
 // server/storage.ts
+import { mkdir, readFile, rename, writeFile } from "fs/promises";
+import path from "path";
 import { db, testConnection } from "./db";
 import {
   users,
@@ -36,6 +38,17 @@ import {
 import { randomUUID } from "crypto";
 import { createDefaultTutorialState, serializeTutorialState } from "../shared/tutorial";
 import { DEFAULT_GAME_SETTINGS } from "../shared/game-settings";
+import {
+  clearAllPlayerRuntimeState,
+  exportPlayerRuntimeStateSnapshot,
+  importPlayerRuntimeStateSnapshot,
+} from "./runtime/player-state";
+import type { GameState } from "./game-engine/types";
+import {
+  clearTelegramBindings,
+  exportTelegramBindingsSnapshot,
+  importTelegramBindingsSnapshot,
+} from "./telegram-bindings";
 
 type StoredGlobalEvent = {
   id: string;
@@ -64,6 +77,22 @@ type StoredPvpDuelLog = {
   winnerUserId?: string | null;
   rounds: unknown[];
   createdAt: number;
+};
+
+type MemoryStorageSnapshot = {
+  version: 1;
+  savedAt: number;
+  users: User[];
+  companies: Company[];
+  playerRuntimeStates: Array<readonly [string, GameState]>;
+  telegramBindings?: Array<readonly [string, string]>;
+  members: Array<[string, CompanyMember[]]>;
+  joinRequests: JoinRequest[];
+  messages: Message[];
+  settings: GameSettingsRow;
+  hackathonSabotageLogs: HackathonSabotageLog[];
+  globalEventsStore: StoredGlobalEvent[];
+  pvpDuelLogsStore: StoredPvpDuelLog[];
 };
 
 export interface IStorage {
@@ -111,6 +140,26 @@ export interface IStorage {
   getPvpDuelHistoryByUser(userId: string, limit?: number): Promise<StoredPvpDuelLog[]>;
 
   resetAllData(): Promise<void>;
+}
+
+function isLocalPersistentStorageEnabled() {
+  const raw = String(process.env.LOCAL_PERSISTENCE_ENABLED ?? "true").trim().toLowerCase();
+  return raw !== "false" && raw !== "0" && raw !== "off";
+}
+
+function getLocalPersistentStoragePath() {
+  const raw = String(process.env.LOCAL_PERSISTENCE_PATH || "").trim();
+  return raw.length > 0 ? path.resolve(raw) : path.resolve("data", "runtime-storage.json");
+}
+
+function getLocalPersistentBackupDir() {
+  const raw = String(process.env.LOCAL_PERSISTENCE_BACKUP_DIR || "").trim();
+  return raw.length > 0 ? path.resolve(raw) : path.resolve("data", "runtime-storage-backups");
+}
+
+function getLocalPersistentAutosaveMs() {
+  const raw = Number(process.env.LOCAL_PERSISTENCE_AUTOSAVE_MS || 15000);
+  return Number.isFinite(raw) ? Math.max(5000, raw) : 15000;
 }
 
 function buildDefaultGameSettingsRow(): GameSettingsRow {
@@ -580,15 +629,15 @@ export class DrizzleStorage implements IStorage {
 }
 
 export class MemStorage implements IStorage {
-  private users = new Map<string, User>();
-  private companies = new Map<string, Company>();
-  private members = new Map<string, CompanyMember[]>();
-  private joinRequests = new Map<string, JoinRequest>();
-  private msgs: Message[] = [];
-  private settings: GameSettingsRow = buildDefaultGameSettingsRow();
-  private hackathonSabotageLogs: HackathonSabotageLog[] = [];
-  private globalEventsStore: StoredGlobalEvent[] = [];
-  private pvpDuelLogsStore: StoredPvpDuelLog[] = [];
+  protected users = new Map<string, User>();
+  protected companies = new Map<string, Company>();
+  protected members = new Map<string, CompanyMember[]>();
+  protected joinRequests = new Map<string, JoinRequest>();
+  protected msgs: Message[] = [];
+  protected settings: GameSettingsRow = buildDefaultGameSettingsRow();
+  protected hackathonSabotageLogs: HackathonSabotageLog[] = [];
+  protected globalEventsStore: StoredGlobalEvent[] = [];
+  protected pvpDuelLogsStore: StoredPvpDuelLog[] = [];
 
   async getUser(id: string) { return this.users.get(id); }
   async getUserByUsername(username: string) { return Array.from(this.users.values()).find((u) => u.username === username); }
@@ -818,11 +867,295 @@ export class MemStorage implements IStorage {
     this.hackathonSabotageLogs = [];
     this.globalEventsStore = [];
     this.pvpDuelLogsStore = [];
+    clearAllPlayerRuntimeState();
+    clearTelegramBindings();
+  }
+
+  exportSnapshot(): MemoryStorageSnapshot {
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      users: Array.from(this.users.values()),
+      companies: Array.from(this.companies.values()),
+      playerRuntimeStates: exportPlayerRuntimeStateSnapshot(),
+      telegramBindings: exportTelegramBindingsSnapshot(),
+      members: Array.from(this.members.entries()),
+      joinRequests: Array.from(this.joinRequests.values()),
+      messages: [...this.msgs],
+      settings: this.settings,
+      hackathonSabotageLogs: [...this.hackathonSabotageLogs],
+      globalEventsStore: [...this.globalEventsStore],
+      pvpDuelLogsStore: [...this.pvpDuelLogsStore],
+    };
+  }
+
+  importSnapshot(snapshot: Partial<MemoryStorageSnapshot> | null | undefined) {
+    const nextUsers = new Map<string, User>();
+    for (const user of Array.isArray(snapshot?.users) ? snapshot.users : []) {
+      if (user?.id) nextUsers.set(String(user.id), user as User);
+    }
+
+    const nextCompanies = new Map<string, Company>();
+    for (const company of Array.isArray(snapshot?.companies) ? snapshot.companies : []) {
+      if (company?.id) nextCompanies.set(String(company.id), company as Company);
+    }
+
+    const nextMembers = new Map<string, CompanyMember[]>();
+    for (const entry of Array.isArray(snapshot?.members) ? snapshot.members : []) {
+      if (!Array.isArray(entry) || entry.length < 2) continue;
+      const companyId = String(entry[0] || "");
+      if (!companyId) continue;
+      nextMembers.set(companyId, Array.isArray(entry[1]) ? entry[1] as CompanyMember[] : []);
+    }
+
+    const nextJoinRequests = new Map<string, JoinRequest>();
+    for (const request of Array.isArray(snapshot?.joinRequests) ? snapshot.joinRequests : []) {
+      if (request?.id) nextJoinRequests.set(String(request.id), request as JoinRequest);
+    }
+
+    this.users = nextUsers;
+    this.companies = nextCompanies;
+    importPlayerRuntimeStateSnapshot(
+      Array.isArray(snapshot?.playerRuntimeStates)
+        ? snapshot.playerRuntimeStates as Array<readonly [string, GameState]>
+        : [],
+    );
+    importTelegramBindingsSnapshot(
+      Array.isArray(snapshot?.telegramBindings)
+        ? snapshot.telegramBindings as Array<readonly [string, string]>
+        : [],
+    );
+    this.members = nextMembers;
+    this.joinRequests = nextJoinRequests;
+    this.msgs = Array.isArray(snapshot?.messages) ? [...snapshot.messages] as Message[] : [];
+    this.settings = snapshot?.settings ? snapshot.settings as GameSettingsRow : buildDefaultGameSettingsRow();
+    this.hackathonSabotageLogs = Array.isArray(snapshot?.hackathonSabotageLogs)
+      ? [...snapshot.hackathonSabotageLogs] as HackathonSabotageLog[]
+      : [];
+    this.globalEventsStore = Array.isArray(snapshot?.globalEventsStore)
+      ? [...snapshot.globalEventsStore] as StoredGlobalEvent[]
+      : [];
+    this.pvpDuelLogsStore = Array.isArray(snapshot?.pvpDuelLogsStore)
+      ? [...snapshot.pvpDuelLogsStore] as StoredPvpDuelLog[]
+      : [];
+  }
+}
+
+export class PersistentMemStorage extends MemStorage {
+  private readonly filePath: string;
+  private readonly autosaveMs: number;
+  private autosaveTimer: NodeJS.Timeout | null = null;
+  private writePromise: Promise<void> = Promise.resolve();
+  private dirty = false;
+  private shutdownHooksRegistered = false;
+
+  private constructor(filePath: string, autosaveMs: number) {
+    super();
+    this.filePath = filePath;
+    this.autosaveMs = autosaveMs;
+  }
+
+  static async create(filePath = getLocalPersistentStoragePath(), autosaveMs = getLocalPersistentAutosaveMs()) {
+    const storage = new PersistentMemStorage(filePath, autosaveMs);
+    await storage.restoreFromDisk();
+    storage.startAutosaveLoop();
+    storage.registerShutdownHooks();
+    return storage;
+  }
+
+  private markDirty() {
+    this.dirty = true;
+  }
+
+  private startAutosaveLoop() {
+    if (this.autosaveTimer) clearInterval(this.autosaveTimer);
+    this.autosaveTimer = setInterval(() => {
+      // Runtime game state mutates in memory between storage writes,
+      // so periodic autosave must force a fresh snapshot to disk.
+      void this.flushToDisk(true);
+    }, this.autosaveMs);
+    this.autosaveTimer.unref?.();
+  }
+
+  private registerShutdownHooks() {
+    if (this.shutdownHooksRegistered) return;
+    this.shutdownHooksRegistered = true;
+
+    const flushNow = async () => {
+      try {
+        await this.flushToDisk(true);
+      } catch (error) {
+        console.error("Local persistent storage shutdown flush failed:", error);
+      }
+    };
+
+    process.once("beforeExit", () => {
+      void flushNow();
+    });
+    process.once("SIGINT", () => {
+      void flushNow().finally(() => process.exit(0));
+    });
+    process.once("SIGTERM", () => {
+      void flushNow().finally(() => process.exit(0));
+    });
+  }
+
+  private async restoreFromDisk() {
+    try {
+      const raw = await readFile(this.filePath, "utf8");
+      const snapshot = JSON.parse(raw) as MemoryStorageSnapshot;
+      this.importSnapshot(snapshot);
+      console.log(`📦 Local persistent storage restored: ${this.filePath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.toLowerCase().includes("enoent")) {
+        console.warn(`⚠️ Local persistent storage restore skipped: ${message}`);
+      }
+    }
+  }
+
+  async flushToDisk(force = false) {
+    if (!force && !this.dirty) return;
+    this.writePromise = this.writePromise.then(async () => {
+      const snapshot = this.exportSnapshot();
+      const dir = path.dirname(this.filePath);
+      const tempPath = `${this.filePath}.tmp`;
+      await mkdir(dir, { recursive: true });
+      await writeFile(tempPath, JSON.stringify(snapshot, null, 2), "utf8");
+      await rename(tempPath, this.filePath);
+      this.dirty = false;
+    }).catch((error) => {
+      console.error("Local persistent storage flush failed:", error);
+    });
+    await this.writePromise;
+  }
+
+  async createBackup() {
+    await this.flushToDisk(true);
+    const backupDir = getLocalPersistentBackupDir();
+    await mkdir(backupDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const targetPath = path.join(backupDir, `runtime-storage-${timestamp}.json`);
+    await writeFile(targetPath, JSON.stringify(this.exportSnapshot(), null, 2), "utf8");
+    return targetPath;
+  }
+
+  override async createUser(user: InsertUser) {
+    const result = await super.createUser(user);
+    this.markDirty();
+    return result;
+  }
+
+  override async updateUser(id: string, updates: UpdateUser) {
+    const result = await super.updateUser(id, updates);
+    this.markDirty();
+    return result;
+  }
+
+  override async deleteUser(id: string) {
+    await super.deleteUser(id);
+    this.markDirty();
+  }
+
+  override async createCompany(company: InsertCompany, ownerId: string, ownerUsername: string) {
+    const result = await super.createCompany(company, ownerId, ownerUsername);
+    this.markDirty();
+    return result;
+  }
+
+  override async updateCompany(id: string, updates: Partial<Company>) {
+    const result = await super.updateCompany(id, updates);
+    this.markDirty();
+    return result;
+  }
+
+  override async deleteCompany(id: string) {
+    await super.deleteCompany(id);
+    this.markDirty();
+  }
+
+  override async addCompanyMember(member: InsertCompanyMember) {
+    const result = await super.addCompanyMember(member);
+    this.markDirty();
+    return result;
+  }
+
+  override async removeCompanyMember(companyId: string, userId: string) {
+    await super.removeCompanyMember(companyId, userId);
+    this.markDirty();
+  }
+
+  override async createJoinRequest(request: InsertJoinRequest) {
+    const result = await super.createJoinRequest(request);
+    this.markDirty();
+    return result;
+  }
+
+  override async updateJoinRequestStatus(requestId: string, status: string) {
+    await super.updateJoinRequestStatus(requestId, status);
+    this.markDirty();
+  }
+
+  override async createMessage(message: InsertMessage) {
+    const result = await super.createMessage(message);
+    this.markDirty();
+    return result;
+  }
+
+  override async updateGameSettings(updates: UpdateGameSettingsRow) {
+    const result = await super.updateGameSettings(updates);
+    this.markDirty();
+    return result;
+  }
+
+  override async createHackathonSabotageLog(log: InsertHackathonSabotageLog) {
+    const result = await super.createHackathonSabotageLog(log);
+    this.markDirty();
+    return result;
+  }
+
+  override async updateHackathonSabotageLog(id: string, updates: Partial<HackathonSabotageLog>) {
+    const result = await super.updateHackathonSabotageLog(id, updates);
+    this.markDirty();
+    return result;
+  }
+
+  override async createGlobalEvent(event: StoredGlobalEvent) {
+    const result = await super.createGlobalEvent(event);
+    this.markDirty();
+    return result;
+  }
+
+  override async createPvpDuelLog(log: StoredPvpDuelLog) {
+    const result = await super.createPvpDuelLog(log);
+    this.markDirty();
+    return result;
+  }
+
+  override async resetAllData() {
+    await super.resetAllData();
+    this.markDirty();
+    await this.flushToDisk(true);
   }
 }
 
 export let storage: IStorage = new MemStorage();
-export let storageMode: "memory" | "postgres" = "memory";
+export let storageMode: "memory" | "postgres" | "memory-persistent" = "memory";
+
+export async function createStorageBackup() {
+  if (storage instanceof PersistentMemStorage) {
+    return await storage.createBackup();
+  }
+  if (storage instanceof MemStorage) {
+    const backupDir = getLocalPersistentBackupDir();
+    await mkdir(backupDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const targetPath = path.join(backupDir, `runtime-storage-${timestamp}.json`);
+    await writeFile(targetPath, JSON.stringify(storage.exportSnapshot(), null, 2), "utf8");
+    return targetPath;
+  }
+  throw new Error("Backup поддерживается только для memory storage");
+}
 
 export async function initializeStorage() {
   const ok = await testConnection();
@@ -831,8 +1164,14 @@ export async function initializeStorage() {
     storageMode = "postgres";
     console.log("✅ Using PostgreSQL storage");
   } else {
-    storage = new MemStorage();
-    storageMode = "memory";
+    if (isLocalPersistentStorageEnabled()) {
+      storage = await PersistentMemStorage.create();
+      storageMode = "memory-persistent";
+      console.warn(`⚠️ Local persistent storage active: ${getLocalPersistentStoragePath()}`);
+    } else {
+      storage = new MemStorage();
+      storageMode = "memory";
+    }
     console.warn("⚠️ PostgreSQL недоступна. Запущен fallback: in-memory storage (данные не сохраняются после перезапуска).\nДля постоянной БД установите DATABASE_URL на рабочий Postgres.");
   }
 }

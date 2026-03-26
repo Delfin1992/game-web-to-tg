@@ -374,98 +374,98 @@ const JOBS_BY_CITY: Record<string, Job[]> = {
 const SHOP_ITEMS: ShopItem[] = [
   {
     id: "coding-book",
-    name: "РЈС‡РµР±РЅРёРє РїРѕ РїСЂРѕРіСЂР°РјРјРёСЂРѕРІР°РЅРёСЋ",
+    name: "Учебник по программированию",
     price: 100,
     stats: { coding: 1 },
-    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +1 РљРѕРґРёРЅРі",
+    description: "Разовое использование: +1 Кодинг",
     rarity: "Common",
     type: "consumable",
   },
   {
     id: "testing-course",
-    name: "РљСѓСЂСЃ РїРѕ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЋ",
+    name: "Курс по тестированию",
     price: 100,
     stats: { testing: 1 },
-    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +1 РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ",
+    description: "Разовое использование: +1 Тестирование",
     rarity: "Common",
     type: "consumable",
   },
   {
     id: "analytics-book",
-    name: "РљРЅРёРіР° РїРѕ Р°РЅР°Р»РёС‚РёРєРµ",
+    name: "Книга по аналитике",
     price: 100,
     stats: { analytics: 1 },
-    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +1 РђРЅР°Р»РёС‚РёРєР°",
+    description: "Разовое использование: +1 Аналитика",
     rarity: "Common",
     type: "consumable",
   },
   {
     id: "drawing-album",
-    name: "РђР»СЊР±РѕРј РґР»СЏ СЂРёСЃРѕРІР°РЅРёСЏ",
+    name: "Альбом для рисования",
     price: 100,
     stats: { drawing: 1 },
-    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +1 Р РёСЃРѕРІР°РЅРёРµ",
+    description: "Разовое использование: +1 Рисование",
     rarity: "Common",
     type: "consumable",
   },
   {
     id: "advanced-coding",
-    name: "РџСЂРѕРґРІРёРЅСѓС‚С‹Р№ РєСѓСЂСЃ РїСЂРѕРіСЂР°РјРјРёСЂРѕРІР°РЅРёСЏ",
+    name: "Продвинутый курс программирования",
     price: 500,
     stats: { coding: 3 },
-    description: "Р Р°Р·РѕРІРѕРµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: +3 РљРѕРґРёРЅРі",
+    description: "Разовое использование: +3 Кодинг",
     rarity: "Rare",
     type: "consumable",
   },
   {
     id: "gaming-keyboard",
-    name: "рџЋ® РњРµС…Р°РЅРёС‡РµСЃРєР°СЏ РєР»Р°РІРёР°С‚СѓСЂР°",
+    name: "🎮 Механическая клавиатура",
     price: 250,
     stats: { coding: 1, testing: 1 },
-    description: "Р­РєРёРїРёСЂРѕРІРєР°: +1 РљРѕРґРёРЅРі, +1 РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ",
+    description: "Экипировка: +1 Кодинг, +1 Тестирование",
     rarity: "Uncommon",
     type: "gear",
   },
   {
     id: "gaming-mouse",
-    name: "рџ–±пёЏ РџСЂРѕРіСЂР°РјРјРёСЂСѓРµРјР°СЏ РјС‹С€СЊ",
+    name: "🖱️ Программируемая мышь",
     price: 200,
     stats: { testing: 1, attention: 1 },
-    description: "Р­РєРёРїРёСЂРѕРІРєР°: +1 РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ, +1 Р’РЅРёРјР°РЅРёРµ",
+    description: "Экипировка: +1 Тестирование, +1 Внимание",
     rarity: "Uncommon",
     type: "gear",
   },
   {
     id: "monitor-uhd",
-    name: "рџ–ҐпёЏ 4K РњРѕРЅРёС‚РѕСЂ",
+    name: "🖥️ 4K Монитор",
     price: 800,
     stats: { design: 2, drawing: 2 },
-    description: "Р­РєРёРїРёСЂРѕРІРєР°: +2 Р”РёР·Р°Р№РЅ, +2 Р РёСЃРѕРІР°РЅРёРµ",
+    description: "Экипировка: +2 Дизайн, +2 Рисование",
     rarity: "Rare",
     type: "gear",
   },
   {
     id: "headphones-pro",
-    name: "рџЋ§ РџСЂРѕС„РµСЃСЃРёРѕРЅР°Р»СЊРЅС‹Рµ РЅР°СѓС€РЅРёРєРё",
+    name: "🎧 Профессиональные наушники",
     price: 300,
     stats: { attention: 2, coding: 1 },
-    description: "Р­РєРёРїРёСЂРѕРІРєР°: +2 Р’РЅРёРјР°РЅРёРµ, +1 РљРѕРґРёРЅРі",
+    description: "Экипировка: +2 Внимание, +1 Кодинг",
     rarity: "Uncommon",
     type: "gear",
   },
   {
     id: "laptop-pro",
-    name: "рџ’» MacBook Pro",
+    name: "💻 MacBook Pro",
     price: 2000,
     stats: { coding: 3, design: 2, testing: 1 },
-    description: "Р­РєРёРїРёСЂРѕРІРєР°: +3 РљРѕРґРёРЅРі, +2 Р”РёР·Р°Р№РЅ, +1 РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ",
+    description: "Экипировка: +3 Кодинг, +2 Дизайн, +1 Тестирование",
     rarity: "Epic",
     type: "gear",
   },
 ];
 
 function getSkillTrainingCapForLevel(level: number) {
-  return Math.max(3, Math.floor(Number(level || 1)) + 2);
+  return Math.max(5, Math.floor(Number(level || 1)) * 5);
 }
 
 function getConsumableTrainingLimitForLevel(level: number) {
@@ -909,8 +909,8 @@ function hasFreeInventorySlot(user: Pick<User, "city" | "tutorialState">, state:
 }
 
 function canStoreInventoryItem(user: Pick<User, "city" | "tutorialState">, state: GameState, item: Pick<GameInventoryItem, "id" | "type">) {
-  return hasFreeInventorySlot(user, state)
-    || state.inventory.some((current) => current.id === item.id && current.type === item.type);
+  void item;
+  return hasFreeInventorySlot(user, state);
 }
 
 function countOwnedAsicUnits(state: GameState) {
@@ -1257,9 +1257,12 @@ export function listShopItems() {
     if (priceModifier > 0.15) {
       registerPriceSpikeSignal(item.id, Math.round(priceModifier * 10));
     }
+    const basePrice = item.type === "consumable"
+      ? Math.round(item.price * 1.25)
+      : item.price;
     return {
       ...item,
-      price: Math.max(1, Math.round(applyGlobalEventMultiplier(item.price, priceModifier))),
+      price: Math.max(1, Math.round(applyGlobalEventMultiplier(basePrice, priceModifier))),
     };
   });
 }
@@ -1433,7 +1436,7 @@ export async function completeJob(userId: string, jobRef: string) {
   if (!job) throw new Error("Вакансия не найдена");
   const energyCost = Number((getJobWorkEnergyCost(job) * getHousingEnergyMultiplier(user, "work")).toFixed(4));
   if (state.workTime < energyCost) {
-    throw new Error(`Недостаточно энергии для работы. Нужно ${Math.round(energyCost * 100)}%, доступно ${Math.round(state.workTime * 100)}%.`);
+    throw new Error(`Недостаточно энергии для работы. Нужно ${Math.round(energyCost * 100)}, доступно ${Math.round(state.workTime * 100)}.`);
   }
 
   let finalMoney = job.reward;
@@ -1517,7 +1520,7 @@ export async function completeJob(userId: string, jobRef: string) {
       state.jobDropPity = 0;
       notices.push(`рџЋЃ Р—Р° РІР°РєР°РЅСЃРёСЋ РїРѕР»СѓС‡РµРЅР° РґРµС‚Р°Р»СЊ: ${droppedPart.name} (${droppedPart.rarity})`);
     } else {
-      notices.push("📦 Инвентарь дома заполнен: награда за вакансию не поместилась.");
+      notices.push(`📦 Инвентарь полон, запчасть "${droppedPart.name}" потеряна.`);
     }
   } else {
     state.jobDropPity = Math.min(state.jobDropPity + 1, 4);

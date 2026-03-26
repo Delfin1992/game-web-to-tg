@@ -22,3 +22,20 @@ export function clearAllPlayerRuntimeState() {
 export function getPlayerRuntimeStateMap() {
   return playerGameStateByUserId;
 }
+
+export function exportPlayerRuntimeStateSnapshot() {
+  return Array.from(playerGameStateByUserId.entries()).map(([userId, state]) => [
+    userId,
+    structuredClone(state),
+  ] as const);
+}
+
+export function importPlayerRuntimeStateSnapshot(snapshot: Array<readonly [string, GameState]> | null | undefined) {
+  playerGameStateByUserId.clear();
+  for (const entry of Array.isArray(snapshot) ? snapshot : []) {
+    if (!Array.isArray(entry) || entry.length < 2) continue;
+    const [userId, state] = entry;
+    if (!userId || !state) continue;
+    playerGameStateByUserId.set(String(userId), structuredClone(state));
+  }
+}

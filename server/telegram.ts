@@ -1,7 +1,5 @@
 ﻿import { randomUUID } from "crypto";
 import type { Server } from "http";
-import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import type { User } from "../shared/schema";
 import { BLUEPRINT_STATUSES, GADGET_BLUEPRINTS } from "../shared/gadgets";
@@ -185,12 +183,142 @@ import {
   listHousesForCity,
   type HousingDefinition,
 } from "../shared/housing";
-
-const require = createRequire(import.meta.url);
-const iconv = require("iconv-lite") as {
-  encode(input: string, encoding: string): Buffer;
-  decode(input: Buffer, encoding: string): string;
-};
+import {
+  adminAuthByChatId,
+  companyBlueprintContribByCompanyId,
+  companyBlueprintProgressMessageByChatId,
+  companyBlueprintProgressTimerByChatId,
+  companyBlueprintRefsByChatId,
+  companyBlueprintWarehouseByCompanyId,
+  companyContractPartPageByChatId,
+  companyContractPartRefsByChatId,
+  companyContractRefsByChatId,
+  companyEconomyByCompanyId,
+  companyExclusivePartRefsByChatId,
+  companyExclusivePartPageByChatId,
+  companyExclusiveSelectedPartRefsByChatId,
+  companyListByChatId,
+  companyMemberRefsByChatId,
+  companyMenuSectionByChatId,
+  companyMiningNotifyTimerByChatId,
+  companyPartDepositRefsByChatId,
+  companyRepairOrderRefsByChatId,
+  companyRequestsByChatId,
+  companySalaryByCompanyId,
+  companySalaryClaimAtByCompanyId,
+  companyContractSelectedPartRefsByChatId,
+  companyWarehouseGadgetRefsByChatId,
+  companyWarehousePartRefsByChatId,
+  companyWarehousePartsByCompanyId,
+  hackathonPartRefsByChatId,
+  hackathonSabotageTargetRefsByChatId,
+  hackathonSkillProgressByChatId,
+  inventoryRefsByChatId,
+  lastInlineMessageByChatId,
+  lastTelegramMenuByUserId,
+  marketListingRefsByChatId,
+  pendingActionByChatId,
+  playerLocationByUserId,
+  playerTravelByUserId,
+  pvpDuelProgressMessageByChatId,
+  pvpDuelStageKeyByChatId,
+  pvpQueuePollTimerByChatId,
+  referralChildrenByUserId,
+  referralCodeByUserId,
+  referralOwnerByCode,
+  referredByUserId,
+  registrationDraftByChatId,
+  registrationInterviewFeedbackMessageByChatId,
+  registrationInterviewMessageByChatId,
+  registrationTutorialAnimationByChatId,
+  repairGadgetRefsByChatId,
+  repairOrderRefsByChatId,
+  shopBuyRefsByChatId,
+  shopSellRefsByChatId,
+  weeklyQuestStateByUserId,
+} from "./telegram/state";
+import {
+  ADMIN_MENU_REPLY_MARKUP,
+  BANK_MENU_REPLY_MARKUP,
+  buildBankSelectionReplyMarkup as buildBankSelectionReplyMarkupBase,
+  buildReplyKeyboard,
+  buildCompanyReplyMarkup as buildCompanyReplyMarkupBase,
+  buildEducationCoursesReplyMarkup as buildEducationCoursesReplyMarkupBase,
+  buildEducationLevelsReplyMarkup as buildEducationLevelsReplyMarkupBase,
+  buildMainMenuReplyMarkup,
+  buildNumericSelectionReplyMarkup as buildNumericSelectionReplyMarkupBase,
+  CITY_MENU_REPLY_MARKUP,
+  CITY_REPLY_MARKUP,
+  EXTRAS_MENU_REPLY_MARKUP,
+  JOB_RESULT_REPLY_MARKUP,
+  MAIN_MENU_REPLY_MARKUP,
+  PVP_MENU_REPLY_MARKUP,
+  SHOP_MENU_REPLY_MARKUP,
+  STUDY_RESULT_REPLY_MARKUP,
+} from "./telegram/keyboards/main";
+import {
+  extractErrorMessage,
+  parseBankOpenInput,
+  parseDecimalInput,
+  repairMojibake,
+  sleep,
+  trimTrailingSlash,
+} from "./telegram/helpers";
+import {
+  answerCallbackQuery,
+  callTelegramApi,
+  sendMessage,
+  sendPhoto,
+  sendPhotoFile,
+} from "./telegram/transport";
+import {
+  sendWithAdminKeyboard as sendWithAdminKeyboardBase,
+  sendWithBankKeyboard as sendWithBankKeyboardBase,
+  sendWithCityHubKeyboard as sendWithCityHubKeyboardBase,
+  sendWithCurrentHubKeyboard as sendWithCurrentHubKeyboardBase,
+  sendWithExtrasKeyboard as sendWithExtrasKeyboardBase,
+  sendWithMainKeyboard as sendWithMainKeyboardBase,
+} from "./telegram/handlers/main-menu";
+import {
+  sendCompanyDepartmentsSection as sendCompanyDepartmentsSectionBase,
+  sendCompanyEconomySection as sendCompanyEconomySectionBase,
+  sendCompanyIpoSection as sendCompanyIpoSectionBase,
+  sendCompanyManagementSection as sendCompanyManagementSectionBase,
+  sendCompanyRequestsSection as sendCompanyRequestsSectionBase,
+  sendCompanyRootMenu as sendCompanyRootMenuBase,
+  sendCompanyWarehouseSection as sendCompanyWarehouseSectionBase,
+  sendCompanyWorkSection as sendCompanyWorkSectionBase,
+  sendCompanyBureauSection as sendCompanyBureauSectionBase,
+  sendOrEditCompanyBureauSection as sendOrEditCompanyBureauSectionBase,
+} from "./telegram/company";
+import {
+  buildCompanyRepairServiceInlineMarkup as buildCompanyRepairServiceInlineMarkupBase,
+  buildRepairServiceInlineMarkup as buildRepairServiceInlineMarkupBase,
+  formatCompanyRepairServiceMenu as formatCompanyRepairServiceMenuBase,
+  formatRepairDuration as formatRepairDurationBase,
+  formatRepairServiceMenu as formatRepairServiceMenuBase,
+  sendCompanyRepairServiceMenu as sendCompanyRepairServiceMenuBase,
+  sendRepairServiceMenu as sendRepairServiceMenuBase,
+} from "./telegram/handlers/repair";
+import {
+  getDraftRegistrationSkillPointsLeft as getDraftRegistrationSkillPointsLeftBase,
+  getDraftRegistrationSkills as getDraftRegistrationSkillsBase,
+  normalizeCitySlideIndex as normalizeCitySlideIndexBase,
+  normalizeGenderSlideIndex as normalizeGenderSlideIndexBase,
+  normalizePersonalitySlideIndex as normalizePersonalitySlideIndexBase,
+  sendRegistrationCityPicker as sendRegistrationCityPickerBase,
+  sendRegistrationGenderPicker as sendRegistrationGenderPickerBase,
+  sendRegistrationPersonalityPicker as sendRegistrationPersonalityPickerBase,
+  sendRegistrationSkillsPicker as sendRegistrationSkillsPickerBase,
+  sendTelegramRegistrationStepPrompt as sendTelegramRegistrationStepPromptBase,
+} from "./telegram/registration";
+import { handleRegistrationCallback } from "./telegram/handlers/registration-callbacks";
+import { handleRepairCallback } from "./telegram/handlers/repair-callbacks";
+import { handleRegistrationPendingAction } from "./telegram/handlers/registration-messages";
+import { handleRepairMessage } from "./telegram/handlers/repair-messages";
+import { handleEconomyMessage } from "./telegram/handlers/economy-messages";
+import { handleInventoryMessage } from "./telegram/handlers/inventory-messages";
+import { handleCompanyNavigationMessage } from "./telegram/handlers/company-navigation-messages";
 
 type TelegramUser = {
   id: number;
@@ -232,14 +360,24 @@ type PendingAction =
   | { type: "open_bank_product"; productType: BankProductType }
   | { type: "exchange_to_gram" }
   | { type: "exchange_from_gram" }
+  | { type: "stocks_buy_select" }
+  | { type: "stocks_buy_qty"; ticker: string }
+  | { type: "stocks_sell_select" }
+  | { type: "stocks_sell_qty"; ticker: string }
   | { type: "company_create"; companyName?: string }
   | { type: "company_part_deposit" }
   | { type: "company_part_deposit_qty"; partRef: string }
+  | { type: "company_contract_parts"; contractId: string; requiredPartType: string; requiredQuantity: number }
   | { type: "company_topup"; companyId: string }
+  | { type: "company_set_salary_amount"; companyId: string; memberUserId: string; memberUsername: string }
+  | { type: "auction_bid_amount"; listingId: string }
   | { type: "company_exclusive_name" }
   | { type: "company_exclusive_parts"; gadgetName: string }
+  | { type: "company_bp_produce_qty"; blueprintId: string; blueprintName: string; maxQuantity: number }
+  | { type: "company_bp_produce_confirm"; blueprintId: string; blueprintName: string; quantity: number }
   | { type: "company_exclusive_produce_select" }
   | { type: "company_exclusive_produce_qty"; blueprintId: string; blueprintName: string }
+  | { type: "company_exclusive_produce_confirm"; blueprintId: string; blueprintName: string; quantity: number }
   | { type: "study_level_select" }
   | { type: "study_course_select"; levelKey: EducationLevelKey }
   | { type: "advanced_personality_select" }
@@ -376,6 +514,21 @@ type CompanyBlueprintSnapshot = {
     status: string;
     progressHours: number;
   } | null;
+  productionOrder?: {
+    id: string;
+    kind: "standard" | "exclusive";
+    blueprintId: string;
+    blueprintName: string;
+    category: string;
+    quantity: number;
+    startedAt: number;
+    readyAt: number;
+    status: "in_progress" | "ready_to_claim";
+    quality: number;
+    gramCost: number;
+    isExclusive?: boolean;
+    exclusiveBonusLabel?: string;
+  } | null;
   produced: Array<{
     id: string;
     blueprintId?: string;
@@ -498,37 +651,6 @@ type PlayerTravelState = {
 };
 type ExclusiveActionIntent = "job" | "study" | "development" | "travel" | "pvp";
 
-const pendingActionByChatId = new Map<number, PendingAction>();
-const companyListByChatId = new Map<number, string[]>();
-const companyRequestsByChatId = new Map<number, string[]>();
-const companyContractRefsByChatId = new Map<number, string[]>();
-const companyMemberRefsByChatId = new Map<number, string[]>();
-const companyBlueprintRefsByChatId = new Map<number, string[]>();
-const companyPartDepositRefsByChatId = new Map<number, string[]>();
-const companyExclusivePartRefsByChatId = new Map<number, string[]>();
-const companyExclusiveSelectedPartRefsByChatId = new Map<number, string[]>();
-const companyWarehouseGadgetRefsByChatId = new Map<number, string[]>();
-const marketListingRefsByChatId = new Map<number, string[]>();
-const hackathonPartRefsByChatId = new Map<number, string[]>();
-const hackathonSabotageTargetRefsByChatId = new Map<number, string[]>();
-const companyBlueprintProgressMessageByChatId = new Map<number, number>();
-const companyBlueprintProgressTimerByChatId = new Map<number, NodeJS.Timeout>();
-const companyMiningNotifyTimerByChatId = new Map<number, NodeJS.Timeout>();
-const hackathonSkillProgressByChatId = new Map<number, HackathonSkillProgressState>();
-const lastInlineMessageByChatId = new Map<number, number>();
-const pvpQueuePollTimerByChatId = new Map<number, NodeJS.Timeout>();
-const pvpDuelProgressMessageByChatId = new Map<number, number>();
-const pvpDuelStageKeyByChatId = new Map<number, string>();
-const companyBlueprintContribByCompanyId = new Map<string, CompanyBlueprintContributionState>();
-// TODO: РџРµСЂРµРЅРµСЃС‚Рё РїРѕР»СЏ company economy (stage/departments/shares/valuation) РІ РїРѕСЃС‚РѕСЏРЅРЅРѕРµ С…СЂР°РЅРёР»РёС‰Рµ Р‘Р”.
-const companyEconomyByCompanyId = new Map<string, CompanyEconomyRuntimeState>();
-const companyWarehousePartsByCompanyId = new Map<string, CompanyWarehousePartItem[]>();
-const companyBlueprintWarehouseByCompanyId = new Map<string, Set<string>>();
-const inventoryRefsByChatId = new Map<number, string[]>();
-const shopSellRefsByChatId = new Map<number, string[]>();
-const companyMenuSectionByChatId = new Map<number, CompanyMenuSection>();
-const lastTelegramMenuByUserId = new Map<string, TelegramMenuState>();
-
 const TELEGRAM_PUBLIC_COMMANDS: Array<{ command: string; description: string }> = [
   { command: "start", description: "Открыть Mini App" },
   { command: "starttg", description: "Текстовый режим" },
@@ -551,30 +673,6 @@ const TELEGRAM_PUBLIC_COMMANDS: Array<{ command: string; description: string }> 
   { command: "city", description: "Сменить город" },
   { command: "help", description: "Справка" },
 ];
-const weeklyQuestStateByUserId = new Map<string, WeeklyQuestState>();
-const shopBuyRefsByChatId = new Map<number, string[]>();
-const repairGadgetRefsByChatId = new Map<number, string[]>();
-const repairOrderRefsByChatId = new Map<number, string[]>();
-const companyRepairOrderRefsByChatId = new Map<number, string[]>();
-const registrationDraftByChatId = new Map<number, {
-  userId: string;
-  startPayload?: string;
-  username?: string;
-  city?: string;
-  personality?: string;
-  gender?: string;
-  skills?: Partial<Record<SkillName, number>>;
-}>();
-const registrationInterviewMessageByChatId = new Map<number, number>();
-const registrationInterviewFeedbackMessageByChatId = new Map<number, number>();
-const registrationTutorialAnimationByChatId = new Map<number, { phase: "blueprint" | "produce"; untilMs: number }>();
-const adminAuthByChatId = new Map<number, boolean>();
-const referralCodeByUserId = new Map<string, string>();
-const referralOwnerByCode = new Map<string, string>();
-const referredByUserId = new Map<string, string>();
-const referralChildrenByUserId = new Map<string, Set<string>>();
-const playerLocationByUserId = new Map<string, PlayerHubLocation>();
-const playerTravelByUserId = new Map<string, PlayerTravelState>();
 const CITY_OPTIONS = ["Санкт-Петербург", "Сеул", "Сингапур", "Сан-Франциско"] as const;
 const TEMPORARILY_OPEN_CITY = "Сан-Франциско" as const;
 const CITY_CAPACITY_MESSAGE = `⚠️ Остальные города временно переполнены.\nСейчас доступен только ${TEMPORARILY_OPEN_CITY}.`;
@@ -656,10 +754,8 @@ const REFERRAL_NEW_PLAYER_REWARD = 100;
 const TELEGRAM_PENDING_PASSWORD_PREFIX = "pending_tg_";
 const TELEGRAM_REGISTERED_PASSWORD_PREFIX = "tg_reg_";
 const WEEKLY_QUEST_REPUTATION_REWARD = 10;
-const TRAVEL_TO_CITY_MS = 5_000;
+const TRAVEL_TO_CITY_MS = 3_000;
 const TRAVEL_TO_COMPANY_MS = 10_000;
-const companySalaryByCompanyId = new Map<string, Map<string, number>>();
-const companySalaryClaimAtByCompanyId = new Map<string, Map<string, number>>();
 const COMPANY_DEPARTMENT_ORDER: CompanyDepartmentKey[] = [
   "researchAndDevelopment",
   "production",
@@ -900,106 +996,6 @@ const ITEM_TYPE_LABELS: Record<GameInventoryItem["type"], string> = {
   gadget: "Гаджет",
 };
 
-function buildMainMenuReplyMarkup(showTutorialButton: boolean) {
-  const keyboard: Array<Array<{ text: string }>> = [
-    [{ text: "👤 Профиль" }, { text: "🎒 Инвентарь" }],
-    [{ text: "🧩 Допы" }, { text: "🏙 Город" }],
-    [{ text: "⚔️ PvP Arena" }],
-    showTutorialButton
-      ? [{ text: "🏢 Компания" }, { text: "🎓 Обучение" }]
-      : [{ text: "🏢 Компания" }],
-    [{ text: "🛠 Админ" }],
-  ];
-  return {
-    keyboard,
-    resize_keyboard: true,
-  };
-}
-
-const MAIN_MENU_REPLY_MARKUP = buildMainMenuReplyMarkup(true);
-
-const EXTRAS_MENU_REPLY_MARKUP = {
-  keyboard: [
-    [{ text: "🏆 Рейтинг" }, { text: "🗓 Квесты" }],
-    [{ text: "🏅 Репутация" }, { text: "👥 Рефералы" }],
-    [{ text: "🏠 Домой" }],
-  ],
-  resize_keyboard: true,
-};
-
-const CITY_MENU_REPLY_MARKUP = {
-  keyboard: [
-    [{ text: "💼 Вакансии" }, { text: "📚 Учёба" }],
-    [{ text: "🛍 Магазин" }, { text: "🏦 Банк" }],
-    [{ text: "🔧 Сервис" }, { text: "🏘 Недвижимость" }],
-    [{ text: "🏷 Аукцион" }],
-    [{ text: "🏠 Домой" }],
-  ],
-  resize_keyboard: true,
-};
-
-const PVP_MENU_REPLY_MARKUP = {
-  keyboard: [
-    [{ text: "⚔️ Найти соперника" }, { text: "🚪 Выйти из PvP" }],
-    [{ text: "🧾 История PvP" }, { text: "🏠 Домой" }],
-  ],
-  resize_keyboard: true,
-};
-
-const JOB_RESULT_REPLY_MARKUP = {
-  keyboard: [
-    [{ text: "💼 Вакансии" }, { text: "🏙 Город" }],
-  ],
-  resize_keyboard: true,
-};
-
-const STUDY_RESULT_REPLY_MARKUP = {
-  keyboard: [
-    [{ text: "📚 Учёба" }, { text: "🏙 Город" }],
-  ],
-  resize_keyboard: true,
-};
-
-const ADMIN_MENU_REPLY_MARKUP = {
-  keyboard: [
-    [{ text: "💸 Выдать деньги" }, { text: "⭐ Выдать опыт" }],
-    [{ text: "♻️ Сброс игрока" }, { text: "🔄 Рестарт игры" }],
-    [{ text: "🏁 Старт хакатона" }, { text: "🛑 Финиш хакатона" }],
-    [{ text: "♻️ Сброс хакатона" }, { text: "🌍 Глобальное событие" }],
-    [{ text: "🚪 Выйти из админки" }, { text: "🏠 Домой" }],
-  ],
-  resize_keyboard: true,
-};
-
-const BANK_MENU_REPLY_MARKUP = {
-  keyboard: [
-    [{ text: "📉 Кредиты" }, { text: "📈 Вклады" }],
-    [{ text: "💳 Погасить кредит" }, { text: "🏧 Снять вклад" }],
-    [{ text: "🪙 Купить GRM" }, { text: "💵 Продать GRM" }],
-    [{ text: "📊 Биржа" }],
-    [{ text: "⬅️ Назад" }],
-  ],
-  resize_keyboard: true,
-};
-
-const SHOP_MENU_REPLY_MARKUP = {
-  keyboard: [
-    [{ text: "📚 Курсы" }, { text: "📱 Гаджеты" }],
-    [{ text: "💱 Продажа" }],
-    [{ text: "⬅️ Назад" }],
-  ],
-  resize_keyboard: true,
-};
-
-const CITY_REPLY_MARKUP = {
-  keyboard: [
-    [{ text: "Сан-Франциско" }],
-    [{ text: "⬅️ Назад" }],
-  ],
-  resize_keyboard: true,
-  one_time_keyboard: true,
-};
-
 const EDUCATION_LEVELS: Record<EducationLevelKey, { name: string; minLevel: number; maxLevel: number; courses: EducationCourse[] }> = {
   school: {
     name: BALANCE_CONFIG.education.levels.school.name,
@@ -1021,76 +1017,8 @@ const EDUCATION_LEVELS: Record<EducationLevelKey, { name: string; minLevel: numb
   },
 };
 
-function trimTrailingSlash(value: string) {
-  return value.endsWith("/") ? value.slice(0, -1) : value;
-}
-
 function canUseTelegramWebAppButton(url: string) {
   return /^https:\/\//i.test(url);
-}
-
-function countRegexMatches(input: string, pattern: RegExp) {
-  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
-  const source = new RegExp(pattern.source, flags);
-  return (input.match(source) ?? []).length;
-}
-
-function getMojibakeScore(input: string) {
-  if (!input) return 0;
-  const markerPattern = /(рџ|вЂ|в„|вљ|вњ|вќ|пїЅ|Ѓ|Љ|Њ|Џ|Ð|Ñ|Ã|Â|â[\u0080-\u00BF]|в[ЂЃ‚„…†‡€‰‹ЉЊЌЋЏ])/;
-  const scoreMarkers = countRegexMatches(input, markerPattern) * 4;
-  const scoreLatinCyrMix = countRegexMatches(input, /[Ѐ-џ]/);
-  const scoreBrokenSingles = countRegexMatches(input, /(?:^|\s)[РС](?=\s|$)/) * 2;
-  return scoreMarkers + scoreLatinCyrMix + scoreBrokenSingles;
-}
-
-function getReadableCyrillicScore(input: string) {
-  return countRegexMatches(input, /[А-Яа-яЁё]/);
-}
-
-function tryWin1251ToUtf8(input: string) {
-  try {
-    return iconv.decode(iconv.encode(input, "win1251"), "utf8");
-  } catch {
-    return input;
-  }
-}
-
-function repairMojibake(input: string) {
-  if (!input) return input;
-  let base = input;
-  if (!/^[\x00-\x7F\s]+$/.test(input)) {
-    const fullCandidate = tryWin1251ToUtf8(input);
-    const originalScore = getMojibakeScore(input);
-    const candidateScore = getMojibakeScore(fullCandidate);
-    const originalReadable = getReadableCyrillicScore(input);
-    const candidateReadable = getReadableCyrillicScore(fullCandidate);
-    if (
-      fullCandidate
-      && !fullCandidate.includes("�")
-      && (candidateScore + 1 < originalScore || (candidateScore <= originalScore && candidateReadable >= originalReadable + 3))
-    ) {
-      base = fullCandidate;
-    }
-  }
-
-  const tryRepairToken = (token: string) => {
-    if (!token || /^[\s]+$/.test(token) || /^[\x00-\x7F]+$/.test(token)) return token;
-    const upperRs = (token.match(/[РС]/g) ?? []).length;
-    const looksMojibake =
-      (
-        /(рџ|вЂ|в„|вљ|вњ|вќ|пїЅ|Ѓ|Љ|Њ|Џ|Ð|Ñ|Ã|Â|â[\u0080-\u00BF]|в[ЂЃ‚„…†‡€‰‹ЉЊЌЋЏ])/.test(token)
-        || /[Ѐ-џ]/.test(token)
-        || /[РС][^\s]{1,}/.test(token)
-      ) || upperRs >= 2;
-    if (!looksMojibake) return token;
-    const repaired = tryWin1251ToUtf8(token);
-    if (!repaired || repaired.includes("�")) return token;
-    return repaired;
-  };
-
-  // Keep whitespace/punctuation boundaries stable while repairing only suspicious chunks.
-  return base.replace(/[^\s]+/g, (token) => tryRepairToken(token));
 }
 
 function normalizeCommand(rawText: string) {
@@ -1160,6 +1088,10 @@ function resolvePlainTextAlias(text: string, chatId?: number) {
     ["🪙 купить gram", "/exchange_to_gram"],
     ["🪙 купить grm", "/exchange_to_gram"],
     ["📊 биржа", "/stocks"],
+    ["🛒 купить бумаги", "/stocks_buy"],
+    ["💸 продать бумаги", "/stocks_sell"],
+    ["📰 новости рынка", "/stocks_news"],
+    ["🏦 назад в банк", "/bank"],
     ["➕ создать компанию", "/company_create"],
     ["📨 вступить в компанию", "/company"],
     ["🏢 профиль", "/company"],
@@ -1352,18 +1284,34 @@ function isCityTemporarilyAvailable(city: string) {
 }
 
 function formatNumber(value: number) {
-  if (Number.isInteger(value)) return String(value);
-  return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  if (!Number.isFinite(value)) return "0";
+  const normalized = Number(value || 0);
+  const abs = Math.abs(normalized);
+  const units = [
+    { threshold: 1_000_000_000_000, suffix: "t" },
+    { threshold: 1_000_000_000, suffix: "b" },
+    { threshold: 1_000_000, suffix: "m" },
+    { threshold: 1_000, suffix: "k" },
+  ];
+  const rounded = (input: number) => Number(input.toFixed(1)).toString();
+
+  for (const unit of units) {
+    if (abs >= unit.threshold) {
+      return `${rounded(normalized / unit.threshold)}${unit.suffix}`;
+    }
+  }
+
+  return rounded(normalized);
 }
 
 function formatRate(value: number) {
   if (!Number.isFinite(value)) return "0";
   if (Math.abs(value) >= 1) return formatNumber(value);
-  return Number(value.toFixed(6)).toString();
+  return Number(value.toFixed(4)).toString();
 }
 
 function formatGramValue(value: number) {
-  return Number(Number(value || 0).toFixed(2)).toString();
+  return formatNumber(Number(value || 0));
 }
 
 function isTelegramRegistrationPending(user: User) {
@@ -1458,10 +1406,7 @@ function isValidRegistrationGender(value?: string) {
 }
 
 function normalizePersonalitySlideIndex(indexRaw: number) {
-  const max = PERSONALITY_OPTIONS.length - 1;
-  if (indexRaw < 0) return max;
-  if (indexRaw > max) return 0;
-  return indexRaw;
+  return normalizePersonalitySlideIndexBase(indexRaw, PERSONALITY_OPTIONS.length);
 }
 
 function buildRegistrationPersonalityInlineMarkup(indexRaw: number) {
@@ -1511,17 +1456,19 @@ function getDraftPersonalitySlideIndex(chatId: number) {
 }
 
 async function sendRegistrationPersonalityPicker(token: string, chatId: number, indexRaw: number) {
-  const index = normalizePersonalitySlideIndex(indexRaw);
-  await sendMessage(token, chatId, await formatRegistrationPersonalitySlide(index), {
-    reply_markup: buildRegistrationPersonalityInlineMarkup(index),
+  await sendRegistrationPersonalityPickerBase({
+    token,
+    chatId,
+    indexRaw,
+    total: PERSONALITY_OPTIONS.length,
+    formatter: formatRegistrationPersonalitySlide,
+    buildMarkup: buildRegistrationPersonalityInlineMarkup,
+    sendMessage,
   });
 }
 
 function normalizeGenderSlideIndex(indexRaw: number) {
-  const max = GENDER_OPTIONS.length - 1;
-  if (indexRaw < 0) return max;
-  if (indexRaw > max) return 0;
-  return indexRaw;
+  return normalizeGenderSlideIndexBase(indexRaw, GENDER_OPTIONS.length);
 }
 
 function buildRegistrationGenderInlineMarkup(indexRaw: number) {
@@ -1559,33 +1506,32 @@ function getDraftGenderSlideIndex(chatId: number) {
 }
 
 async function sendRegistrationGenderPicker(token: string, chatId: number, indexRaw: number) {
-  const index = normalizeGenderSlideIndex(indexRaw);
-  await sendMessage(token, chatId, formatRegistrationGenderSlide(index), {
-    reply_markup: buildRegistrationGenderInlineMarkup(index),
+  await sendRegistrationGenderPickerBase({
+    token,
+    chatId,
+    indexRaw,
+    total: GENDER_OPTIONS.length,
+    formatter: formatRegistrationGenderSlide,
+    buildMarkup: buildRegistrationGenderInlineMarkup,
+    sendMessage,
   });
 }
 
 function getDraftRegistrationSkills(chatId: number) {
-  const draft = registrationDraftByChatId.get(chatId);
-  const base: Record<SkillName, number> = {
-    coding: 0,
-    testing: 0,
-    analytics: 0,
-    drawing: 0,
-    modeling: 0,
-    design: 0,
-    attention: 0,
-  };
-  for (const skill of SKILL_ORDER) {
-    base[skill] = Math.max(0, Math.floor(Number(draft?.skills?.[skill] || 0)));
-  }
-  return base;
+  return getDraftRegistrationSkillsBase({
+    chatId,
+    registrationDraftByChatId,
+    skillOrder: SKILL_ORDER,
+  }) as Record<SkillName, number>;
 }
 
 function getDraftRegistrationSkillPointsLeft(chatId: number) {
-  const skills = getDraftRegistrationSkills(chatId);
-  const spent = SKILL_ORDER.reduce((sum, skill) => sum + Math.max(0, Number(skills[skill] || 0)), 0);
-  return Math.max(0, REGISTRATION_SKILL_POINTS_TOTAL - spent);
+  return getDraftRegistrationSkillPointsLeftBase({
+    chatId,
+    registrationDraftByChatId,
+    skillOrder: SKILL_ORDER,
+    totalPoints: REGISTRATION_SKILL_POINTS_TOTAL,
+  });
 }
 
 function buildRegistrationSkillsInlineMarkup(chatId: number) {
@@ -1613,16 +1559,19 @@ function formatRegistrationSkillsMessage(chatId: number) {
 }
 
 async function sendRegistrationSkillsPicker(token: string, chatId: number) {
-  await sendMessage(token, chatId, formatRegistrationSkillsMessage(chatId), {
-    reply_markup: buildRegistrationSkillsInlineMarkup(chatId),
+  await sendRegistrationSkillsPickerBase({
+    token,
+    chatId,
+    sendMessage,
+    registrationDraftByChatId,
+    skillOrder: SKILL_ORDER,
+    skillLabels: SKILL_LABELS,
+    totalPoints: REGISTRATION_SKILL_POINTS_TOTAL,
   });
 }
 
 function normalizeCitySlideIndex(indexRaw: number) {
-  const max = CITY_OPTIONS.length - 1;
-  if (indexRaw < 0) return max;
-  if (indexRaw > max) return 0;
-  return indexRaw;
+  return normalizeCitySlideIndexBase(indexRaw, CITY_OPTIONS.length);
 }
 
 function buildRegistrationCityInlineMarkup(indexRaw: number) {
@@ -1675,9 +1624,14 @@ function getDraftCitySlideIndex(chatId: number) {
 }
 
 async function sendRegistrationCityPicker(token: string, chatId: number, indexRaw: number) {
-  const index = normalizeCitySlideIndex(indexRaw);
-  await sendMessage(token, chatId, await formatRegistrationCitySlide(index), {
-    reply_markup: buildRegistrationCityInlineMarkup(index),
+  await sendRegistrationCityPickerBase({
+    token,
+    chatId,
+    indexRaw,
+    total: CITY_OPTIONS.length,
+    formatter: formatRegistrationCitySlide,
+    buildMarkup: buildRegistrationCityInlineMarkup,
+    sendMessage,
   });
 }
 
@@ -1914,177 +1868,34 @@ function resolveTelegramRegistrationStep(user: User, chatId: number): Registrati
 }
 
 async function sendTelegramRegistrationStepPrompt(token: string, chatId: number, step: RegistrationStep) {
-  const draft = registrationDraftByChatId.get(chatId);
-  const userId = draft?.userId;
-  const user = userId ? await storage.getUser(userId) : null;
-
-  if (step !== "registration_aptitude") {
-    const interviewMessageId = registrationInterviewMessageByChatId.get(chatId);
-    if (interviewMessageId) {
-      try {
-        await callTelegramApi(token, "deleteMessage", { chat_id: chatId, message_id: interviewMessageId });
-      } catch {
-        // ignore cleanup errors
-      }
-      registrationInterviewMessageByChatId.delete(chatId);
-    }
-    const feedbackMessageId = registrationInterviewFeedbackMessageByChatId.get(chatId);
-    if (feedbackMessageId) {
-      try {
-        await callTelegramApi(token, "deleteMessage", { chat_id: chatId, message_id: feedbackMessageId });
-      } catch {
-        // ignore cleanup errors
-      }
-      registrationInterviewFeedbackMessageByChatId.delete(chatId);
-    }
-  }
-
-  if (step === "registration_intro") {
-    pendingActionByChatId.set(chatId, { type: "registration_intro" });
-    await sendMessage(
+  if (
+    step === "registration_intro"
+    || step === "register_username"
+    || step === "registration_city"
+    || step === "registration_aptitude"
+    || step === "registration_first_craft"
+  ) {
+    await sendTelegramRegistrationStepPromptBase({
       token,
       chatId,
-      [
-        "🧑‍💻 Привет. Добро пожаловать в Gadget Lab.",
-        "",
-        "Сделаем всё быстро и по-человечески:",
-        "1. Выберем город стажировки",
-        "2. Придумаем ник",
-        "3. Определим твой рабочий стиль",
-        "4. Пройдём короткое мини-собеседование",
-        "5. Соберём первый прототип",
-        "",
-        "После этого откроется вся игра.",
-      ].join("\n"),
-      {
-        reply_markup: {
-          inline_keyboard: [[{ text: "🚀 Поехали", callback_data: "reg_tutorial:intro:start" }]],
-        },
-      },
-    );
-    return;
-  }
-
-  if (step === "register_username") {
-    pendingActionByChatId.set(chatId, { type: "register_username" });
-    await sendMessage(
-      token,
-      chatId,
-      [
-        "✍️ Шаг 2/5. Теперь нужен ник.",
-        "Его будут видеть другие игроки, так что лучше выбрать что-то короткое и запоминающееся.",
-        "",
-        "Подойдёт формат:",
-        "• от 3 до 10 символов",
-        "• буквы, цифры, _ и -",
-        "• без пробелов и слеш-команд",
-      ].join("\n"),
-      { reply_markup: { remove_keyboard: true } },
-    );
-    return;
-  }
-
-  if (step === "registration_city") {
-    pendingActionByChatId.set(chatId, { type: "registration_city" });
-    await sendMessage(
-      token,
-      chatId,
-      [
-        "🌍 Шаг 1/5. С чего начнём: выбери город стажировки.",
-        "Это твоя стартовая база. От города зависят экономика, бонусы и общий ритм старта.",
-        CITY_CAPACITY_MESSAGE,
-        "",
-        "🌉 San Francisco",
-        "Амбициозный старт: больше денег и темпа, но и требования выше.",
-        "",
-        "Во время тестов открыт только этот город.",
-        "Выбор важный: бонусы города будут работать постоянно.",
-      ].join("\n"),
-      { reply_markup: buildRegistrationCityChoiceMarkup() },
-    );
-    return;
-  }
-
-  if (step === "registration_aptitude") {
-    pendingActionByChatId.set(chatId, { type: "registration_aptitude" });
-    if (!user) {
-      await sendWithMainKeyboard(token, chatId, "Профиль не найден. Отправь /start ещё раз.");
-      return;
-    }
-    const question = getTelegramRegistrationQuestion(user);
-    if (!question) {
-      await sendWithMainKeyboard(token, chatId, "Интервью уже завершено. Переходим к первому прототипу.");
-      return;
-    }
-    const answers = buildPlayerRegistrationState(user).registrationFlow.answers ?? {};
-    const answeredCount = REGISTRATION_INTERVIEW_QUESTIONS.filter((item) => answers[item.id]).length;
-    const sent = await sendMessage(
-      token,
-      chatId,
-      [
-        `🧠 Шаг 4/5. ${question.title}`,
-        ...(answeredCount === 0
-          ? [
-            "Сейчас будет короткое мини-собеседование.",
-            "От твоих ответов зависит стартовый билд для работы, компании и PvP.",
-            "После каждого ответа я сразу покажу, что именно усилилось.",
-            "",
-            question.prompt,
-            "",
-          ]
-          : [question.prompt, ""]),
-        ...question.options.map((option, index) => `${index + 1}. ${formatInterviewOptionButtonLabel(question.id, option.id)} — ${formatInterviewSkillHint(option.skillWeights as Record<string, number>)}`),
-        "",
-        "Выбери один вариант ответа:",
-      ].join("\n"),
-      {
-        reply_markup: {
-          inline_keyboard: question.options.map((option) => [{
-            text: formatInterviewOptionButtonLabel(question.id, option.id),
-            callback_data: `reg_tutorial:answer:${question.id}:${option.id}`,
-          }]),
-        },
-      },
-    ) as { message_id?: number };
-    if (Number((sent as any)?.message_id || 0)) {
-      registrationInterviewMessageByChatId.set(chatId, Number((sent as any).message_id));
-    }
-    return;
-  }
-
-  if (step === "registration_first_craft") {
-    pendingActionByChatId.set(chatId, { type: "registration_first_craft" });
-    if (!user) {
-      await sendWithMainKeyboard(token, chatId, "Профиль не найден. Отправь /start ещё раз.");
-      return;
-    }
-    const registration = buildPlayerRegistrationState(user);
-    const tutorialCompany = await storage.getTutorialCompanyByOwner(user.id);
-    const cityLabel = registration.city ?? user.city;
-    await sendMessage(
-      token,
-      chatId,
-      [
-        "🛠 Шаг 5/5. Первый рабочий прототип.",
-        `📍 Город: ${cityLabel}`,
-        `📐 Чертёж выдан: ${TUTORIAL_DEMO_BLUEPRINT.name}`,
-        "🧩 Детали для тестовой сборки уже зарезервированы и не тронут твою реальную экономику.",
-        tutorialCompany ? `🏢 Тестовая мастерская: ${tutorialCompany.name}` : "🏢 Подготовим тестовую мастерскую автоматически.",
-        "",
-        "Что будет дальше:",
-        "1. Запускаешь разработку чертежа",
-        "2. Видишь живой прогресс по шкале",
-        "3. После готовности собираешь первый гаджет",
-        "4. Гаджет автоматически попадёт в твой инвентарь",
-      ].join("\n"),
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "📐 Запустить чертёж", callback_data: "reg_tutorial:bp_start" }],
-          ],
-        },
-      },
-    );
+      step,
+      registrationDraftByChatId,
+      registrationInterviewMessageByChatId,
+      registrationInterviewFeedbackMessageByChatId,
+      pendingActionByChatId,
+      storage,
+      callTelegramApi,
+      sendMessage,
+      sendWithMainKeyboard,
+      getTelegramRegistrationQuestion,
+      buildPlayerRegistrationState,
+      registrationInterviewQuestions: REGISTRATION_INTERVIEW_QUESTIONS,
+      formatInterviewOptionButtonLabel,
+      formatInterviewSkillHint,
+      tutorialDemoBlueprint: TUTORIAL_DEMO_BLUEPRINT,
+      cityCapacityMessage: CITY_CAPACITY_MESSAGE,
+      buildRegistrationCityChoiceMarkup,
+    });
     return;
   }
 
@@ -2128,6 +1939,22 @@ function formatRarityBadge(rarity: string) {
   const normalized = normalizePartRarity(rarity);
   const icon = RARITY_LEVELS[normalized]?.icon ?? "⚪";
   return `${icon} ${normalized}`;
+}
+
+function stripLeadingRarityBadgeFromName(name: string) {
+  return String(name || "")
+    .replace(/^[⚪🔵🟣🟡]\s*/u, "")
+    .trim();
+}
+
+function formatWarehousePartLine(
+  item: { name: string; quantity?: number; rarity?: string },
+  index?: number,
+) {
+  const prefix = Number.isFinite(index) ? `${Number(index) + 1}. ` : "";
+  const name = stripLeadingRarityBadgeFromName(String(item.name || ""));
+  const qty = Math.max(1, Number(item.quantity || 1));
+  return `${prefix}${name} x${qty} (${formatRarityBadge(String(item.rarity || "Common"))})`;
 }
 
 function formatNotices(notices: string[]) {
@@ -2318,7 +2145,6 @@ function getCompanySalaryClaimMap(companyId: string) {
 }
 
 function getCompanyMemberSalary(companyId: string, userId: string, role: string) {
-  if (role === "owner") return 0;
   const salaryMap = getCompanySalaryMap(companyId);
   return Math.max(0, Math.floor(Number(salaryMap.get(userId) ?? COMPANY_DEFAULT_MEMBER_SALARY_GRM)));
 }
@@ -2328,7 +2154,23 @@ function setCompanyMemberSalary(companyId: string, userId: string, amountGRM: nu
   salaryMap.set(userId, Math.max(0, Math.floor(Number(amountGRM) || 0)));
 }
 
-function formatPlayerProfileFrom(
+function getBaseSkillValues(game: GameView) {
+  const baseSkills = { ...(game.skills || {}) } as Record<SkillName, number>;
+  for (const skill of SKILL_ORDER) {
+    baseSkills[skill] = Number(baseSkills[skill] || 0);
+  }
+  for (const item of game.inventory || []) {
+    if ((item.type !== "gear" && item.type !== "gadget") || !item.isEquipped) continue;
+    for (const [key, rawValue] of Object.entries(item.stats || {})) {
+      if (!(key in baseSkills)) continue;
+      const skill = key as SkillName;
+      baseSkills[skill] = Number(Math.max(0, Number(baseSkills[skill] || 0) - Number(rawValue || 0)).toFixed(2));
+    }
+  }
+  return baseSkills;
+}
+
+async function formatPlayerProfileFrom(
   user: User,
   game: GameView,
   membership?: { company: any; role: string } | null,
@@ -2336,12 +2178,22 @@ function formatPlayerProfileFrom(
   const advancedPersonality = getAdvancedPersonalityById(getAdvancedPersonalityId(user) || "");
   const profession = getProfessionById(getPlayerProfessionId(user) || "");
   const activeHouse = getActiveHousing(user);
+  const stockSnapshot = await getStockMarketSnapshot(user.id);
+  const holdings = stockSnapshot.holdings.slice(0, 5);
   const skills = SKILL_ORDER.map((skill) => `${SKILL_LABELS[skill]}: ${formatNumber(game.skills[skill] ?? 0)}`).join(" | ");
   const inventoryCount = game.inventory.reduce((sum, item) => sum + Math.max(1, item.quantity || 1), 0);
   const inventoryCapacity = getInventoryCapacityForUser(user);
   const companyLine = membership
     ? `🏢 Компания: ${membership.company.name} (${formatCompanyRole(membership.role)})`
     : "🏢 Компания: нет";
+  const stocksLine = holdings.length
+    ? [
+        `📈 Ценные бумаги: ${getCurrencySymbol(user.city)}${formatNumber(stockSnapshot.portfolioValue)}`,
+        ...holdings.map((holding) =>
+          `• ${holding.name} (${holding.ticker}) x${holding.quantity} = ${getCurrencySymbol(user.city)}${formatNumber(holding.marketValue)}`
+        ),
+      ].join("\n")
+    : "📈 Ценные бумаги: нет";
   return [
     "🎮 ПРОФИЛЬ ИГРОКА",
     "━━━━━━━━━━━━━━",
@@ -2352,10 +2204,11 @@ function formatPlayerProfileFrom(
     "━━━━━━━━━━━━━━",
     `⭐ Уровень: ${user.level}   📈 Опыт: ${user.experience}/100`,
     advancedPersonality ? `✨ Второй характер: ${advancedPersonality.emoji} ${advancedPersonality.name}` : "",
-    `💰 Баланс: ${getCurrencySymbol(user.city)}${user.balance}   🏅 Репутация: ${user.reputation}`,
+    `💰 Баланс: ${getCurrencySymbol(user.city)}${formatNumber(user.balance)}   🏅 Репутация: ${formatNumber(user.reputation)}`,
     `🪙 GRM: ${formatGramValue(game.gramBalance)} GRM`,
     `🏠 Дом: ${activeHouse?.shortName ?? "нет"}`,
     `⚡ Энергия: Работа ${Math.round(game.workTime * 100)}% | Учёба ${Math.round(game.studyTime * 100)}%`,
+    stocksLine,
     "━━━━━━━━━━━━━━",
     `🎒 Инвентарь: ${inventoryCount}/${inventoryCapacity} слотов`,
     formatBankProduct(game.activeBankProduct, user.city, game.gramBalance),
@@ -2428,12 +2281,12 @@ async function maybePromptProfession(token: string, chatId: number, user: User) 
 
 async function formatPlayerProfile(snapshot: Snapshot) {
   const membership = await getPlayerCompanyContext(snapshot.user.id);
-  return formatPlayerProfileFrom(snapshot.user, snapshot.game as GameView, membership);
+  return await formatPlayerProfileFrom(snapshot.user, snapshot.game as GameView, membership);
 }
 
 async function formatLiveProfile(user: User, game: GameView) {
   const membership = await getPlayerCompanyContext(user.id);
-  return formatPlayerProfileFrom(user, game, membership);
+  return await formatPlayerProfileFrom(user, game, membership);
 }
 
 function getJobDropChance(expReward: number, pity: number) {
@@ -2466,12 +2319,96 @@ function formatJobsMenu(snapshot: Snapshot) {
       const exp = snapshot.user.personality === "workaholic" ? Math.floor(job.expReward * 1.2) : job.expReward;
       const dropChance = getJobDropChance(job.expReward, snapshot.game.jobDropPity);
       const energyCost = getJobWorkEnergyCost(job);
-      return `${index + 1}. ${job.name}\nНаграда: ${currency}${money}, XP: ${exp}, 🎁 ${dropChance}%\nТребования: ${formatStats(job.minStats)}\n⚡ Энергия работы: -${Math.round(energyCost * 100)}%`;
+      return `${index + 1}. ${job.name}\nНаграда: ${currency}${money}, XP: ${exp}, 🎁 ${dropChance}%\nТребования: ${formatStats(job.minStats)}\n⚡ Энергия работы: -${Math.round(energyCost * 100)}`;
     }),
     "",
     `Текущая энергия работы: ${formatEnergyPercent(snapshot.game.workTime)}`,
-    "Отправь номер вакансии или нажми «⬅️ Назад».",
+    "Выбери вакансию кнопкой ниже.",
   ].join("\n\n");
+}
+
+function buildJobsInlineMarkup(snapshot: Snapshot) {
+  const jobs = listJobsByCity(snapshot.user.city, getPlayerProfessionId(snapshot.user), snapshot.user.level);
+  const rows = jobs.map((job, index) => ([{
+    text: `💼 ${index + 1}. ${job.name}`,
+    callback_data: `job:pick:${index + 1}`,
+  }]));
+  rows.push([{
+    text: "⬅️ Назад",
+    callback_data: "job:back",
+  }]);
+  return { inline_keyboard: rows };
+}
+
+async function sendJobsSelectionMenu(
+  token: string,
+  chatId: number,
+  player: User,
+  snapshot: Snapshot,
+  prefix?: string,
+) {
+  pendingActionByChatId.set(chatId, { type: "job_select" });
+  rememberTelegramMenu(player.id, { menu: "jobs" });
+  await sendMessage(token, chatId, [prefix, formatJobsMenu(snapshot)].filter(Boolean).join("\n\n"), {
+    reply_markup: buildJobsInlineMarkup(snapshot),
+  });
+}
+
+async function runJobSelection(
+  token: string,
+  chatId: number,
+  player: User,
+  ref: string,
+) {
+  try {
+    const result = await completeJob(player.id, ref);
+    const currency = getCurrencySymbol(result.user.city);
+    const lines = result.failed
+      ? [
+          `❌ Вакансия провалена: ${result.job.name}`,
+          `Риск провала: ${Math.round(Number(result.failureChance ?? 0))}%`,
+          `-${currency}${Math.max(0, Number(result.penaltyMoney ?? 0))} (штраф)`,
+          `⚡ Потрачено энергии работы: ${Math.round(Number(result.energyCost ?? 0) * 100)}`,
+          `⚡ Остаток энергии работы: ${formatEnergyPercent(result.state.workTime)}`,
+          `💰 Итого денег: ${currency}${formatNumber(result.user.balance)}`,
+          `⭐ Итого опыта: ур. ${result.user.level}, ${result.user.experience}/100 XP`,
+        ]
+      : [
+          `✅ Вакансия выполнена: ${result.job.name}`,
+          `+${currency}${result.finalMoney}, +${result.finalExp} XP, +${Math.max(0, Number(result.reputationGain ?? 2))} репутации`,
+          `⚡ Потрачено энергии работы: ${Math.round(Number(result.energyCost ?? 0) * 100)}`,
+          `⚡ Остаток энергии работы: ${formatEnergyPercent(result.state.workTime)}`,
+          `💰 Итого денег: ${currency}${formatNumber(result.user.balance)}`,
+          `⭐ Итого опыта: ур. ${result.user.level}, ${result.user.experience}/100 XP`,
+        ];
+    if (!result.failed) {
+      await tryApplyTutorialEvent(player.id, "first_job_done");
+      updateWeeklyQuestProgress(result.user, "jobs", 1);
+    }
+    if (!result.failed && result.droppedPart) lines.push(`🎁 Деталь: ${result.droppedPart.name} (${result.droppedPart.rarity})`);
+    const lostPartNotice = result.notices.find((line) => line.includes("Инвентарь полон") && line.includes("потеряна"));
+    if (!result.failed && lostPartNotice) lines.push(lostPartNotice);
+    if (!result.failed) {
+      const tutorialContinueLine = await getTutorialContinueLine(player.id);
+      if (tutorialContinueLine) lines.push("", tutorialContinueLine);
+    }
+    await sendMessage(token, chatId, lines.join("\n"), { reply_markup: JOB_RESULT_REPLY_MARKUP });
+    const nextSnapshot = {
+      user: result.user,
+      game: result.state,
+      notices: result.notices,
+    } as Snapshot;
+    await sendJobsSelectionMenu(token, chatId, result.user, nextSnapshot);
+    if (!result.failed && player.level < ADVANCED_PERSONALITY_UNLOCK_LEVEL && result.user.level >= ADVANCED_PERSONALITY_UNLOCK_LEVEL) {
+      await maybePromptAdvancedPersonality(token, chatId, result.user);
+    }
+    if (!result.failed && player.level < PROFESSION_UNLOCK_LEVEL && result.user.level >= PROFESSION_UNLOCK_LEVEL) {
+      await maybePromptProfession(token, chatId, result.user);
+    }
+    return { ok: true as const };
+  } catch (error) {
+    return { ok: false as const, message: extractErrorMessage(error) };
+  }
 }
 
 function mapPartTypeToHackathonType(partType?: string): HackathonPartType | null {
@@ -3193,7 +3130,7 @@ function formatShopMenu(snapshot: Snapshot, tab: ShopMenuTab = "all") {
   if (tab === "all") {
     return [
       `🛍 Магазин города`,
-      `Баланс: ${currency}${snapshot.user.balance}`,
+      `Баланс: ${currency}${formatNumber(snapshot.user.balance)}`,
       "",
       "Здесь можно:",
       "• купить курс для прокачки навыков",
@@ -3208,10 +3145,10 @@ function formatShopMenu(snapshot: Snapshot, tab: ShopMenuTab = "all") {
   const title = tab === "parts" ? "📚 Курсы" : "📱 Гаджеты";
   return [
     `${title}`,
-    `Баланс: ${currency}${snapshot.user.balance}`,
+    `Баланс: ${currency}${formatNumber(snapshot.user.balance)}`,
     ...(tab === "parts"
       ? [
-        `Лимит учебных предметов на уровне ${snapshot.user.level}: ${consumableUsed}/${consumableUseLimit}`,
+        `Лимит учебных предметов на уровне ${formatNumber(snapshot.user.level)}: ${formatNumber(consumableUsed)}/${formatNumber(consumableUseLimit)}`,
         `Потолок навыков от курсов и учёбы: ${skillCap}`,
       ]
       : []),
@@ -3239,7 +3176,7 @@ function buildShopSellMenu(snapshot: Snapshot) {
 
   const refs = sellable.map((item) => item.id);
   const lines = [
-    `💱 Продажа: баланс ${currency}${snapshot.user.balance}`,
+    `💱 Продажа: баланс ${currency}${formatNumber(snapshot.user.balance)}`,
     "Список позиций из инвентаря, которые можно продать:",
     ...sellable.map((item, index) => {
       const qty = Math.max(1, item.quantity || 1);
@@ -3337,6 +3274,7 @@ function buildInventoryMenu(snapshot: Snapshot) {
       ].join("\n");
     }),
     "",
+    "ℹ️ Надеть можно только один предмет каждого типа одновременно.",
     "Также доступны: /use <номер>, /equip <номер>, /service <номер>, /scrap <номер>",
   ].join("\n\n");
 
@@ -3367,6 +3305,20 @@ function buildInventoryInlineButtons(view: InventoryMenuView) {
 
   rows.push([{ text: "🔄 Обновить инвентарь", callback_data: "inv:open" }]);
   return { inline_keyboard: rows };
+}
+
+function buildShopPurchaseInlineMarkup(item: Pick<GameInventoryItem, "id" | "type" | "name">) {
+  if (item.type === "consumable") {
+    return {
+      inline_keyboard: [[{ text: `⚡ Использовать ${item.name}`, callback_data: `shopbuy:use:${item.id}` }]],
+    };
+  }
+  if (item.type === "gear") {
+    return {
+      inline_keyboard: [[{ text: `🟢 Надеть ${item.name}`, callback_data: `shopbuy:equip:${item.id}` }]],
+    };
+  }
+  return undefined;
 }
 
 function buildQuestInlineButtons(canClaim: boolean) {
@@ -3415,15 +3367,15 @@ function formatBankProgramsMenu(type: BankProductType, snapshot: Snapshot) {
       `${index + 1}. ${program.name}\nУровень: ${program.minLevel}+ | ${program.interest}%\nСумма: ${currency}${program.minAmount}-${currency}${program.maxAmount}\n${program.description}`
     ),
     "",
-    "Отправь: <номер программы> <сумма> <дни>",
-    "Пример: 1 10000 14",
+    "Выбери программу кнопкой или ответь сообщением: <номер> <сумма> <дни>",
+    "Пример ответа: 1 10000 14",
   ].join("\n\n");
 }
 
 function formatTopPlayers(users: User[]) {
   const top = [...users].sort((a, b) => (b.level - a.level) || (b.balance - a.balance)).slice(0, 10);
   return top.length
-    ? `🏆 Топ игроков\n${top.map((user, index) => `${index + 1}. ${user.username} — lvl ${user.level}, 💰 ${user.balance}`).join("\n")}`
+    ? `🏆 Топ игроков\n${top.map((user, index) => `${index + 1}. ${user.username} — lvl ${formatNumber(user.level)}, 💰 ${formatNumber(user.balance)}`).join("\n")}`
     : "🏆 Пока нет игроков в рейтинге";
 }
 
@@ -3716,6 +3668,9 @@ function formatTutorialMenuText(snapshot: TutorialApiSnapshot, city?: string | n
     : snapshot.state.isActive
     ? "🟢 Обучение активно"
     : "🟡 Обучение не начато";
+  const mentorText = step === 7
+    ? `${stepContent.mentorText}\n\n🏦 Подсказка: биржа находится в банке.`
+    : stepContent.mentorText;
 
   return [
     "👨‍🏫 НАСТАВНИК",
@@ -3724,7 +3679,7 @@ function formatTutorialMenuText(snapshot: TutorialApiSnapshot, city?: string | n
     progress,
     `Шаг ${step}/${TUTORIAL_TOTAL_STEPS}: ${stepContent.title}`,
     "",
-    stepContent.mentorText,
+    mentorText,
     "",
     `🎯 Задача: ${stepContent.task}`,
     `🎁 Награда: ${formatTutorialRewardText(stepContent, city)}`,
@@ -3818,6 +3773,7 @@ async function getCompanyExclusiveSnapshot(companyId: string) {
     active: any;
     catalog: any[];
     produced: any[];
+    productionOrder?: CompanyBlueprintSnapshot["productionOrder"] | null;
   };
 }
 
@@ -3912,8 +3868,8 @@ function formatCompanyMenuWithoutMembership(companies: any[], city: string) {
       "Пока нет ни одной компании.",
       "Создай первую и стань CEO.",
       `💸 Стоимость создания: ${createCost}`,
-      "Создать: /company_create <название>",
-      "Потом бот попросит эмоджи компании.",
+      "Нажми кнопку «Создать компанию».",
+      "Потом бот попросит название и эмоджи компании.",
     ].join("\n");
   }
 
@@ -3928,10 +3884,21 @@ function formatCompanyMenuWithoutMembership(companies: any[], city: string) {
     }),
     "",
     `💸 Стоимость создания: ${createCost}`,
-    "Вступить: /company_join <номер>",
-    "Создать: /company_create <название>",
-    "Потом бот попросит эмоджи компании.",
+    "Выбери компанию кнопкой ниже или нажми «Создать компанию».",
   ].join("\n");
+}
+
+function buildCompanyRegistryInlineMarkup(companies: any[]) {
+  const top = getTopCompanies(companies);
+  return {
+    inline_keyboard: [
+      ...top.map((company, index) => ([{
+        text: `${index + 1}. ${company.name}`,
+        callback_data: `company:join:${company.id}`,
+      }])),
+      [{ text: "➕ Создать компанию", callback_data: "company:create_start" }],
+    ],
+  };
 }
 
 function formatContractStatus(contract: CityContractView, companyId: string) {
@@ -3942,11 +3909,11 @@ function formatContractStatus(contract: CityContractView, companyId: string) {
 
 function formatWorkContractRequirement(contract: CityContractView) {
   if (contract.kind === "parts_supply") {
-    return `Требование: ${contract.requiredPartType || "part"} x${contract.requiredQuantity} (из инвентаря сдающего игрока)`;
+    return `Требование: ${contract.requiredPartType || "part"} x${contract.requiredQuantity} со склада компании`;
   }
   if (contract.kind === "skill_research") {
     const label = contract.requiredSkill ? (SKILL_LABELS[contract.requiredSkill] ?? contract.requiredSkill) : "навык";
-    return `Требование: ${label} ${formatNumber(contract.requiredSkillPoints ?? 0)}`;
+    return `Требование: суммарный навык команды ${label} ${formatNumber(contract.requiredSkillPoints ?? 0)}`;
   }
   return `Категория: ${contract.category} | Нужно: ${contract.requiredQuantity} шт.\nМин. качество: ${contract.minQuality}`;
 }
@@ -3999,9 +3966,16 @@ function buildCompanyBureauInlineButtons(
   isOwner: boolean,
   activeStatus: string | undefined,
   miningStatus: CompanyMiningStatusView | null,
+  blueprintRefs: string[] = [],
 ) {
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   rows.push([{ text: "🧪 Разработка", callback_data: "company:bureau" }]);
+  if (isOwner && !activeStatus && blueprintRefs.length) {
+    rows.push(...blueprintRefs.slice(0, 12).map((blueprintId, index) => ([{
+      text: `🪄 Чертёж ${index + 1}`,
+      callback_data: `company:bp_start:${blueprintId}`,
+    }])));
+  }
   if (isOwner) {
     rows.push([{ text: "⚙️ Производство", callback_data: "company:bp_produce" }]);
   }
@@ -4017,6 +3991,31 @@ function buildCompanyBureauInlineButtons(
     rows.push([{ text: "📈 Прогресс", callback_data: "company:bp_progress_live" }]);
   }
   return buildCompanyInlineMenu(rows);
+}
+
+function buildCompanyExclusiveProduceInlineMarkup(
+  snapshot: Awaited<ReturnType<typeof getCompanyExclusiveSnapshot>>,
+  role: string | null | undefined,
+  chatId: number,
+) {
+  const catalog = snapshot.catalog ?? [];
+  const pickRows = catalog.slice(0, 12).map((item, index) => ([{
+    text: `🏭 ${index + 1}. ${item.name}`,
+    callback_data: `company:exclusive_produce_pick:${item.id}`,
+  }]));
+  const baseInline = ((buildCompanyReplyMarkup(role, chatId) as any)?.inline_keyboard ?? []) as any[];
+  return {
+    inline_keyboard: [...pickRows, ...baseInline],
+  };
+}
+
+function buildCompanyProductionConfirmInlineMarkup(kind: "standard" | "exclusive") {
+  return {
+    inline_keyboard: [
+      [{ text: "✅ Запустить партию", callback_data: kind === "standard" ? "company:bp_confirm_start" : "company:exclusive_confirm_start" }],
+      [{ text: "⬅️ Изменить количество", callback_data: kind === "standard" ? "company:bp_confirm_back" : "company:exclusive_confirm_back" }],
+    ],
+  };
 }
 
 function buildCompanyRequestsInlineButtons(requests: Array<{ id: string; username: string }>) {
@@ -4059,7 +4058,13 @@ async function formatCompanyWorkSection(input: CompanyContext, chatId: number) {
       `${formatWorkContractRequirement(contract)}`,
       `Награда: ${contract.rewardMoney} GRM +${contract.rewardOrk} ORK`,
       `Статус: ${formatContractStatus(contract, input.company.id)}`,
-      `/company_contract_accept ${index + 1} | /company_contract_deliver ${index + 1}`,
+      contract.status === "open"
+        ? "Действие: принять кнопкой под сообщением."
+        : contract.assignedCompanyId === input.company.id
+          ? contract.kind === "parts_supply"
+            ? "Действие: CEO выбирает детали кнопкой «Сдать»."
+            : "Действие: сдать кнопкой под сообщением."
+          : "Действие: контракт занят другой компанией.",
     ].join("\n")),
   ].join("\n\n"),
     contracts,
@@ -4081,9 +4086,18 @@ async function formatCompanyWarehouseSection(input: CompanyContext, chatId?: num
       Number(chatId),
       groupedGadgets.map(({ representative }) => representative.id),
     );
+    companyWarehousePartRefsByChatId.set(
+      Number(chatId),
+      warehouseParts.map((part, index) => `p${index + 1}`),
+    );
   }
   const partLabel = warehouseParts.length
-    ? warehouseParts.map((part, index) => `${index + 1}. ${part.name} x${part.quantity} (${formatRarityBadge(part.rarity)})`).join("\n")
+    ? warehouseParts.map((part, index) => [
+        formatWarehousePartLine(part, index),
+        input.role === "owner" || input.role === "manager"
+          ? `Аукцион: /company_auction_list p${index + 1} <цена> [часы]`
+          : "",
+      ].filter(Boolean).join("\n")).join("\n")
     : "Запчастей на складе нет.";
   const blueprintLabel = storedBlueprintIds.length
     ? storedBlueprintIds.map((id, index) => `${index + 1}. ${id}`).join("\n")
@@ -4171,6 +4185,9 @@ async function formatCompanyBureauSection(input: CompanyContext, chatId: number,
     `Скидка Production cost: ${effects.productionCostMultiplier < 1 ? `${Math.round((1 - effects.productionCostMultiplier) * 100)}%` : "нет"}`,
     `Активный чертеж: ${activeBlueprint?.name ?? "нет"}`,
     `Статус: ${statusLabel}`,
+    snapshot.productionOrder
+      ? `Производство: ${snapshot.productionOrder.blueprintName} x${snapshot.productionOrder.quantity} (${snapshot.productionOrder.status === "ready_to_claim" ? "готово к выдаче" : `ещё ${formatProductionOrderRemaining(snapshot.productionOrder)}`})`
+      : "Производство: нет активной партии",
     exclusiveSnapshot?.active
       ? `Эксклюзив: ${exclusiveSnapshot.active.blueprint?.name ?? "прототип"} (${exclusiveSnapshot.active.status})`
       : "Эксклюзив: нет активного прототипа",
@@ -4181,17 +4198,18 @@ async function formatCompanyBureauSection(input: CompanyContext, chatId: number,
       ? [
           "Доступные чертежи:",
           ...unlockedBlueprints.map((bp, index) =>
-            `${index + 1}. ${bp.name} (${requirementsLabel(bp.requirements)}) /dev${index + 1}`
+            `${index + 1}. ${bp.name} (${requirementsLabel(bp.requirements)})`
           ),
         ].join("\n")
       : "Нет доступных чертежей. Разработай базовую модель, чтобы открыть следующее поколение.",
     "",
     input.role === "owner"
-      ? "Выбери чертеж командой /devN (например: /dev1). Эксклюзивы: /company_exclusive"
+      ? "Выбери чертёж кнопкой ниже. Эксклюзивы открываются в отдельном разделе компании."
       : "Бюро в режиме просмотра. Управление доступно CEO.",
   ].filter(Boolean).join("\n"),
     snapshot,
     miningStatus,
+    blueprintRefs: availableIds,
   };
 }
 
@@ -4200,9 +4218,7 @@ async function formatCompanyManagementSection(input: CompanyContext) {
   const members = await storage.getCompanyMembers(input.company.id);
   const memberLines = members.length
     ? members.map((member, index) => {
-      const salaryLabel = member.role === "owner"
-        ? "зарплата: n/a"
-        : `зарплата: ${getCompanyMemberSalary(String(input.company.id), member.userId, member.role)} GRM`;
+      const salaryLabel = `зарплата: ${getCompanyMemberSalary(String(input.company.id), member.userId, member.role)} GRM`;
       return `${index + 1}. ${member.username} (${formatCompanyRole(member.role)}, ${salaryLabel})`;
     })
     : ["Участников пока нет."];
@@ -4232,11 +4248,8 @@ async function formatCompanySalariesSection(input: CompanyContext, chatId: numbe
   companyMemberRefsByChatId.set(chatId, members.map((member) => member.userId));
   const lines = members.length
     ? members.map((member, index) => {
-      if (member.role === "owner") {
-        return `${index + 1}. ${member.username} (${formatCompanyRole(member.role)})\nЗарплата: n/a`;
-      }
       const salary = getCompanyMemberSalary(String(input.company.id), member.userId, member.role);
-      return `${index + 1}. ${member.username} (${formatCompanyRole(member.role)})\nЗарплата: ${salary} GRM\nКоманда: /company_set_salary ${index + 1}`;
+      return `${index + 1}. ${member.username} (${formatCompanyRole(member.role)})\nЗарплата: ${salary} GRM`;
     })
     : ["Сотрудников пока нет."];
 
@@ -4247,9 +4260,29 @@ async function formatCompanySalariesSection(input: CompanyContext, chatId: numbe
     ...lines,
     "",
     input.role === "owner"
-      ? "Укажи сумму командой: /company_set_salary <номер сотрудника> <GRM>"
-      : "Получить выплату: /company_salary_claim",
+      ? "Выбери сотрудника кнопкой ниже, затем бот попросит сумму."
+      : "Получить выплату можно кнопкой ниже.",
   ].join("\n\n");
+}
+
+function buildCompanySalariesInlineMarkup(input: CompanyContext, chatId: number) {
+  const memberRefs = companyMemberRefsByChatId.get(chatId) ?? [];
+  const rows = memberRefs
+    .map((userId, index) => ({ userId, index }))
+    .filter(({ userId }) => Boolean(userId));
+
+  const memberButtons = rows.map(({ userId, index }) => [{
+    text: `💸 ${index + 1}`,
+    callback_data: `company:salary_pick:${userId}`,
+  }]);
+
+  const baseInline = ((buildCompanyReplyMarkup(input.role, chatId) as any)?.inline_keyboard ?? []) as any[];
+  const extraRows = input.role === "owner"
+    ? memberButtons
+    : [[{ text: "💰 Получить зарплату", callback_data: "company:salary_claim" }]];
+  return {
+    inline_keyboard: [...extraRows, ...baseInline],
+  };
 }
 
 async function formatCompanyStaffingSection(input: CompanyContext, chatId: number) {
@@ -4278,18 +4311,156 @@ async function formatCompanyStaffingSection(input: CompanyContext, chatId: numbe
       return `${index + 1}. ${member.username}\nПрофессия: ${profession ? `${profession.emoji} ${profession.name}` : "не выбрана"}\nОтдел: ${department}`;
     }),
     "",
-    "Назначение: /company_assign_department <номер> <departmentKey>",
-    "Ключи: researchAndDevelopment, production, marketing, finance, infrastructure",
+    "Выбери сотрудника кнопкой ниже, затем выбери отдел.",
   ].join("\n\n");
+}
+
+function buildCompanyStaffingInlineMarkup(chatId: number, role: string | null | undefined) {
+  const memberRefs = companyMemberRefsByChatId.get(chatId) ?? [];
+  const memberButtons = memberRefs.map((userId, index) => ([{
+    text: `👤 ${index + 1}`,
+    callback_data: `company:staff_pick:${userId}`,
+  }]));
+  const baseInline = ((buildCompanyReplyMarkup(role, chatId) as any)?.inline_keyboard ?? []) as any[];
+  return {
+    inline_keyboard: [...memberButtons, ...baseInline],
+  };
+}
+
+function buildCompanyDepartmentSelectInlineMarkup(userId: string, role: string | null | undefined, chatId: number) {
+  const deptRows = COMPANY_DEPARTMENT_ORDER.map((departmentKey) => ([{
+    text: `${COMPANY_DEPARTMENT_EMOJIS[departmentKey]} ${DEPARTMENT_LABELS[departmentKey]}`,
+    callback_data: `company:staff_assign:${userId}:${departmentKey}`,
+  }]));
+  const baseInline = ((buildCompanyReplyMarkup(role, chatId) as any)?.inline_keyboard ?? []) as any[];
+  return {
+    inline_keyboard: [...deptRows, ...baseInline],
+  };
+}
+
+const COMPANY_CONTRACT_PARTS_PAGE_SIZE = 12;
+const COMPANY_EXCLUSIVE_PARTS_PAGE_SIZE = 12;
+
+function buildCompanyContractPartsSummary(contract: CityContractView, companyId: string, chatId: number) {
+  const unitRefs = getCompanyWarehousePartUnitRefs(companyId, contract.requiredPartType);
+  companyContractPartRefsByChatId.set(chatId, unitRefs.map((item) => item.ref));
+  const selectedRefs = (companyContractSelectedPartRefsByChatId.get(chatId) ?? []).filter((ref) =>
+    unitRefs.some((item) => item.ref === ref),
+  );
+  companyContractSelectedPartRefsByChatId.set(chatId, selectedRefs);
+  const totalPages = Math.max(1, Math.ceil(unitRefs.length / COMPANY_CONTRACT_PARTS_PAGE_SIZE));
+  const currentPage = Math.max(0, Math.min(totalPages - 1, companyContractPartPageByChatId.get(chatId) ?? 0));
+  companyContractPartPageByChatId.set(chatId, currentPage);
+  const pageStart = currentPage * COMPANY_CONTRACT_PARTS_PAGE_SIZE;
+  const pageItems = unitRefs.slice(pageStart, pageStart + COMPANY_CONTRACT_PARTS_PAGE_SIZE);
+  const selectedText = selectedRefs.length
+    ? selectedRefs.map((ref, index) => {
+        const item = unitRefs.find((entry) => entry.ref === ref);
+        return item ? `${index + 1}. ${formatWarehousePartLine({ ...item, quantity: 1 })}` : `${index + 1}. ${ref}`;
+      }).join("\n")
+    : "Пока ничего не выбрано.";
+
+  return {
+    unitRefs,
+    selectedRefs,
+    totalPages,
+    currentPage,
+    pageStart,
+    pageItems,
+    selectedText,
+  };
+}
+
+function buildCompanyContractPartsInlineMarkup(chatId: number, requiredQuantity: number) {
+  const refs = companyContractPartRefsByChatId.get(chatId) ?? [];
+  const selectedRefs = companyContractSelectedPartRefsByChatId.get(chatId) ?? [];
+  const totalPages = Math.max(1, Math.ceil(refs.length / COMPANY_CONTRACT_PARTS_PAGE_SIZE));
+  const currentPage = Math.max(0, Math.min(totalPages - 1, companyContractPartPageByChatId.get(chatId) ?? 0));
+  const pageStart = currentPage * COMPANY_CONTRACT_PARTS_PAGE_SIZE;
+  const pageRefs = refs.slice(pageStart, pageStart + COMPANY_CONTRACT_PARTS_PAGE_SIZE);
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  for (let index = 0; index < pageRefs.length; index += 2) {
+    const slice = pageRefs.slice(index, index + 2);
+    rows.push(
+      slice.map((ref, localIndex) => {
+        const partNumber = pageStart + index + localIndex + 1;
+        return {
+          text: `${selectedRefs.includes(ref) ? "✅" : "▫️"} Деталь ${partNumber}`,
+          callback_data: `company:contract_part_toggle:${partNumber}`,
+        };
+      }),
+    );
+  }
+
+  if (totalPages > 1) {
+    rows.push([
+      { text: "⬅️", callback_data: `company:contract_part_page:${Math.max(0, currentPage - 1)}` },
+      { text: `📄 ${currentPage + 1}/${totalPages}`, callback_data: "company:contract_part_page:stay" },
+      { text: "➡️", callback_data: `company:contract_part_page:${Math.min(totalPages - 1, currentPage + 1)}` },
+    ]);
+  }
+
+  rows.push([
+    { text: `📦 Сдать детали (${selectedRefs.length}/${requiredQuantity})`, callback_data: "company:contract_part_done" },
+    { text: "♻️ Сброс", callback_data: "company:contract_part_reset" },
+  ]);
+  rows.push([{ text: "⬅️ Назад", callback_data: "company:contract_part_back" }]);
+
+  return { inline_keyboard: rows };
+}
+
+async function sendCompanyContractPartsPicker(
+  token: string,
+  chatId: number,
+  membership: CompanyContext,
+  contract: CityContractView,
+  messageId?: number,
+) {
+  const summary = buildCompanyContractPartsSummary(contract, membership.company.id, chatId);
+  const partsText = summary.pageItems.length
+    ? summary.pageItems.map((item, index) => formatWarehousePartLine({ ...item, quantity: 1 }, summary.pageStart + index)).join("\n")
+    : "На складе компании нет подходящих запчастей.";
+  const text = [
+    `📦 СДАЧА КОНТРАКТА: ${contract.title}`,
+    `Нужно сдать: ${contract.requiredQuantity} шт. типа ${contract.requiredPartType || "part"}`,
+    "CEO сам выбирает, какие запчасти отправить со склада компании.",
+    "",
+    "Подходящие детали:",
+    partsText,
+    summary.unitRefs.length > COMPANY_CONTRACT_PARTS_PAGE_SIZE ? `Страница: ${summary.currentPage + 1}/${summary.totalPages}` : "",
+    "",
+    `Выбрано: ${summary.selectedRefs.length}/${contract.requiredQuantity}`,
+    summary.selectedText,
+    "",
+    `Награда: ${formatNumber(contract.rewardMoney)} GRM +${contract.rewardOrk} ORK`,
+  ].filter(Boolean).join("\n");
+
+  const reply_markup = buildCompanyContractPartsInlineMarkup(chatId, contract.requiredQuantity);
+  if (messageId) {
+    await callTelegramApi(token, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      reply_markup,
+    });
+    return;
+  }
+  await sendMessage(token, chatId, text, { reply_markup });
 }
 
 async function formatCompanyExclusiveSection(input: CompanyContext, playerId: string, chatId: number) {
   const snapshot = await getCompanyExclusiveSnapshot(input.company.id);
-  const warehouseParts = getCompanyWarehouseParts(input.company.id).slice(0, 12);
+  const warehouseParts = getCompanyWarehouseParts(input.company.id);
   const refs = warehouseParts.map((item) => `${item.id}::${item.rarity}`);
   companyExclusivePartRefsByChatId.set(chatId, refs);
   const selectedRefs = (companyExclusiveSelectedPartRefsByChatId.get(chatId) ?? []).filter((ref) => refs.includes(ref));
   companyExclusiveSelectedPartRefsByChatId.set(chatId, selectedRefs);
+  const totalPages = Math.max(1, Math.ceil(warehouseParts.length / COMPANY_EXCLUSIVE_PARTS_PAGE_SIZE));
+  const currentPage = Math.max(0, Math.min(totalPages - 1, companyExclusivePartPageByChatId.get(chatId) ?? 0));
+  companyExclusivePartPageByChatId.set(chatId, currentPage);
+  const pageStart = currentPage * COMPANY_EXCLUSIVE_PARTS_PAGE_SIZE;
+  const pageItems = warehouseParts.slice(pageStart, pageStart + COMPANY_EXCLUSIVE_PARTS_PAGE_SIZE);
   const isPickingParts = pendingActionByChatId.get(chatId)?.type === "company_exclusive_parts";
   const research = getExclusiveResearchState(snapshot.active);
 
@@ -4311,6 +4482,10 @@ async function formatCompanyExclusiveSection(input: CompanyContext, playerId: st
       ].join("\n")
     : "Активной эксклюзивной разработки нет.";
 
+  const productionText = snapshot.productionOrder?.isExclusive
+    ? `Активная партия: ${snapshot.productionOrder.blueprintName} x${snapshot.productionOrder.quantity} (${snapshot.productionOrder.status === "ready_to_claim" ? "готово к выдаче" : `ещё ${formatProductionOrderRemaining(snapshot.productionOrder)}`})`
+    : "Активной партии эксклюзивов нет.";
+
   const catalogText = snapshot.catalog?.length
     ? snapshot.catalog.map((item, index) =>
         `${index + 1}. ${item.name}\n${item.flavor}\nБонус: ${item.bonusLabel}\nЛимит: ${item.remainingUnits}/${item.totalUnits} | Выпуск: ${item.productionCostGram} GRM`
@@ -4318,7 +4493,7 @@ async function formatCompanyExclusiveSection(input: CompanyContext, playerId: st
     : "Готовых эксклюзивных чертежей пока нет.";
 
   const partsText = warehouseParts.length
-    ? warehouseParts.map((item, index) => `${index + 1}. ${item.name} [${item.rarity}] x${item.quantity || 1}`).join("\n")
+    ? pageItems.map((item, index) => formatWarehousePartLine(item, pageStart + index)).join("\n")
     : "На складе компании нет деталей.";
   const selectedText = selectedRefs.length
     ? selectedRefs
@@ -4335,6 +4510,8 @@ async function formatCompanyExclusiveSection(input: CompanyContext, playerId: st
     "━━━━━━━━━━━━━━",
     activeText,
     "",
+    productionText,
+    "",
     "Лимитная линейка:",
     catalogText,
     "",
@@ -4342,6 +4519,7 @@ async function formatCompanyExclusiveSection(input: CompanyContext, playerId: st
     "",
     "Детали склада компании:",
     partsText,
+    warehouseParts.length > COMPANY_EXCLUSIVE_PARTS_PAGE_SIZE ? `Страница: ${currentPage + 1}/${totalPages}` : "",
     "",
     `Выбрано деталей: ${selectedRefs.length}/6`,
     selectedText,
@@ -4401,13 +4579,17 @@ function formatExclusiveProgressLiveText(project: any) {
 function buildCompanyExclusivePartsInlineMarkup(chatId: number) {
   const refs = companyExclusivePartRefsByChatId.get(chatId) ?? [];
   const selectedRefs = companyExclusiveSelectedPartRefsByChatId.get(chatId) ?? [];
+  const totalPages = Math.max(1, Math.ceil(refs.length / COMPANY_EXCLUSIVE_PARTS_PAGE_SIZE));
+  const currentPage = Math.max(0, Math.min(totalPages - 1, companyExclusivePartPageByChatId.get(chatId) ?? 0));
+  const pageStart = currentPage * COMPANY_EXCLUSIVE_PARTS_PAGE_SIZE;
+  const pageRefs = refs.slice(pageStart, pageStart + COMPANY_EXCLUSIVE_PARTS_PAGE_SIZE);
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
 
-  for (let index = 0; index < refs.length; index += 2) {
-    const slice = refs.slice(index, index + 2);
+  for (let index = 0; index < pageRefs.length; index += 2) {
+    const slice = pageRefs.slice(index, index + 2);
     rows.push(
       slice.map((ref, localIndex) => {
-        const partNumber = index + localIndex + 1;
+        const partNumber = pageStart + index + localIndex + 1;
         const selected = selectedRefs.includes(ref);
         return {
           text: `${selected ? "✅" : "▫️"} Деталь ${partNumber}`,
@@ -4415,6 +4597,14 @@ function buildCompanyExclusivePartsInlineMarkup(chatId: number) {
         };
       }),
     );
+  }
+
+  if (totalPages > 1) {
+    rows.push([
+      { text: "⬅️", callback_data: `company:exclusive_part_page:${Math.max(0, currentPage - 1)}` },
+      { text: `📄 ${currentPage + 1}/${totalPages}`, callback_data: "company:exclusive_part_page:stay" },
+      { text: "➡️", callback_data: `company:exclusive_part_page:${Math.min(totalPages - 1, currentPage + 1)}` },
+    ]);
   }
 
   rows.push([
@@ -4484,6 +4674,7 @@ async function startCompanyExclusiveDevelopment(
   pendingActionByChatId.delete(chatId);
   companyExclusiveSelectedPartRefsByChatId.delete(chatId);
   companyExclusivePartRefsByChatId.delete(chatId);
+  companyExclusivePartPageByChatId.delete(chatId);
 
   await sendMessage(
     token,
@@ -4534,6 +4725,93 @@ async function startCompanyExclusiveDevelopment(
   }
 }
 
+async function startCompanyBlueprintDevelopment(
+  token: string,
+  chatId: number,
+  membership: CompanyContext,
+  player: User,
+  ref: string,
+) {
+  const snapshot = await getCompanyBlueprintSnapshot(membership.company.id);
+  const developed = getDevelopedBlueprintIds(membership.company.id, snapshot);
+  const unlockedBlueprints = getUnlockedBlueprints(snapshot.available, developed);
+  companyBlueprintRefsByChatId.set(chatId, unlockedBlueprints.map((item) => item.id));
+  const blueprint = resolveBlueprintRef(chatId, ref, unlockedBlueprints);
+  if (!blueprint) {
+    await sendMessage(token, chatId, "Чертеж не найден или пока не разблокирован. Открой раздел «Бюро» и выбери вариант кнопкой.", {
+      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+    });
+    return;
+  }
+  const ceoSnapshot = await getUserWithGameState(player.id);
+  const ceoSkills = (((ceoSnapshot?.game as GameView | undefined)?.skills) ?? {}) as Partial<Record<"coding" | "design" | "analytics", number>>;
+  const required = {
+    coding: Math.max(0, Number(blueprint.requirements?.coding ?? 0)),
+    design: Math.max(0, Number(blueprint.requirements?.design ?? 0)),
+    analytics: Math.max(0, Number(blueprint.requirements?.analytics ?? 0)),
+  };
+  const participants = new Set<string>();
+  if (
+    (required.coding > 0 && Number(ceoSkills?.coding ?? 0) > 0)
+    || (required.design > 0 && Number(ceoSkills?.design ?? 0) > 0)
+    || (required.analytics > 0 && Number(ceoSkills?.analytics ?? 0) > 0)
+  ) {
+    participants.add(player.id);
+  }
+  companyBlueprintContribByCompanyId.set(membership.company.id, {
+    blueprintId: blueprint.id,
+    required,
+    invested: { coding: 0, design: 0, analytics: 0 },
+    participants,
+    completed: false,
+  });
+
+  try {
+    const started = await callInternalApi("POST", `/api/companies/${membership.company.id}/blueprints/start`, {
+      userId: player.id,
+      blueprintId: blueprint.id,
+    }) as { status?: string };
+
+    const progressMessage = await sendMessage(
+      token,
+      chatId,
+      [
+        `✅ Запущена разработка: ${blueprint.name}`,
+        "Участники компании могут присоединиться и вкладывать навыки каждую секунду.",
+      ].join("\n"),
+    );
+    const progressMessageId = Number(progressMessage?.message_id);
+    if (Number.isFinite(progressMessageId)) {
+      companyBlueprintProgressMessageByChatId.set(chatId, progressMessageId);
+      await updateCompanyBlueprintProgressMessage(
+        token,
+        chatId,
+        membership.company.name,
+        membership.company.id,
+        player.id,
+      );
+      if ((started?.status || "in_progress") === "in_progress") {
+        startCompanyBlueprintProgressTicker(
+          token,
+          chatId,
+          membership.company.name,
+          membership.company.id,
+          player.id,
+        );
+        await notifyCompanyMembersAboutBlueprintStart(
+          token,
+          membership.company.id,
+          membership.company.name,
+          blueprint.name,
+        );
+      }
+    }
+  } catch (error) {
+    companyBlueprintContribByCompanyId.delete(membership.company.id);
+    await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
+  }
+}
+
 function formatExclusiveProduceMenu(snapshot: Awaited<ReturnType<typeof getCompanyExclusiveSnapshot>>) {
   const catalog = snapshot.catalog ?? [];
   if (!catalog.length) {
@@ -4550,7 +4828,7 @@ function formatExclusiveProduceMenu(snapshot: Awaited<ReturnType<typeof getCompa
       `Лимит: ${item.remainingUnits}/${item.totalUnits}`,
     ].join("\n")),
     "",
-    "Отправь номер чертежа для выпуска.",
+    "Выбери чертёж кнопкой ниже.",
   ].join("\n\n");
 }
 
@@ -4560,6 +4838,15 @@ function resolveWarehouseGadgetRefFromChat(chatId: number, ref: string) {
   const refs = companyWarehouseGadgetRefsByChatId.get(chatId) ?? [];
   const index = Number(trimmed) - 1;
   return index >= 0 && index < refs.length ? refs[index] : trimmed;
+}
+
+function resolveWarehousePartRefFromChat(chatId: number, ref: string) {
+  const trimmed = ref.trim().toLowerCase();
+  const match = trimmed.match(/^p(\d+)$/i);
+  if (!match) return null;
+  const refs = companyWarehousePartRefsByChatId.get(chatId) ?? [];
+  const index = Number(match[1]) - 1;
+  return index >= 0 && index < refs.length ? refs[index] : null;
 }
 
 function resolveMarketListingRefFromChat(chatId: number, ref: string) {
@@ -4585,23 +4872,45 @@ async function formatAuctionSection(userId: string, chatId: number) {
       const lockedText = ownEarlyAccess && membership?.company?.id !== listing.companyId
         ? "Первые 5 минут: только для компании-разработчика"
         : "";
+      const title = listing.listingKind === "part"
+        ? stripLeadingRarityBadgeFromName(String(listing.part?.name || listing.partName || "Запчасть"))
+        : String(listing.gadget?.name || "Гаджет");
       return [
-        `${index + 1}. ${listing.gadget?.name ?? "Гаджет"}`,
+        `${index + 1}. ${title}`,
         `Компания: ${listing.companyName}`,
+        listing.listingKind === "part"
+          ? `Лот: запчасть ${formatRarityBadge(String(listing.part?.rarity || listing.partRarity || "Common"))}`
+          : `Качество: x${formatNumber(Number(listing.gadget?.quality || 1))}`,
         `Тип: ${listing.saleType === "auction" ? "Аукцион" : "Фиксированная цена"}`,
-        `Качество: x${formatNumber(Number(listing.gadget?.quality || 1))}`,
         formatGadgetStatLine(listing.gadget?.stats) ? `Характеристики: ${formatGadgetStatLine(listing.gadget?.stats)}` : "",
+        listing.listingKind === "part" && listing.part?.type ? `Категория: ${listing.part.type}` : "",
         listing.gadget?.exclusiveBonusLabel ? `Бонус: ${listing.gadget.exclusiveBonusLabel}` : "",
         listing.saleType === "auction"
           ? `Текущая ставка: ${formatNumber(Number(listing.currentBid || listing.startingPrice || 0))} GRM`
           : `Цена: ${formatNumber(Number(listing.price || 0))} GRM`,
         lockedText,
         listing.saleType === "auction"
-          ? `Ставка: /auction_bid ${index + 1} <GRM>`
-          : `Купить: /auction_buy ${index + 1}`,
+          ? "Сделать ставку можно через кнопку или диалог аукциона."
+          : "Покупка доступна через кнопку или диалог аукциона.",
       ].filter(Boolean).join("\n");
     }),
   ].join("\n\n");
+}
+
+async function buildAuctionInlineMarkup(userId: string, chatId: number) {
+  const listings = await callInternalApi("GET", "/api/market") as any[];
+  marketListingRefsByChatId.set(chatId, listings.map((listing) => String(listing.id)));
+  const membership = await getPlayerCompanyContext(userId);
+  const rows = listings.flatMap((listing, index) => {
+    const ownEarlyAccess = Date.now() - Number(listing.createdAt || 0) < 5 * 60 * 1000;
+    const locked = ownEarlyAccess && membership?.company?.id !== listing.companyId;
+    if (locked) return [[{ text: `🔒 ${index + 1}. Недоступно`, callback_data: "auction:locked" }]];
+    if (listing.saleType === "auction") {
+      return [[{ text: `💸 Ставка на лот ${index + 1}`, callback_data: `auction:bid:${listing.id}` }]];
+    }
+    return [[{ text: `🛒 Купить лот ${index + 1}`, callback_data: `auction:buy:${listing.id}` }]];
+  });
+  return { inline_keyboard: rows };
 }
 
 async function formatCompanyDepartmentsSection(input: CompanyContext) {
@@ -4614,7 +4923,7 @@ async function formatCompanyDepartmentsSection(input: CompanyContext) {
       `След. бонус: ${status.nextBonus}`,
       `Стоимость: ${nextCostLabel}`,
       `Статус: ${status.status}`,
-      `Апгрейд: /company_department_upgrade ${index + 1}`,
+      "Апгрейд: кнопкой ниже",
     ].join("\n");
   });
 
@@ -4628,7 +4937,7 @@ async function formatCompanyDepartmentsSection(input: CompanyContext) {
       ...lines,
       "",
       input.role === "owner"
-        ? "Апгрейды: /company_department_upgrade <номер|departmentKey>, /company_expand, /company_upgrade"
+        ? "Апгрейды доступны кнопками ниже."
         : "Управление отделами доступно CEO.",
     ].join("\n\n"),
     companyEconomy,
@@ -4787,6 +5096,86 @@ function formatBlueprintProgressText(companyName: string, companyId: string, sna
     ...formatBlueprintContributionLines(companyId),
     active?.status === "production_ready" ? "✅ Чертеж готов к производству." : "",
   ].filter(Boolean).join("\n");
+}
+
+function formatProductionOrderRemaining(order?: CompanyBlueprintSnapshot["productionOrder"] | null) {
+  if (!order) return "—";
+  const remainingSeconds = Math.max(0, Math.ceil((Number(order.readyAt || 0) - Date.now()) / 1000));
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  if (minutes <= 0) return `${seconds} сек`;
+  return `${minutes} мин ${seconds} сек`;
+}
+
+function parseCompanyBlueprintTierFromId(blueprintId: string) {
+  const match = String(blueprintId || "").match(/(?:^|[_-])t(\d+)(?:$|[_-])/i);
+  const tier = match ? Number(match[1]) : NaN;
+  return Number.isFinite(tier) && tier > 0 ? tier : 1;
+}
+
+function getCompanyBlueprintTierMultiplier(blueprintId: string) {
+  const tier = parseCompanyBlueprintTierFromId(blueprintId);
+  if (tier <= 2) return 1;
+  if (tier <= 4) return 1.25;
+  if (tier <= 6) return 1.55;
+  if (tier <= 8) return 1.9;
+  return 2.3;
+}
+
+function getCompanyProductionQuantityMultiplier(quantity: number) {
+  return 1 + Math.max(0, quantity - 1) * 0.7;
+}
+
+function calculateCompanyStandardProductionPreviewMs(input: {
+  blueprintId: string;
+  category: string;
+  quantity: number;
+  departmentEffects: ReturnType<typeof getDepartmentEffects>;
+  advancedPersonalityId: string | null;
+}) {
+  const baseSecondsByCategory: Record<string, number> = {
+    smartphones: 12 * 60,
+    smartwatches: 10 * 60,
+    tablets: 16 * 60,
+    laptops: 22 * 60,
+    asic_miners: 28 * 60,
+  };
+  const baseSeconds = baseSecondsByCategory[input.category] ?? 12 * 60;
+  const engineerSpeed = input.advancedPersonalityId === "engineer" ? 1.05 : 1;
+  const speedDivisor = Math.max(0.1, Number(input.departmentEffects.productionSpeedMultiplier || 1) * engineerSpeed);
+  const seconds = Math.max(
+    6 * 60,
+    Math.ceil(
+      (baseSeconds
+        * getCompanyBlueprintTierMultiplier(input.blueprintId)
+        * getCompanyProductionQuantityMultiplier(input.quantity))
+      / speedDivisor,
+    ),
+  );
+  return seconds * 1000;
+}
+
+function calculateCompanyExclusiveProductionPreviewMs(input: {
+  category: string;
+  quantity: number;
+  departmentEffects: ReturnType<typeof getDepartmentEffects>;
+  advancedPersonalityId: string | null;
+}) {
+  const baseSecondsByCategory: Record<string, number> = {
+    smartphones: 18 * 60,
+    smartwatches: 15 * 60,
+    tablets: 24 * 60,
+    laptops: 30 * 60,
+    asic_miners: 36 * 60,
+  };
+  const baseSeconds = baseSecondsByCategory[input.category] ?? 18 * 60;
+  const engineerSpeed = input.advancedPersonalityId === "engineer" ? 1.08 : 1;
+  const speedDivisor = Math.max(0.1, Number(input.departmentEffects.productionSpeedMultiplier || 1) * engineerSpeed);
+  const seconds = Math.max(
+    8 * 60,
+    Math.ceil((baseSeconds * getCompanyProductionQuantityMultiplier(input.quantity)) / speedDivisor),
+  );
+  return seconds * 1000;
 }
 
 function stopCompanyBlueprintProgressTicker(chatId: number) {
@@ -4953,31 +5342,39 @@ async function notifyCompanyMembersBlueprintReady(
 }
 
 async function sendCompanyWorkSection(token: string, chatId: number, membership: CompanyContext) {
-  const view = await formatCompanyWorkSection(membership, chatId);
-  await sendMessage(token, chatId, view.text, {
-    reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+  await sendCompanyWorkSectionBase({
+    token,
+    chatId,
+    membership,
+    formatCompanyWorkSection,
+    buildCompanyReplyMarkup,
+    sendMessage,
   });
 }
 
 async function sendCompanyWarehouseSection(token: string, chatId: number, membership: CompanyContext, playerId?: string) {
-  const view = await formatCompanyWarehouseSection(membership, chatId);
-  if (!playerId) {
-    await sendMessage(token, chatId, view.text);
-    return;
-  }
-  const snapshot = await getUserWithGameState(playerId);
-  if (!snapshot) {
-    await sendMessage(token, chatId, view.text);
-    return;
-  }
-  pendingActionByChatId.set(chatId, { type: "company_part_deposit" });
-  await sendMessage(token, chatId, `${view.text}\n\n${formatCompanyPartDepositList(snapshot.game as GameView, chatId, true)}`);
+  await sendCompanyWarehouseSectionBase({
+    token,
+    chatId,
+    membership,
+    playerId,
+    formatCompanyWarehouseSection,
+    getUserWithGameState,
+    pendingActionByChatId,
+    formatCompanyPartDepositList,
+    sendMessage,
+  });
 }
 
 async function sendCompanyBureauSection(token: string, chatId: number, membership: CompanyContext, userId: string) {
-  const view = await formatCompanyBureauSection(membership, chatId, userId);
-  await sendMessage(token, chatId, view.text, {
-    reply_markup: buildCompanyBureauInlineButtons(membership.role === "owner", view.snapshot.active?.status, view.miningStatus),
+  await sendCompanyBureauSectionBase({
+    token,
+    chatId,
+    membership,
+    userId,
+    formatCompanyBureauSection,
+    buildCompanyBureauInlineButtons,
+    sendMessage,
   });
 }
 
@@ -4989,72 +5386,75 @@ async function sendOrEditCompanyBureauSection(
   messageId?: number,
   prefix?: string,
 ) {
-  const view = await formatCompanyBureauSection(membership, chatId, userId);
-  const text = prefix ? `${prefix}\n\n${view.text}` : view.text;
-  const replyMarkup = buildCompanyBureauInlineButtons(membership.role === "owner", view.snapshot.active?.status, view.miningStatus);
-  if (messageId) {
-    await callTelegramApi(token, "editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
-      text,
-      reply_markup: replyMarkup,
-    });
-    return;
-  }
-  await sendMessage(token, chatId, text, { reply_markup: replyMarkup });
+  await sendOrEditCompanyBureauSectionBase({
+    token,
+    chatId,
+    membership,
+    userId,
+    messageId,
+    prefix,
+    formatCompanyBureauSection,
+    buildCompanyBureauInlineButtons,
+    callTelegramApi,
+    sendMessage,
+  });
 }
 
 async function sendCompanyManagementSection(token: string, chatId: number, membership: CompanyContext) {
-  const view = await formatCompanyManagementSection(membership);
-  companyMemberRefsByChatId.set(chatId, view.members.map((member) => member.userId));
-  await sendMessage(token, chatId, view.text, {
-    reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+  await sendCompanyManagementSectionBase({
+    token,
+    chatId,
+    membership,
+    formatCompanyManagementSection,
+    companyMemberRefsByChatId,
+    buildCompanyReplyMarkup,
+    sendMessage,
   });
 }
 
 async function sendCompanyEconomySection(token: string, chatId: number, membership: CompanyContext) {
-  await sendMessage(token, chatId, await formatCompanyMenuWithMembership(membership), {
-    reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+  await sendCompanyEconomySectionBase({
+    token,
+    chatId,
+    membership,
+    formatCompanyMenuWithMembership,
+    buildCompanyReplyMarkup,
+    sendMessage,
   });
 }
 
 async function sendCompanyDepartmentsSection(token: string, chatId: number, membership: CompanyContext) {
-  const view = await formatCompanyDepartmentsSection(membership);
-  await sendMessage(token, chatId, view.text, {
-    reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+  await sendCompanyDepartmentsSectionBase({
+    token,
+    chatId,
+    membership,
+    formatCompanyDepartmentsSection,
+    buildCompanyReplyMarkup,
+    sendMessage,
   });
 }
 
 async function sendCompanyIpoSection(token: string, chatId: number, membership: CompanyContext) {
-  const view = await formatCompanyIpoSection(membership);
-  await sendMessage(token, chatId, view.text, {
-    reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+  await sendCompanyIpoSectionBase({
+    token,
+    chatId,
+    membership,
+    formatCompanyIpoSection,
+    buildCompanyReplyMarkup,
+    sendMessage,
   });
 }
 
 async function sendCompanyRequestsSection(token: string, chatId: number, membership: CompanyContext) {
-  const requests = await storage.getJoinRequestsByCompany(membership.company.id);
-  if (!requests.length) {
-    await sendMessage(token, chatId, "📥 Входящих заявок нет.", {
-      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-    });
-    return;
-  }
-
-  companyRequestsByChatId.set(chatId, requests.map((request) => request.id));
-  await sendMessage(
+  await sendCompanyRequestsSectionBase({
     token,
     chatId,
-    [
-      `📥 ЗАЯВКИ В "${membership.company.name}"`,
-      "━━━━━━━━━━━━━━",
-      ...requests.map((request, index) => [
-        `${index + 1}. ${request.username}`,
-        `/company_accept ${index + 1} | /company_decline ${index + 1}`,
-      ].join("\n")),
-    ].join("\n"),
-    { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
-  );
+    membership,
+    storage,
+    companyRequestsByChatId,
+    buildCompanyReplyMarkup,
+    sendMessage,
+  });
 }
 
 function resolveContractRef(chatId: number, ref: string, contracts: CityContractView[]) {
@@ -5089,6 +5489,103 @@ function resolveCompanyMemberRef(chatId: number, ref: string, members: Array<{ u
     ?? members.find((member) => member.userId.startsWith(trimmed))
     ?? members.find((member) => member.username.toLowerCase() === normalized)
     ?? null;
+}
+
+async function completeCompanyContractDelivery(
+  token: string,
+  chatId: number,
+  membership: CompanyContext,
+  contract: CityContractView,
+  userId: string,
+  options?: { partRefs?: string[] },
+) {
+  const result = await callInternalApi("POST", `/api/city-contracts/${contract.id}/deliver`, {
+    userId,
+    companyId: membership.company.id,
+    partRefs: options?.partRefs,
+  }) as {
+    contract?: {
+      rewardMoney?: number;
+      requiredQuantity?: number;
+    };
+    company?: any;
+  };
+
+  const latestCompany = result.company ?? membership.company;
+  const currentMembers = await storage.getCompanyMembers(membership.company.id);
+  const companyEconomy = await ensureCompanyEconomyState(latestCompany, currentMembers.length);
+  const departmentEffects = getDepartmentEffects(companyEconomy.departments);
+
+  const baseReward = Math.max(0, Number(result.contract?.rewardMoney ?? 0));
+  const deliveredQuantity = Math.max(0, Math.floor(Number(result.contract?.requiredQuantity ?? 0)));
+  const marketingBonus = baseReward * Math.max(0, departmentEffects.priceMultiplier - 1);
+  const financeBonus = baseReward * Math.max(0, departmentEffects.profitMultiplier - 1);
+  const bonusCapital = marketingBonus + financeBonus;
+  const demandSalesBonus = Math.max(0, Math.floor(deliveredQuantity * Math.max(0, departmentEffects.demandMultiplier - 1)));
+
+  const updatedEconomy = reconcileCompanyEconomy({
+    ...companyEconomy,
+    capitalGRM: companyEconomy.capitalGRM + bonusCapital,
+    profitGRM: companyEconomy.profitGRM + baseReward + bonusCapital,
+    assetsGRM: companyEconomy.assetsGRM + bonusCapital * 0.25,
+    gadgetsSold: companyEconomy.gadgetsSold + deliveredQuantity + demandSalesBonus,
+  });
+  await saveCompanyEconomyState(latestCompany, updatedEconomy);
+
+  await sendMessage(
+    token,
+    chatId,
+    [
+      "✅ Контракт сдан.",
+      `База: +${formatNumber(baseReward)} GRM`,
+      bonusCapital > 0
+        ? `Бонус отделов (Marketing/Finance): +${formatNumber(bonusCapital)} GRM`
+        : "Бонус отделов: нет",
+      demandSalesBonus > 0
+        ? `Доп. продажи по спросу: +${demandSalesBonus}`
+        : "Доп. продажи по спросу: нет",
+    ].join("\n"),
+  );
+}
+
+async function startCompanyContractPartSelection(
+  token: string,
+  chatId: number,
+  membership: CompanyContext,
+  playerId: string,
+  contract: CityContractView,
+  messageId?: number,
+) {
+  if (membership.role !== "owner") {
+    await sendMessage(token, chatId, "Для контрактов на запчасти детали со склада выбирает CEO компании.", {
+      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+    });
+    return;
+  }
+
+  const availableRefs = getCompanyWarehousePartUnitRefs(membership.company.id, contract.requiredPartType);
+  if (availableRefs.length < Math.max(1, Number(contract.requiredQuantity || 0))) {
+    await sendMessage(
+      token,
+      chatId,
+      `❌ На складе компании не хватает нужных запчастей. Нужно ${contract.requiredQuantity}, доступно ${availableRefs.length}.`,
+      { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+    );
+    return;
+  }
+
+  setCompanyMenuSection(chatId, "work");
+  rememberTelegramMenu(playerId, { menu: "company", section: "work" });
+  companyContractPartRefsByChatId.set(chatId, availableRefs.map((item) => item.ref));
+  companyContractSelectedPartRefsByChatId.set(chatId, []);
+  companyContractPartPageByChatId.set(chatId, 0);
+  pendingActionByChatId.set(chatId, {
+    type: "company_contract_parts",
+    contractId: contract.id,
+    requiredPartType: String(contract.requiredPartType || ""),
+    requiredQuantity: Math.max(1, Number(contract.requiredQuantity || 1)),
+  });
+  await sendCompanyContractPartsPicker(token, chatId, membership, contract, messageId);
 }
 
 function resolveBlueprintRef(chatId: number, ref: string, available: CompanyBlueprintSnapshot["available"]) {
@@ -5157,6 +5654,26 @@ function parseBlueprintFamilyAndTier(blueprintId: string): { family: string; tie
 
 function getCompanyWarehouseParts(companyId: string) {
   return companyWarehousePartsByCompanyId.get(companyId) ?? [];
+}
+
+function getCompanyWarehousePartUnitRefs(companyId: string, filterType?: string | null) {
+  const refs: Array<{ ref: string; id: string; rarity: RarityName; type: string; name: string }> = [];
+  for (const item of getCompanyWarehouseParts(companyId)) {
+    const partType = String(item.type || ALL_PARTS[item.id]?.type || "");
+    if (filterType && partType !== filterType) continue;
+    const quantity = Math.max(1, Number(item.quantity || 1));
+    const rarity = normalizePartRarity(String(item.rarity || ALL_PARTS[item.id]?.rarity || "Common"));
+    for (let unitIndex = 0; unitIndex < quantity; unitIndex += 1) {
+      refs.push({
+        ref: `${item.id}::${rarity}::${unitIndex + 1}`,
+        id: item.id,
+        rarity,
+        type: partType,
+        name: String(item.name || ALL_PARTS[item.id]?.name || item.id),
+      });
+    }
+  }
+  return refs;
 }
 
 function setCompanyWarehouseParts(companyId: string, parts: CompanyWarehousePartItem[]) {
@@ -5360,7 +5877,7 @@ async function transferCompanyPartToWarehouse(
   const used = getCompanyWarehouseUsedSlots(membership.company.id, companySnapshot.produced.length);
   const free = Math.max(0, capacity - used);
   if (moveQty > free) {
-    return { ok: false, error: `Недостаточно места на складе компании. Свободно слотов: ${free}.` };
+    return { ok: false, error: `Склад заполнен, добавить невозможно. Свободно слотов: ${free}.` };
   }
 
   const nextInventory = inventory.flatMap((item) => {
@@ -5857,7 +6374,7 @@ function formatGramExchangeMenu(snapshot: Snapshot) {
     "━━━━━━━━━━━━━━",
     `Курс покупки: 1 локальная единица = ${formatRate(localToGrmRate)} GRM`,
     `Курс продажи: 1 GRM = ${currency}${formatRate(grmToLocalRate)}`,
-    `Баланс: ${currency}${snapshot.user.balance}`,
+    `Баланс: ${currency}${formatNumber(snapshot.user.balance)}`,
     `GRM: ${formatGramValue((snapshot.game as GameView).gramBalance)} GRM`,
     "",
     "Используй кнопки ниже:",
@@ -5882,11 +6399,13 @@ function formatBankMenu(snapshot: Snapshot) {
   return [
     "🏦 БАНКОВСКИЙ ЦЕНТР",
     "━━━━━━━━━━━━━━",
-    `💰 Баланс: ${currency}${user.balance}`,
+    `💰 Баланс: ${currency}${formatNumber(user.balance)}`,
     `🪙 GRM: ${formatGramValue(game.gramBalance)} GRM`,
     `💱 Курс: 1 локальная единица = ${formatRate(getLocalToGramRate(user.city))} GRM`,
     "━━━━━━━━━━━━━━",
     active,
+    "",
+    "🚧 Вклады и кредиты пока временно недоступны в городе.",
     "",
     "Выбери действие кнопками ниже.",
     "Для пополнения компании: /company_topup",
@@ -5963,20 +6482,34 @@ async function formatStocksNewsMenu(userId: string) {
   ].join("\n\n");
 }
 
-function buildStocksInlineMarkup(snapshot: Awaited<ReturnType<typeof getStockMarketSnapshot>>) {
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-  for (const quote of snapshot.quotes.slice(0, 3)) {
-    rows.push([{ text: `${quote.ticker} · Купить 1`, callback_data: `stocks:buy:${quote.ticker}:1` }]);
-    rows.push([
-      { text: `Купить 5`, callback_data: `stocks:buy:${quote.ticker}:5` },
-      { text: `Продать 1`, callback_data: `stocks:sell:${quote.ticker}:1` },
-    ]);
-  }
-  rows.push([
-    { text: "📰 Новости", callback_data: "stocks:news" },
-    { text: "🔄 Обновить", callback_data: "stocks:refresh" },
+function buildStocksHomeReplyMarkup() {
+  return buildReplyKeyboard([
+    ["🛒 Купить бумаги", "💸 Продать бумаги"],
+    ["📰 Новости рынка"],
+    ["🏦 Назад в банк"],
   ]);
-  return { inline_keyboard: rows };
+}
+
+function buildStocksQuantityReplyMarkup() {
+  return buildReplyKeyboard([
+    ["1", "5", "10"],
+    ["🏦 Назад в банк"],
+  ]);
+}
+
+function buildStocksTickerReplyMarkup(
+  snapshot: Awaited<ReturnType<typeof getStockMarketSnapshot>>,
+  action: "buy" | "sell",
+) {
+  const source = action === "buy"
+    ? snapshot.quotes.slice(0, 6).map((quote) => quote.ticker)
+    : snapshot.holdings.slice(0, 6).map((holding) => holding.ticker);
+  const rows: string[][] = [];
+  for (let index = 0; index < source.length; index += 2) {
+    rows.push(source.slice(index, index + 2));
+  }
+  rows.push(["🏦 Назад в банк"]);
+  return buildReplyKeyboard(rows);
 }
 
 function normalizeReferralCode(value: string) {
@@ -6091,11 +6624,11 @@ function formatEducationCoursesMenu(user: User, levelKey: EducationLevelKey) {
     `📚 ${level.name.toUpperCase()}`,
     "━━━━━━━━━━━━━━",
     ...level.courses.map((course, index) => {
-      const effectiveFailure = Math.max(0, course.failureChance - reduction);
+      const effectiveFailure = Math.max(0, course.failureChance + 10 - reduction);
       const energyCost = getStudyEnergyCostForPlayer(levelKey, course, user);
       const courseCost = getStudyCourseCostForPlayer(course, user);
       const completedMark = "";
-      return `${index + 1}. ${course.icon} ${course.name}${completedMark}\n${course.description}\nНавыки курса: ${formatStats(course.skillBoosts as Record<string, number>)}\n💸 ${currency}${courseCost} | Риск: ${effectiveFailure}% | ⚡ -${Math.round(energyCost * 100)}% энергии учёбы\nПотолок навыков от обучения на твоём уровне: ${skillCap}`;
+      return `${index + 1}. ${course.icon} ${course.name}${completedMark}\n${course.description}\nНавыки курса: ${formatStats(course.skillBoosts as Record<string, number>)}\n💸 ${currency}${courseCost} | Риск: ${effectiveFailure}% | ⚡ -${Math.round(energyCost * 100)} энергии учёбы\nПотолок навыков от обучения на твоём уровне: ${skillCap}`;
     }),
     "",
     "Выбери курс: отправь номер.",
@@ -6226,36 +6759,38 @@ async function resolveTelegramSnapshot(user?: TelegramUser): Promise<Snapshot> {
 }
 
 function buildNumericSelectionReplyMarkup(count: number) {
-  const options = Math.max(1, Math.min(count, 9));
-  const buttons = Array.from({ length: options }, (_, index) => ({ text: String(index + 1) }));
-  const rows: Array<Array<{ text: string }>> = [];
-  for (let i = 0; i < buttons.length; i += 3) rows.push(buttons.slice(i, i + 3));
-  rows.push([{ text: "⬅️ Назад" }]);
-  return { keyboard: rows, resize_keyboard: true, one_time_keyboard: false };
+  return buildNumericSelectionReplyMarkupBase(count);
 }
 
 function buildBankSelectionReplyMarkup(productType: BankProductType) {
   const count = productType === "credit" ? listCreditPrograms().length : listDepositPrograms().length;
-  const options = Math.max(1, Math.min(count, 9));
-  const buttons = Array.from({ length: options }, (_, index) => ({ text: String(index + 1) }));
-  const rows: Array<Array<{ text: string }>> = [];
-  for (let i = 0; i < buttons.length; i += 3) rows.push(buttons.slice(i, i + 3));
-  rows.push([{ text: "⬅️ Назад" }]);
-  return { keyboard: rows, resize_keyboard: true, one_time_keyboard: false };
+  return buildBankSelectionReplyMarkupBase(count);
 }
 
 function buildEducationLevelsReplyMarkup(userLevel: number) {
   const available = getAvailableEducationLevels(userLevel);
-  const row = available.map((key) => ({ text: EDUCATION_LEVELS[key].name }));
-  return {
-    keyboard: [row, [{ text: "⬅️ Назад" }]],
-    resize_keyboard: true,
-    one_time_keyboard: false,
-  };
+  return buildEducationLevelsReplyMarkupBase(available.map((key) => EDUCATION_LEVELS[key].name));
 }
 
 function buildEducationCoursesReplyMarkup(levelKey: EducationLevelKey) {
-  return buildNumericSelectionReplyMarkup(EDUCATION_LEVELS[levelKey].courses.length);
+  return buildEducationCoursesReplyMarkupBase(EDUCATION_LEVELS[levelKey].courses.length);
+}
+
+async function sendStudyCoursesSelectionMenu(
+  token: string,
+  chatId: number,
+  player: User,
+  levelKey: EducationLevelKey,
+  prefix?: string,
+) {
+  pendingActionByChatId.set(chatId, { type: "study_course_select", levelKey });
+  rememberTelegramMenu(player.id, { menu: "study_courses", levelKey });
+  await sendMessage(
+    token,
+    chatId,
+    [prefix, formatEducationCoursesMenu(player, levelKey)].filter(Boolean).join("\n\n"),
+    { reply_markup: buildEducationCoursesReplyMarkup(levelKey) },
+  );
 }
 
 function getCompanyMenuSection(chatId?: number) {
@@ -6277,162 +6812,37 @@ function rememberTelegramMenu(userId: string, state: TelegramMenuState) {
   lastTelegramMenuByUserId.set(userId, state);
 }
 
-function buildReplyKeyboard(rows: string[][]) {
-  return {
-    keyboard: rows.map((row) => row.map((text) => ({ text }))),
-    resize_keyboard: true,
-  };
+function resolveCityTravelMenuState(command: string): { state: TelegramMenuState; label: string } | null {
+  if (command === "/jobs") return { state: { menu: "jobs" }, label: "вакансиям" };
+  if (command === "/study") return { state: { menu: "study_levels" }, label: "обучению" };
+  if (command === "/shop") return { state: { menu: "shop", tab: "all" }, label: "магазину" };
+  if (command === "/shop_parts" || command === "/shop_courses") return { state: { menu: "shop", tab: "parts" }, label: "магазину" };
+  if (command === "/shop_gadgets") return { state: { menu: "shop", tab: "gadgets" }, label: "магазину" };
+  if (command === "/sell") return { state: { menu: "shop", tab: "sell" }, label: "магазину" };
+  if (command === "/bank" || command === "/credits" || command === "/deposits") return { state: { menu: "bank" }, label: "банку" };
+  if (command === "/repair_service") return { state: { menu: "repair_service" }, label: "сервису" };
+  if (command === "/housing") return { state: { menu: "housing" }, label: "недвижимости" };
+  return null;
+}
+
+async function maybeStartCitySectionTravel(
+  token: string,
+  chatId: number,
+  player: User,
+  message: TelegramMessage,
+  command: string,
+) {
+  const target = resolveCityTravelMenuState(command);
+  if (!target) return false;
+  if (getPlayerHubLocation(player.id) !== "city") return false;
+  return false;
 }
 
 function buildCompanyReplyMarkup(role?: string | null, chatId?: number) {
-  if (!role) {
-    return buildReplyKeyboard([
-      ["➕ Создать компанию", "📨 Вступить в компанию"],
-      ["🏠 Домой"],
-    ]);
-  }
-
-  const section = getCompanyMenuSection(chatId);
-
-  if (section === "work") {
-    return buildReplyKeyboard([
-      ["📋 Контракты города", "⛏ Добыча запчастей"],
-      ["⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "service") {
-    return buildReplyKeyboard([
-      ["🛠 Сервис компании", "⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "warehouse") {
-    return buildReplyKeyboard([
-      ["📦 Склад компании", "📥 Передать запчасти"],
-      ["⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "bureau") {
-    return buildReplyKeyboard([
-      ["🧪 Разработка базовых чертежей", "🌟 Разработка редких гаджетов"],
-      ["🏭 Производство гаджетов", "⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "bureau_exclusive") {
-    return buildReplyKeyboard([
-      ["🪄 Старт", "📈 Прогресс"],
-      ["🏭 Выпуск", "⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "hackathon_event") {
-    return buildReplyKeyboard([
-      ["✅ Присоединиться", "🧠 Вложить навыки"],
-      ["💰 Вложить GRM", "🧩 Вложить запчасти"],
-      ["⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "management_hr") {
-    return buildReplyKeyboard([
-      ["🧑‍💼 Назначение сотрудников на должности", "📥 Заявки на вступление"],
-      ["⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "management_departments") {
-    return buildReplyKeyboard([
-      ["🏛 Прокачка отделов", "📦 Прокачка склада"],
-      ["⬆️ Legacy апгрейд", "⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "hackathon_sabotage") {
-    return buildReplyKeyboard([
-      ["🎯 Атака", "🛡 Security"],
-      ["📨 Офферы", "⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "hackathon") {
-    return buildReplyKeyboard([
-      ["🏁 Хакатон", "🕶 Саботаж"],
-      ["⬅️ Назад"],
-    ]);
-  }
-
-  if (section === "management") {
-    return buildReplyKeyboard([
-      ["👥 HR", "💱 Пополнить GRM"],
-      ["🏛 Отделы", "💸 Зарплаты"],
-      ["🚀 IPO", "⬅️ Назад"],
-    ]);
-  }
-
-  return buildReplyKeyboard([
-    ["🏢 Профиль", "💼 Работа"],
-    ["📦 Склад", "🧪 Бюро"],
-    ["🛠 Сервис", "🛠 Управление"],
-    ["🏁 Хакатон"],
-    ["🏠 Домой"],
-  ]);
-}
-
-function extractErrorMessage(error: unknown) {
-  if (error instanceof Error && error.message) {
-    const message = error.message;
-    if (/Telegram API .*429/i.test(message) || /Too Many Requests/i.test(message)) {
-      const retryMatch = message.match(/retry after[^\d]*(\d+)/i);
-      return retryMatch
-        ? `Telegram временно ограничил отправку сообщений. Попробуй снова через ${retryMatch[1]} сек.`
-        : "Telegram временно ограничил отправку сообщений. Попробуй снова чуть позже.";
-    }
-    const blueprintBalanceMatch = message.match(/^Not enough company balance for blueprint start \((\d+)\)$/i);
-    if (blueprintBalanceMatch) {
-      return `Недостаточно баланса компании для запуска разработки чертежа (нужно ${blueprintBalanceMatch[1]} GRM).`;
-    }
-    if (/^Not enough company balance for blueprint start$/i.test(message)) {
-      return "Недостаточно баланса компании для запуска разработки чертежа.";
-    }
-    return message;
-  }
-  return "Не удалось выполнить действие";
-}
-
-function getTelegramRetryAfterSeconds(payloadText: string) {
-  const directMatch = payloadText.match(/retry after[^\d]*(\d+)/i);
-  if (directMatch) return Number(directMatch[1]);
-  try {
-    const parsed = JSON.parse(payloadText) as { parameters?: { retry_after?: unknown } };
-    const retryAfter = Number(parsed?.parameters?.retry_after);
-    return Number.isFinite(retryAfter) ? retryAfter : null;
-  } catch {
-    return null;
-  }
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function parseBankOpenInput(input: string) {
-  const [programRef, amountRaw, daysRaw] = input.trim().split(/\s+/);
-  if (!programRef || !amountRaw || !daysRaw) return null;
-  const amount = Number(amountRaw);
-  const days = Number(daysRaw);
-  if (!Number.isFinite(amount) || !Number.isFinite(days)) return null;
-  return { programRef, amount: Math.floor(amount), days: Math.floor(days) };
-}
-
-function parseDecimalInput(input: string) {
-  const normalized = input.trim().replace(",", ".");
-  if (!normalized) return null;
-  const value = Number(normalized);
-  if (!Number.isFinite(value)) return null;
-  return value;
+  return buildCompanyReplyMarkupBase({
+    role,
+    section: getCompanyMenuSection(chatId),
+  });
 }
 
 function getCityHubSummaryText() {
@@ -6448,11 +6858,7 @@ function getCityHubSummaryText() {
 }
 
 function formatRepairDuration(ms: number) {
-  const minutes = Math.max(1, Math.ceil(ms / 60000));
-  if (minutes < 60) return `${minutes} мин.`;
-  const hours = Math.floor(minutes / 60);
-  const leftMinutes = minutes % 60;
-  return leftMinutes > 0 ? `${hours} ч. ${leftMinutes} мин.` : `${hours} ч.`;
+  return formatRepairDurationBase(ms);
 }
 
 function countWarehousePartsByType(companyId: string) {
@@ -6644,130 +7050,76 @@ async function sendShopMenu(token: string, chatId: number, snapshot: Snapshot, u
 }
 
 async function formatRepairServiceMenu(userId: string, chatId: number) {
-  const user = await storage.getUser(userId);
-  if (!user) return "🔧 Сервис\nИгрок не найден.";
-  const gadgets = await listRepairableGadgets(userId);
-  const activeOrders = listRepairOrdersForCity(user.city).filter((order) => order.playerId === userId && order.status !== "failed" && order.status !== "cancelled");
-  repairGadgetRefsByChatId.set(chatId, gadgets.map((item) => String(item.id)));
-  repairOrderRefsByChatId.set(chatId, activeOrders.map((order) => String(order.id)));
-  if (!gadgets.length && !activeOrders.length) {
-    return [
-      "🔧 Сервис города",
-      "Повреждённых гаджетов сейчас нет.",
-      "Когда у гаджета падает состояние, его можно отправить сюда на ремонт.",
-    ].join("\n\n");
-  }
-
-  return [
-    "🔧 Сервис города",
-    activeOrders.length
-      ? [
-        "Активные заказы:",
-        ...activeOrders.map((order, index) => `#${index + 1}. ${order.gadgetName} — ${getRepairOrderStatusLabel(order.status)}`),
-      ].join("\n")
-      : "",
-    gadgets.length
-      ? [
-        "Гаджеты для ремонта:",
-        ...gadgets.map((item, index) => {
-          const estimate = calculateRepairEstimate(item);
-          return [
-            `${index + 1}. ${item.name}`,
-            `Состояние: ${Math.round(item.condition ?? 0)}/${Math.round(item.maxCondition ?? 100)} (${getGadgetConditionStatusLabel(item)})`,
-            `Стоимость ремонта: ${getCurrencySymbol(user.city)}${estimate.minPrice} - ${getCurrencySymbol(user.city)}${estimate.maxPrice}`,
-            `Время ремонта: ${formatRepairDuration(estimate.repairTimeMs)}`,
-            "Открой оценку кнопкой ниже.",
-          ].join("\n");
-        }),
-      ].join("\n\n")
-      : "",
-    activeOrders.some((order) => order.status === "queued")
-      ? "Очередь можно отменить кнопкой внизу."
-      : "",
-  ].filter(Boolean).join("\n\n");
+  return await formatRepairServiceMenuBase({
+    userId,
+    chatId,
+    storage,
+    listRepairableGadgets,
+    listRepairOrdersForCity: (city) => listRepairOrdersForCity(city).map((order) => ({
+      ...order,
+      statusLabel: getRepairOrderStatusLabel(order.status),
+    })),
+    repairGadgetRefsByChatId,
+    repairOrderRefsByChatId,
+    calculateRepairEstimate,
+    getGadgetConditionStatusLabel,
+    getCurrencySymbol,
+  });
 }
 
 function buildRepairServiceInlineMarkup(chatId: number) {
-  const gadgets = repairGadgetRefsByChatId.get(chatId) ?? [];
-  const orderIds = repairOrderRefsByChatId.get(chatId) ?? [];
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-  for (let index = 0; index < Math.min(gadgets.length, 8); index += 1) {
-    rows.push([{ text: `🔍 Оценка #${index + 1}`, callback_data: `repair:preview:${index + 1}` }]);
-  }
-  for (let index = 0; index < Math.min(orderIds.length, 6); index += 1) {
-    rows.push([{ text: `❌ Отменить заказ #${index + 1}`, callback_data: `repair:cancel:${orderIds[index]}` }]);
-  }
-  rows.push([{ text: "🔄 Обновить сервис", callback_data: "repair:refresh" }]);
-  rows.push([{ text: "⬅️ Назад в город", callback_data: "repair:back" }]);
-  return { inline_keyboard: rows };
+  return buildRepairServiceInlineMarkupBase(chatId, repairGadgetRefsByChatId, repairOrderRefsByChatId);
 }
 
 async function sendRepairServiceMenu(token: string, chatId: number, userId: string, prefix?: string) {
-  rememberTelegramMenu(userId, { menu: "repair_service" });
-  const base = await formatRepairServiceMenu(userId, chatId);
-  await sendMessage(token, chatId, [prefix, base].filter(Boolean).join("\n\n"), {
-    reply_markup: buildRepairServiceInlineMarkup(chatId),
+  await sendRepairServiceMenuBase({
+    token,
+    chatId,
+    userId,
+    prefix,
+    rememberTelegramMenu,
+    formatRepairServiceMenu,
+    buildRepairServiceInlineMarkup,
+    sendMessage,
   });
 }
 
 async function formatCompanyRepairServiceMenu(membership: CompanyContext, chatId: number) {
-  const queued = listRepairOrdersForCity(membership.company.city).filter((order) => order.status === "queued");
-  const assigned = listRepairOrdersForCompany(membership.company.id);
-  companyRepairOrderRefsByChatId.set(chatId, [...queued, ...assigned].map((order) => order.id));
-  if (!queued.length && !assigned.length) {
-    return "🛠 Сервис компании\nНовых заказов пока нет.";
-  }
-  return [
-    "🛠 Сервис компании",
-    queued.length
-      ? [
-        "Новые городские заказы:",
-        ...queued.map((order, index) => [
-          `${index + 1}. ${order.gadgetName} [${order.rarity}]`,
-          `Состояние: ${order.condition}/${order.maxCondition}`,
-          `Оплата клиента: ${getCurrencySymbol(membership.company.city)}${order.finalPrice} (${order.minPrice}-${order.maxPrice})`,
-          `Награда компании: ${Math.max(40, Math.round(Number(order.finalPrice || 0) / 8))} GRM`,
-          `Время: ${formatRepairDuration(order.repairTimeMs)}`,
-          formatRepairPartsAvailability(membership.company.id, order.requiredParts),
-          hasCompanyRepairParts(membership.company.id, order.requiredParts)
-            ? "Можно принять кнопкой ниже."
-            : "Недостаточно запчастей",
-        ].join("\n")),
-      ].join("\n\n")
-      : "",
-    assigned.length
-      ? [
-        "Заказы компании:",
-        ...assigned.map((order) => [
-          `• ${order.gadgetName} — ${getRepairOrderStatusLabel(order.status)}`,
-          `Награда компании: ${Math.max(40, Math.round(Number(order.finalPrice || 0) / 8))} GRM`,
-          order.status === "accepted"
-            ? "Ожидает запуска."
-            : `Завершение через: ${order.dueAt ? formatRepairDuration(Math.max(0, order.dueAt - Date.now())) : "скоро"}`,
-        ].join("\n")),
-      ].join("\n\n")
-      : "",
-  ].filter(Boolean).join("\n\n");
+  return await formatCompanyRepairServiceMenuBase({
+    membership,
+    chatId,
+    listRepairOrdersForCity,
+    listRepairOrdersForCompany: (companyId) => listRepairOrdersForCompany(companyId).map((order) => ({
+      ...order,
+      statusLabel: getRepairOrderStatusLabel(order.status),
+    })),
+    companyRepairOrderRefsByChatId,
+    getCurrencySymbol,
+    formatRepairPartsAvailability,
+    hasCompanyRepairParts,
+  });
 }
 
 function buildCompanyRepairServiceInlineMarkup(membership: CompanyContext) {
-  const queued = listRepairOrdersForCity(membership.company.city).filter((order) => order.status === "queued");
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-  for (const order of queued.slice(0, 6)) {
-    if (hasCompanyRepairParts(membership.company.id, order.requiredParts)) {
-      rows.push([{ text: `✅ Принять: ${order.gadgetName}`, callback_data: `repairco:accept:${order.id}` }]);
-    }
-  }
-  rows.push([{ text: "🔄 Обновить сервис", callback_data: "repairco:refresh" }]);
-  rows.push([{ text: "⬅️ Назад в компанию", callback_data: "repairco:back" }]);
-  return { inline_keyboard: rows };
+  return buildCompanyRepairServiceInlineMarkupBase({
+    membership,
+    listRepairOrdersForCity,
+    hasCompanyRepairParts,
+  });
 }
 
 async function sendCompanyRepairServiceMenu(token: string, chatId: number, membership: CompanyContext, playerId: string, prefix?: string) {
-  setCompanyMenuSection(chatId, "service");
-  rememberTelegramMenu(playerId, { menu: "company", section: "service" });
-  await sendMessage(token, chatId, [prefix, await formatCompanyRepairServiceMenu(membership, chatId)].filter(Boolean).join("\n\n"), {
-    reply_markup: buildCompanyRepairServiceInlineMarkup(membership),
+  await sendCompanyRepairServiceMenuBase({
+    token,
+    chatId,
+    membership,
+    playerId,
+    prefix,
+    setCompanyMenuSection,
+    rememberTelegramMenu,
+    formatCompanyRepairServiceMenu,
+    buildCompanyRepairServiceInlineMarkup,
+    sendMessage,
   });
 }
 
@@ -6782,32 +7134,26 @@ async function sendHomeMenu(token: string, chatId: number, snapshot: Snapshot, u
   const notices = await shouldSuppressNonRegistrationMessages(userId) ? "" : formatNotices(snapshot.notices);
   const base = await buildBotModeMessage(snapshot);
   const text = [prefix, notices ? `${base}\n\n${notices}` : base].filter(Boolean).join("\n\n");
-  await sendWithMainKeyboard(token, chatId, text);
+  await sendWithHomeKeyboard(token, chatId, text);
 }
 
 async function sendCompanyRootMenu(token: string, chatId: number, player: User, prefix?: string) {
-  rememberTelegramMenu(player.id, { menu: "company", section: "root" });
-  setCompanyMenuSection(chatId, "root");
-  const membership = await getPlayerCompanyContext(player.id);
-  if (membership) {
-    if (prefix) {
-      await sendMessage(token, chatId, prefix, {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-    }
-    await sendCompanyProfile(token, chatId, membership);
-    return;
-  }
-
-  const companies = (await storage.getAllCompanies()).filter((company) => !company.isTutorial);
-  const top = getTopCompanies(companies);
-  companyListByChatId.set(chatId, top.map((company) => company.id));
-  await sendMessage(
+  await sendCompanyRootMenuBase({
     token,
     chatId,
-    [prefix, formatCompanyMenuWithoutMembership(companies, player.city)].filter(Boolean).join("\n\n"),
-    { reply_markup: buildCompanyReplyMarkup(null, chatId) },
-  );
+    player,
+    prefix,
+    rememberTelegramMenu,
+    setCompanyMenuSection,
+    getPlayerCompanyContext,
+    sendMessage,
+    buildCompanyReplyMarkup,
+    sendCompanyProfile,
+    storage,
+    getTopCompanies,
+    companyListByChatId,
+    formatCompanyMenuWithoutMembership,
+  });
 }
 
 async function restoreTelegramMenuState(token: string, chatId: number, player: User, message: TelegramMessage, prefix?: string) {
@@ -6875,7 +7221,7 @@ async function restoreTelegramMenuState(token: string, chatId: number, player: U
     }
     pendingActionByChatId.set(chatId, { type: "job_select" });
     await sendMessage(token, chatId, [prefix, formatJobsMenu(snapshot)].filter(Boolean).join("\n\n"), {
-      reply_markup: buildNumericSelectionReplyMarkup(jobsCount),
+      reply_markup: buildJobsInlineMarkup(snapshot),
     });
     return;
   }
@@ -7074,10 +7420,14 @@ async function handleCancelCommand(token: string, chatId: number, message: Teleg
   if (
     pendingAction?.type === "company_part_deposit"
     || pendingAction?.type === "company_part_deposit_qty"
+    || pendingAction?.type === "company_contract_parts"
     || pendingAction?.type === "company_exclusive_name"
     || pendingAction?.type === "company_exclusive_parts"
     || pendingAction?.type === "company_exclusive_produce_select"
     || pendingAction?.type === "company_exclusive_produce_qty"
+    || pendingAction?.type === "company_exclusive_produce_confirm"
+    || pendingAction?.type === "company_bp_produce_qty"
+    || pendingAction?.type === "company_bp_produce_confirm"
   ) {
     const parentSection = getCompanyMenuParentSection(getCompanyMenuSection(chatId));
     setCompanyMenuSection(chatId, parentSection);
@@ -7347,7 +7697,7 @@ function formatCompanyPartDepositList(game: GameView, chatId: number, withQuickC
       const qty = Math.max(1, Number(item.quantity) || 1);
       const rarity = normalizePartRarity(String(item.rarity || "Common"));
       const commandHint = withQuickCommands ? `  · /cpd${index + 1}` : "";
-      return `${index + 1}. ${item.name} x${qty} (${rarity})${commandHint}`;
+      return `${index + 1}. ${stripLeadingRarityBadgeFromName(item.name)} x${qty} (${formatRarityBadge(rarity)})${commandHint}`;
     }),
     "",
     withQuickCommands
@@ -7396,255 +7746,89 @@ async function ensureTutorialStarterParts(userId: string) {
   }
 }
 
-function sanitizeTelegramPayload(value: unknown): unknown {
-  if (typeof value === "string") return repairMojibake(value);
-  if (Array.isArray(value)) return value.map((item) => sanitizeTelegramPayload(item));
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => [key, sanitizeTelegramPayload(item)]);
-    return Object.fromEntries(entries);
-  }
-  return value;
-}
-
-async function callTelegramApi(token: string, method: string, body: Record<string, unknown>) {
-  const url = `https://api.telegram.org/bot${token}/${method}`;
-  const sanitizedBody = sanitizeTelegramPayload(body) as Record<string, unknown>;
-
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sanitizedBody),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      if (response.status === 429) {
-        const retryAfterSec = getTelegramRetryAfterSeconds(text) ?? 2;
-        if (attempt < 2) {
-          await sleep((retryAfterSec + 1) * 1000);
-          continue;
-        }
-      }
-      throw new Error(`Telegram API ${method} failed (${response.status}): ${text}`);
-    }
-
-    const json = await response.json();
-    if (!json.ok) {
-      const description = String(json.description || "unknown error");
-      const retryAfterSec = Number(json.parameters?.retry_after);
-      if ((/Too Many Requests/i.test(description) || Number.isFinite(retryAfterSec)) && attempt < 2) {
-        await sleep(((Number.isFinite(retryAfterSec) ? retryAfterSec : 2) + 1) * 1000);
-        continue;
-      }
-      throw new Error(`Telegram API ${method} failed: ${description}`);
-    }
-
-    return json.result;
-  }
-
-  throw new Error(`Telegram API ${method} failed: retry limit exceeded`);
-}
-
-async function callTelegramApiMultipart(
-  token: string,
-  method: string,
-  body: Record<string, unknown>,
-  fileField: string,
-  fileName: string,
-  fileBuffer: Buffer,
-  fileMimeType = "image/png",
-) {
-  const url = `https://api.telegram.org/bot${token}/${method}`;
-  const sanitizedBody = sanitizeTelegramPayload(body) as Record<string, unknown>;
-  const form = new FormData();
-
-  for (const [key, value] of Object.entries(sanitizedBody)) {
-    if (value === undefined || value === null) continue;
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      form.append(key, String(value));
-      continue;
-    }
-    form.append(key, JSON.stringify(value));
-  }
-
-  form.append(fileField, new Blob([fileBuffer], { type: fileMimeType }), fileName);
-
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await fetch(url, {
-      method: "POST",
-      body: form,
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      if (response.status === 429) {
-        const retryAfterSec = getTelegramRetryAfterSeconds(text) ?? 2;
-        if (attempt < 2) {
-          await sleep((retryAfterSec + 1) * 1000);
-          continue;
-        }
-      }
-      throw new Error(`Telegram API ${method} failed (${response.status}): ${text}`);
-    }
-
-    const json = await response.json();
-    if (!json.ok) {
-      const description = String(json.description || "unknown error");
-      const retryAfterSec = Number(json.parameters?.retry_after);
-      if ((/Too Many Requests/i.test(description) || Number.isFinite(retryAfterSec)) && attempt < 2) {
-        await sleep(((Number.isFinite(retryAfterSec) ? retryAfterSec : 2) + 1) * 1000);
-        continue;
-      }
-      throw new Error(`Telegram API ${method} failed: ${description}`);
-    }
-
-    return json.result;
-  }
-
-  throw new Error(`Telegram API ${method} failed: retry limit exceeded`);
-}
-
-function extractInlineRows(extra: Record<string, unknown>) {
-  const replyMarkup = extra.reply_markup as { inline_keyboard?: unknown } | undefined;
-  const rows = replyMarkup?.inline_keyboard;
-  return Array.isArray(rows) ? rows : [];
-}
-
-async function clearLastInlineKeyboard(token: string, chatId: number) {
-  const lastMessageId = lastInlineMessageByChatId.get(chatId);
-  if (!lastMessageId) return;
-  try {
-    await callTelegramApi(token, "editMessageReplyMarkup", {
-      chat_id: chatId,
-      message_id: lastMessageId,
-      reply_markup: { inline_keyboard: [] },
-    });
-  } catch {
-    // ignore cleanup errors
-  } finally {
-    lastInlineMessageByChatId.delete(chatId);
-  }
-}
-
-async function sendMessage(token: string, chatId: number, text: string, extra: Record<string, unknown> = {}) {
-  await clearLastInlineKeyboard(token, chatId);
-  const result = await callTelegramApi(token, "sendMessage", { chat_id: chatId, text, ...extra }) as { message_id?: number };
-  const inlineRows = extractInlineRows(extra);
-  if (inlineRows.length > 0 && Number(result?.message_id)) {
-    lastInlineMessageByChatId.set(chatId, Number(result.message_id));
-  } else {
-    lastInlineMessageByChatId.delete(chatId);
-  }
-  return result;
-}
-
-async function sendPhoto(token: string, chatId: number, photo: string, caption: string, extra: Record<string, unknown> = {}) {
-  await clearLastInlineKeyboard(token, chatId);
-  const result = await callTelegramApi(token, "sendPhoto", {
-    chat_id: chatId,
-    photo,
-    caption,
-    ...extra,
-  }) as { message_id?: number };
-  const inlineRows = extractInlineRows(extra);
-  if (inlineRows.length > 0 && Number(result?.message_id)) {
-    lastInlineMessageByChatId.set(chatId, Number(result.message_id));
-  } else {
-    lastInlineMessageByChatId.delete(chatId);
-  }
-  return result;
-}
-
-async function sendPhotoFile(token: string, chatId: number, filePath: string, caption: string, extra: Record<string, unknown> = {}) {
-  await clearLastInlineKeyboard(token, chatId);
-  const fileBuffer = await readFile(filePath);
-  const result = await callTelegramApiMultipart(
+async function sendWithHomeKeyboard(token: string, chatId: number, text: string) {
+  await sendWithMainKeyboardBase({
     token,
-    "sendPhoto",
-    {
-      chat_id: chatId,
-      caption,
-      ...extra,
-    },
-    "photo",
-    filePath.split(/[\\/]/).pop() ?? "photo.png",
-    fileBuffer,
-  ) as { message_id?: number };
-  const inlineRows = extractInlineRows(extra);
-  if (inlineRows.length > 0 && Number(result?.message_id)) {
-    lastInlineMessageByChatId.set(chatId, Number(result.message_id));
-  } else {
-    lastInlineMessageByChatId.delete(chatId);
-  }
-  return result;
-}
-
-async function answerCallbackQuery(token: string, callbackQueryId: string, text?: string) {
-  await callTelegramApi(token, "answerCallbackQuery", {
-    callback_query_id: callbackQueryId,
+    chatId,
     text,
+    getUserIdByTelegramId,
+    getTutorialSnapshotByUser,
   });
 }
 
 async function sendWithMainKeyboard(token: string, chatId: number, text: string) {
-  let replyMarkup = MAIN_MENU_REPLY_MARKUP;
-  try {
-    const userId = getUserIdByTelegramId(String(chatId));
-    if (userId) {
-      const tutorialSnapshot = await getTutorialSnapshotByUser(userId);
-      replyMarkup = buildMainMenuReplyMarkup(!tutorialSnapshot.state.isCompleted);
-    }
-  } catch {
-    replyMarkup = MAIN_MENU_REPLY_MARKUP;
+  const userId = getUserIdByTelegramId(String(chatId));
+  if (!userId) {
+    await sendWithHomeKeyboard(token, chatId, text);
+    return;
   }
-  await sendMessage(token, chatId, text, { reply_markup: replyMarkup });
+
+  await sendWithCurrentHubKeyboardBase({
+    token,
+    chatId,
+    userId,
+    text,
+    getPlayerHubLocation,
+    getPlayerCompanyContext,
+    buildCompanyReplyMarkup,
+    sendWithMainKeyboard: async (input) => sendWithHomeKeyboard(input.token, input.chatId, input.text),
+    getUserIdByTelegramId,
+    getTutorialSnapshotByUser,
+  });
 }
 
 async function sendWithExtrasKeyboard(token: string, chatId: number, text: string) {
-  await sendMessage(token, chatId, text, { reply_markup: EXTRAS_MENU_REPLY_MARKUP });
+  await sendWithExtrasKeyboardBase(token, chatId, text);
 }
 
 async function sendWithCityHubKeyboard(token: string, chatId: number, text: string) {
-  await sendMessage(token, chatId, text, { reply_markup: CITY_MENU_REPLY_MARKUP });
+  await sendWithCityHubKeyboardBase(token, chatId, text);
 }
 
 async function sendWithAdminKeyboard(token: string, chatId: number, text: string) {
-  await sendMessage(token, chatId, text, { reply_markup: ADMIN_MENU_REPLY_MARKUP });
+  await sendWithAdminKeyboardBase(token, chatId, text);
 }
 
 async function sendWithBankKeyboard(token: string, chatId: number, text: string) {
-  await sendMessage(token, chatId, text, { reply_markup: BANK_MENU_REPLY_MARKUP });
+  await sendWithBankKeyboardBase(token, chatId, text);
 }
 
 async function sendWithCurrentHubKeyboard(token: string, chatId: number, userId: string, text: string) {
-  const location = getPlayerHubLocation(userId);
-  if (location === "city") {
-    await sendWithCityHubKeyboard(token, chatId, text);
-    return;
-  }
-  if (location === "company") {
-    const membership = await getPlayerCompanyContext(userId);
-    await sendMessage(token, chatId, text, {
-      reply_markup: buildCompanyReplyMarkup(membership?.role ?? null, chatId),
-    });
-    return;
-  }
-  await sendWithMainKeyboard(token, chatId, text);
+  await sendWithCurrentHubKeyboardBase({
+    token,
+    chatId,
+    userId,
+    text,
+    getPlayerHubLocation,
+    getPlayerCompanyContext,
+    buildCompanyReplyMarkup,
+    sendWithMainKeyboard: async (input) => sendWithHomeKeyboard(input.token, input.chatId, input.text),
+    getUserIdByTelegramId,
+    getTutorialSnapshotByUser,
+  });
 }
 
 function clearPendingActionRuntimeState(chatId: number, pendingAction: PendingAction) {
   pendingActionByChatId.delete(chatId);
 
   if (
+    pendingAction.type === "company_contract_parts"
+  ) {
+    companyContractSelectedPartRefsByChatId.delete(chatId);
+    companyContractPartRefsByChatId.delete(chatId);
+    companyContractPartPageByChatId.delete(chatId);
+  }
+
+  if (
     pendingAction.type === "company_exclusive_name"
     || pendingAction.type === "company_exclusive_parts"
     || pendingAction.type === "company_exclusive_produce_select"
     || pendingAction.type === "company_exclusive_produce_qty"
+    || pendingAction.type === "company_exclusive_produce_confirm"
   ) {
     companyExclusiveSelectedPartRefsByChatId.delete(chatId);
     companyExclusivePartRefsByChatId.delete(chatId);
+    companyExclusivePartPageByChatId.delete(chatId);
   }
 }
 
@@ -7675,13 +7859,21 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     "open_bank_product",
     "exchange_to_gram",
     "exchange_from_gram",
+    "stocks_buy_select",
+    "stocks_buy_qty",
+    "stocks_sell_select",
+    "stocks_sell_qty",
     "company_create",
     "company_part_deposit",
     "company_part_deposit_qty",
+    "company_contract_parts",
     "company_topup",
+    "company_bp_produce_qty",
+    "company_bp_produce_confirm",
     "company_exclusive_name",
     "company_exclusive_produce_select",
     "company_exclusive_produce_qty",
+    "company_exclusive_produce_confirm",
     "study_level_select",
     "study_course_select",
     "admin_auth",
@@ -7707,121 +7899,49 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       || pendingAction.type === "study_level_select"
       || pendingAction.type === "study_course_select"
       || pendingAction.type === "job_select"
+      || pendingAction.type === "open_bank_product"
+      || pendingAction.type === "exchange_to_gram"
+      || pendingAction.type === "exchange_from_gram"
+      || pendingAction.type === "stocks_buy_select"
+      || pendingAction.type === "stocks_buy_qty"
+      || pendingAction.type === "stocks_sell_select"
+      || pendingAction.type === "stocks_sell_qty"
     )
   ) {
     return false;
   }
 
-  if (
-    pendingAction.type === "register_username"
-    || pendingAction.type === "register_city"
-    || pendingAction.type === "register_personality"
-    || pendingAction.type === "register_gender"
-  ) {
-    const draft = registrationDraftByChatId.get(chatId);
-    if (!draft) {
-      pendingActionByChatId.delete(chatId);
-      await sendWithMainKeyboard(token, chatId, "Регистрация сброшена. Отправь /start, чтобы начать заново.");
-      return true;
-    }
-
-    const draftUser = await storage.getUser(draft.userId);
-    if (!draftUser) {
-      registrationDraftByChatId.delete(chatId);
-      pendingActionByChatId.delete(chatId);
-      await sendWithMainKeyboard(token, chatId, "Профиль не найден. Отправь /start.");
-      return true;
-    }
-
-    if (pendingAction.type === "register_username") {
-      const nickname = normalizeTelegramRegistrationName(text);
-      if (!isValidTelegramRegistrationName(nickname)) {
-        await sendMessage(
-          token,
-          chatId,
-          "Неверный ник. Впиши 3-10 символов: русские/латинские буквы, цифры, _ или -",
-          { reply_markup: { remove_keyboard: true } },
-        );
-        return true;
-      }
-
-      const existing = await storage.getUserByUsername(nickname);
-      if (existing && existing.id !== draftUser.id) {
-        await sendMessage(token, chatId, "Этот ник уже занят. Введи другой.");
-        return true;
-      }
-
-      draft.username = nickname;
-    }
-
-    if (pendingAction.type === "register_city") {
-      const city = resolveCityName(text);
-      if (!city) {
-        await sendRegistrationCityPicker(token, chatId, getDraftCitySlideIndex(chatId));
-        return true;
-      }
-      if (!isCityTemporarilyAvailable(city)) {
-        await sendMessage(token, chatId, CITY_CAPACITY_MESSAGE, {
-          reply_markup: buildRegistrationCityInlineMarkup(getDraftCitySlideIndex(chatId)),
-        });
-        return true;
-      }
-
-      draft.city = city;
-    }
-
-    if (pendingAction.type === "register_personality") {
-      const personality = resolvePersonality(text);
-      if (!personality) {
-        await sendRegistrationPersonalityPicker(token, chatId, getDraftPersonalitySlideIndex(chatId));
-        return true;
-      }
-      draft.personality = personality;
-      registrationDraftByChatId.set(chatId, draft);
-      if (draft.userId) {
-        const refreshed = await saveRegistrationProgress(draft.userId, {
-          personalityId: personality,
-        });
-        if (refreshed && buildPlayerRegistrationState(refreshed).registrationStep === "aptitude_test") {
-          pendingActionByChatId.set(chatId, { type: "registration_aptitude" });
-          await sendTelegramRegistrationStepPrompt(token, chatId, "registration_aptitude");
-          return true;
-        }
-      }
-    }
-
-    if (pendingAction.type === "register_gender") {
-      const gender = resolveGender(text);
-      if (!gender) {
-        await sendRegistrationGenderPicker(token, chatId, getDraftGenderSlideIndex(chatId));
-        return true;
-      }
-      draft.gender = gender;
-    }
-
-    registrationDraftByChatId.set(chatId, draft);
-    if (pendingAction.type === "register_username") {
-      const refreshed = await saveRegistrationProgress(draftUser.id, { username: draft.username });
-      await sendTelegramRegistrationStepPrompt(token, chatId, resolveTelegramRegistrationStep(refreshed, chatId) ?? "registration_city");
-      return true;
-    }
-
-    if (pendingAction.type === "register_city") {
-      const refreshed = await saveRegistrationProgress(draftUser.id, { city: draft.city });
-      await sendTelegramRegistrationStepPrompt(token, chatId, resolveTelegramRegistrationStep(refreshed, chatId) ?? "register_username");
-      return true;
-    }
-
-    const usePersistedFallback = isTelegramRegistrationCompleted(draftUser);
-    const nextStep = resolveRegistrationStepFromValues({
-      username: draft.username ?? (usePersistedFallback ? draftUser.username : undefined),
-      city: draft.city ?? (usePersistedFallback ? draftUser.city : undefined),
-      personality: draft.personality ?? (usePersistedFallback ? draftUser.personality : undefined),
-      gender: draft.gender ?? (usePersistedFallback ? draftUser.gender : undefined),
-      skills: draft.skills,
-    });
-    pendingActionByChatId.set(chatId, { type: nextStep });
-    await sendTelegramRegistrationStepPrompt(token, chatId, nextStep);
+  if (await handleRegistrationPendingAction({
+    token,
+    chatId,
+    text,
+    pendingAction,
+    registrationDraftByChatId,
+    pendingActionByChatId,
+    storage,
+    sendWithMainKeyboard,
+    sendMessage,
+    normalizeTelegramRegistrationName,
+    isValidTelegramRegistrationName,
+    resolveCityName,
+    isCityTemporarilyAvailable,
+    cityCapacityMessage: CITY_CAPACITY_MESSAGE,
+    buildRegistrationCityInlineMarkup,
+    getDraftCitySlideIndex,
+    sendRegistrationCityPicker,
+    resolvePersonality,
+    getDraftPersonalitySlideIndex,
+    sendRegistrationPersonalityPicker,
+    buildPlayerRegistrationState,
+    saveRegistrationProgress,
+    sendTelegramRegistrationStepPrompt,
+    resolveGender,
+    getDraftGenderSlideIndex,
+    sendRegistrationGenderPicker,
+    resolveTelegramRegistrationStep,
+    isTelegramRegistrationCompleted,
+    resolveRegistrationStepFromValues,
+  })) {
     return true;
   }
 
@@ -7881,46 +8001,11 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
   }
 
   if (pendingAction.type === "job_select") {
-    try {
-      const result = await completeJob(player.id, text);
+    const result = await runJobSelection(token, chatId, player, text);
+    if (result.ok) {
       pendingActionByChatId.delete(chatId);
-      const currency = getCurrencySymbol(result.user.city);
-      const lines = result.failed
-        ? [
-            `❌ Вакансия провалена: ${result.job.name}`,
-            `Риск провала: ${Math.round(Number(result.failureChance ?? 0))}%`,
-            `-${currency}${Math.max(0, Number(result.penaltyMoney ?? 0))} (штраф)`,
-            `⚡ Потрачено энергии работы: ${Math.round(Number(result.energyCost ?? 0) * 100)}%`,
-            `⚡ Остаток энергии работы: ${formatEnergyPercent(result.state.workTime)}`,
-            `💰 Итого денег: ${currency}${formatNumber(result.user.balance)}`,
-            `⭐ Итого опыта: ур. ${result.user.level}, ${result.user.experience}/100 XP`,
-          ]
-        : [
-            `✅ Вакансия выполнена: ${result.job.name}`,
-            `+${currency}${result.finalMoney}, +${result.finalExp} XP, +${Math.max(0, Number(result.reputationGain ?? 2))} репутации`,
-            `⚡ Потрачено энергии работы: ${Math.round(Number(result.energyCost ?? 0) * 100)}%`,
-            `⚡ Остаток энергии работы: ${formatEnergyPercent(result.state.workTime)}`,
-            `💰 Итого денег: ${currency}${formatNumber(result.user.balance)}`,
-            `⭐ Итого опыта: ур. ${result.user.level}, ${result.user.experience}/100 XP`,
-          ];
-      if (!result.failed) {
-        await tryApplyTutorialEvent(player.id, "first_job_done");
-        updateWeeklyQuestProgress(result.user, "jobs", 1);
-      }
-      if (!result.failed && result.droppedPart) lines.push(`🎁 Деталь: ${result.droppedPart.name} (${result.droppedPart.rarity})`);
-      if (!result.failed) {
-        const tutorialContinueLine = await getTutorialContinueLine(player.id);
-        if (tutorialContinueLine) lines.push("", tutorialContinueLine);
-      }
-      await sendMessage(token, chatId, lines.join("\n"), { reply_markup: JOB_RESULT_REPLY_MARKUP });
-      if (!result.failed && player.level < ADVANCED_PERSONALITY_UNLOCK_LEVEL && result.user.level >= ADVANCED_PERSONALITY_UNLOCK_LEVEL) {
-        await maybePromptAdvancedPersonality(token, chatId, result.user);
-      }
-      if (!result.failed && player.level < PROFESSION_UNLOCK_LEVEL && result.user.level >= PROFESSION_UNLOCK_LEVEL) {
-        await maybePromptProfession(token, chatId, result.user);
-      }
-    } catch (error) {
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}\nОтправь номер вакансии ещё раз или нажми «⬅️ Назад».`);
+    } else {
+      await sendMessage(token, chatId, `❌ ${result.message}\nВыбери вакансию кнопкой ниже или отправь номер ещё раз.`);
     }
     return true;
   }
@@ -7935,13 +8020,23 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       const questProgress = updateWeeklyQuestProgress(result.user, "shop", 1);
       pendingActionByChatId.delete(chatId);
       const currency = getCurrencySymbol(result.user.city);
-      const lines = [`✅ РљСѓРїР»РµРЅРѕ: ${result.item.name}`, `-${currency}${result.item.price}`, `Р‘РѕРЅСѓСЃС‹: ${formatStats(result.item.stats)}`, "", await formatLiveProfile(result.user, result.state as GameView)];
+      const lines = [
+        `✅ Куплено: ${result.item.name}`,
+        `-${currency}${result.item.price}`,
+        `Бонусы: ${formatStats(result.item.stats)}`,
+        `💰 Баланс: ${currency}${formatNumber(result.user.balance)}`,
+      ];
       const questNotice = formatWeeklyQuestProgressNotice(questProgress);
-      if (questNotice) lines.splice(3, 0, questNotice);
+      if (questNotice) lines.push("", questNotice);
       const tutorialNotice = formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
       if (tutorialNotice) lines.push("", tutorialNotice);
       if (result.notices.length) lines.push("", formatNotices(result.notices));
-      await sendWithCityHubKeyboard(token, chatId, lines.join("\n"));
+      const purchaseMarkup = buildShopPurchaseInlineMarkup(result.item);
+      if (purchaseMarkup) {
+        await sendMessage(token, chatId, lines.join("\n"), { reply_markup: purchaseMarkup });
+      } else {
+        await sendWithCityHubKeyboard(token, chatId, lines.join("\n"));
+      }
     } catch (error) {
       await sendWithCityHubKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}\nОтправь номер товара ещё раз или нажми «⬅️ Назад».`);
     }
@@ -7982,10 +8077,10 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       pendingActionByChatId.delete(chatId);
       const currency = getCurrencySymbol(result.user.city);
       const lines = [
-        `✅ РџСЂРѕРґР°РЅРѕ: ${result.item.name}`,
-        `+${currency}${result.salePrice}`,
+        "✅ Продано:",
+        `${result.item.name} +${currency}${result.salePrice}`,
         "",
-        await formatLiveProfile(result.user, result.state as GameView),
+        `💰 Баланс: ${currency}${formatNumber(result.user.balance)}`,
       ];
       if (result.notices.length) lines.push("", formatNotices(result.notices));
       await sendWithCityHubKeyboard(token, chatId, lines.join("\n"));
@@ -8043,6 +8138,114 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     return true;
   }
 
+  if (pendingAction.type === "stocks_buy_select") {
+    const snapshot = await getStockMarketSnapshot(player.id);
+    const ticker = text.trim().toUpperCase();
+    const quote = snapshot.quotes.find((item) => item.ticker.toUpperCase() === ticker);
+    if (!quote) {
+      await sendMessage(token, chatId, "Выбери бумагу кнопкой ниже.", {
+        reply_markup: buildStocksTickerReplyMarkup(snapshot, "buy"),
+      });
+      return true;
+    }
+
+    pendingActionByChatId.set(chatId, { type: "stocks_buy_qty", ticker: quote.ticker });
+    await sendMessage(
+      token,
+      chatId,
+      `Выбрана бумага ${quote.ticker}.\nСколько хочешь купить? Отправь число.`,
+      { reply_markup: buildStocksQuantityReplyMarkup() },
+    );
+    return true;
+  }
+
+  if (pendingAction.type === "stocks_buy_qty") {
+    const quantity = Math.max(1, Math.floor(Number(text.trim())));
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      await sendMessage(token, chatId, "Введи целое число бумаг для покупки.", {
+        reply_markup: buildStocksQuantityReplyMarkup(),
+      });
+      return true;
+    }
+
+    try {
+      const result = await buyStockAsset(player.id, pendingAction.ticker, quantity);
+      const tutorialAdvance = await tryApplyTutorialEvent(player.id, "first_stock_bought");
+      pendingActionByChatId.delete(chatId);
+      await sendMessage(
+        token,
+        chatId,
+        [
+          `✅ Куплено: ${result.ticker} x${result.quantity}`,
+          `Цена: ${getCurrencySymbol(player.city)}${result.pricePerShare.toFixed(2)}`,
+          `Списано: ${getCurrencySymbol(player.city)}${result.totalCost.toFixed(2)}`,
+          formatTutorialAdvanceNotice(tutorialAdvance, player.city),
+          "",
+          await formatStocksMenu(player.id),
+        ].filter(Boolean).join("\n"),
+        { reply_markup: buildStocksHomeReplyMarkup() },
+      );
+    } catch (error) {
+      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}\nВведи количество ещё раз.`, {
+        reply_markup: buildStocksQuantityReplyMarkup(),
+      });
+    }
+    return true;
+  }
+
+  if (pendingAction.type === "stocks_sell_select") {
+    const snapshot = await getStockMarketSnapshot(player.id);
+    const ticker = text.trim().toUpperCase();
+    const holding = snapshot.holdings.find((item) => item.ticker.toUpperCase() === ticker);
+    if (!holding) {
+      await sendMessage(token, chatId, "Выбери бумагу из портфеля кнопкой ниже.", {
+        reply_markup: buildStocksTickerReplyMarkup(snapshot, "sell"),
+      });
+      return true;
+    }
+
+    pendingActionByChatId.set(chatId, { type: "stocks_sell_qty", ticker: holding.ticker });
+    await sendMessage(
+      token,
+      chatId,
+      `Выбрана бумага ${holding.ticker}.\nСколько хочешь продать? Отправь число.`,
+      { reply_markup: buildStocksQuantityReplyMarkup() },
+    );
+    return true;
+  }
+
+  if (pendingAction.type === "stocks_sell_qty") {
+    const quantity = Math.max(1, Math.floor(Number(text.trim())));
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      await sendMessage(token, chatId, "Введи целое число бумаг для продажи.", {
+        reply_markup: buildStocksQuantityReplyMarkup(),
+      });
+      return true;
+    }
+
+    try {
+      const result = await sellStockAsset(player.id, pendingAction.ticker, quantity);
+      pendingActionByChatId.delete(chatId);
+      await sendMessage(
+        token,
+        chatId,
+        [
+          `✅ Продано: ${result.ticker} x${result.quantity}`,
+          `Цена: ${getCurrencySymbol(player.city)}${result.pricePerShare.toFixed(2)}`,
+          `Получено: ${getCurrencySymbol(player.city)}${result.totalRevenue.toFixed(2)}`,
+          "",
+          await formatStocksMenu(player.id),
+        ].join("\n"),
+        { reply_markup: buildStocksHomeReplyMarkup() },
+      );
+    } catch (error) {
+      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}\nВведи количество ещё раз.`, {
+        reply_markup: buildStocksQuantityReplyMarkup(),
+      });
+    }
+    return true;
+  }
+
   if (pendingAction.type === "company_topup") {
     const amountLocal = parseDecimalInput(text);
     if (amountLocal === null) {
@@ -8080,6 +8283,70 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     return true;
   }
 
+  if (pendingAction.type === "company_set_salary_amount") {
+    const amount = Math.floor(Number(text.trim()));
+    if (!Number.isFinite(amount) || amount < 0) {
+      await sendMessage(token, chatId, "Неверный формат. Введи сумму зарплаты в GRM, например: 60.", {
+        reply_markup: buildCompanyReplyMarkup("owner", chatId),
+      });
+      return true;
+    }
+    if (amount > 5000) {
+      await sendMessage(token, chatId, "Слишком большая зарплата. Максимум: 5000 GRM.", {
+        reply_markup: buildCompanyReplyMarkup("owner", chatId),
+      });
+      return true;
+    }
+
+    const membership = await getPlayerCompanyContext(player.id);
+    if (!membership || membership.role !== "owner" || String(membership.company.id) !== pendingAction.companyId) {
+      pendingActionByChatId.delete(chatId);
+      await sendWithMainKeyboard(token, chatId, "Компания не найдена. Открой /company и попробуй снова.");
+      return true;
+    }
+
+    const members = await storage.getCompanyMembers(membership.company.id);
+    const targetMember = members.find((member) => member.userId === pendingAction.memberUserId);
+    if (!targetMember) {
+      pendingActionByChatId.delete(chatId);
+      await sendMessage(token, chatId, "Сотрудник не найден.", {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return true;
+    }
+
+    setCompanyMemberSalary(String(membership.company.id), targetMember.userId, amount);
+    pendingActionByChatId.delete(chatId);
+    await sendMessage(
+      token,
+      chatId,
+      `✅ Зарплата назначена: ${targetMember.username} — ${amount} GRM.\nСотрудник получит её кнопкой или через скрытый /company_salary_claim.`,
+      { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+    );
+    await sendMessage(token, chatId, await formatCompanySalariesSection(membership, chatId), {
+      reply_markup: buildCompanySalariesInlineMarkup(membership, chatId),
+    });
+    return true;
+  }
+
+  if (pendingAction.type === "auction_bid_amount") {
+    const amount = Number(text.trim());
+    if (!Number.isFinite(amount) || amount <= 0) {
+      await sendWithCityHubKeyboard(token, chatId, "Неверный формат. Введи сумму ставки в GRM, например: 150.");
+      return true;
+    }
+    try {
+      await callInternalApi("POST", "/api/market/bid", { listingId: pendingAction.listingId, bidderId: player.id, amount });
+      pendingActionByChatId.delete(chatId);
+      await sendMessage(token, chatId, `✅ Ставка принята.\n\n${await formatAuctionSection(player.id, chatId)}`, {
+        reply_markup: await buildAuctionInlineMarkup(player.id, chatId),
+      });
+    } catch (error) {
+      await sendWithCityHubKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
+    }
+    return true;
+  }
+
   if (pendingAction.type === "company_part_deposit") {
     const alias = resolvePlainTextAlias(text, chatId);
     if (alias && alias !== "/company_part_deposit") {
@@ -8109,7 +8376,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const inventory = [...(((snapshot?.game as GameView | undefined)?.inventory) ?? [])];
     const partItem = inventory.find((item) => item.type === "part" && item.id === partRef);
     if (!partItem) {
-      await sendMessage(token, chatId, "❌ Запчасть не найдена. Выбери номер из списка или открой /company_part_deposit.");
+      await sendMessage(token, chatId, "❌ На склад компании можно добавлять только запчасти. Выбери деталь из списка или открой /company_part_deposit.");
       return true;
     }
 
@@ -8158,6 +8425,35 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     return true;
   }
 
+  if (pendingAction.type === "company_contract_parts") {
+    const membership = await getPlayerCompanyContext(player.id);
+    if (!membership) {
+      clearPendingActionRuntimeState(chatId, pendingAction);
+      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании.");
+      return true;
+    }
+    const backAlias = aliasCommand === "/company_back" || normalizedCommand === "/company_back" || normalizedCommand === "/cancel";
+    if (backAlias) {
+      clearPendingActionRuntimeState(chatId, pendingAction);
+      await sendCompanyWorkSection(token, chatId, membership);
+      return true;
+    }
+    const contracts = await getCityContracts(membership.company.city);
+    const contract = contracts.find((item) => item.id === pendingAction.contractId);
+    if (!contract) {
+      clearPendingActionRuntimeState(chatId, pendingAction);
+      await sendMessage(token, chatId, "Контракт больше не найден. Открой раздел работы компании заново.", {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return true;
+    }
+    await sendMessage(token, chatId, "Используй кнопки под сообщением, чтобы выбрать детали со склада компании.", {
+      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+    });
+    await sendCompanyContractPartsPicker(token, chatId, membership, contract);
+    return true;
+  }
+
   if (pendingAction.type === "company_exclusive_name") {
     const membership = await getPlayerCompanyContext(player.id);
     if (!membership || membership.role !== "owner") {
@@ -8171,6 +8467,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       return true;
     }
     companyExclusiveSelectedPartRefsByChatId.delete(chatId);
+    companyExclusivePartPageByChatId.set(chatId, 0);
     pendingActionByChatId.set(chatId, { type: "company_exclusive_parts", gadgetName });
     await sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, gadgetName);
     return true;
@@ -8181,11 +8478,11 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     if (!membership || membership.role !== "owner") {
       pendingActionByChatId.delete(chatId);
       companyExclusiveSelectedPartRefsByChatId.delete(chatId);
+      companyExclusivePartPageByChatId.delete(chatId);
       await sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
       return true;
     }
-    const warehouseParts = getCompanyWarehouseParts(membership.company.id).slice(0, 12);
-    const refs = warehouseParts.map((item) => `${item.id}::${item.rarity}`);
+    const refs = getCompanyWarehouseParts(membership.company.id).map((item) => `${item.id}::${item.rarity}`);
     companyExclusivePartRefsByChatId.set(chatId, refs);
     const selectedRefs = [...(companyExclusiveSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
     companyExclusiveSelectedPartRefsByChatId.set(chatId, selectedRefs);
@@ -8196,6 +8493,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       pendingActionByChatId.delete(chatId);
       companyExclusiveSelectedPartRefsByChatId.delete(chatId);
       companyExclusivePartRefsByChatId.delete(chatId);
+      companyExclusivePartPageByChatId.delete(chatId);
       setCompanyMenuSection(chatId, "root");
       rememberTelegramMenu(player.id, { menu: "company", section: "root" });
       await sendCompanyRootMenu(token, chatId, player);
@@ -8206,6 +8504,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
 
     if (/^\/det_reset$/i.test(normalizedText)) {
       companyExclusiveSelectedPartRefsByChatId.set(chatId, []);
+      companyExclusivePartPageByChatId.set(chatId, 0);
       await sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, pendingAction.gadgetName);
       return true;
     }
@@ -8282,16 +8581,16 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const snapshot = await getCompanyExclusiveSnapshot(membership.company.id);
     const parsedIndex = Number(text.trim());
     if (!Number.isFinite(parsedIndex)) {
-      await sendMessage(token, chatId, "Отправь номер чертежа из списка или нажми «⬅️ Назад».", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      await sendMessage(token, chatId, "Выбери чертёж кнопкой ниже или нажми «⬅️ Назад».", {
+        reply_markup: buildCompanyExclusiveProduceInlineMarkup(snapshot, membership.role, chatId),
       });
       return true;
     }
     const index = Math.max(0, parsedIndex - 1);
     const blueprint = snapshot.catalog?.[index];
     if (!blueprint) {
-      await sendMessage(token, chatId, "Чертёж не найден. Отправь номер из списка или нажми «⬅️ Назад».", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      await sendMessage(token, chatId, "Чертёж не найден. Выбери вариант кнопкой ниже или нажми «⬅️ Назад».", {
+        reply_markup: buildCompanyExclusiveProduceInlineMarkup(snapshot, membership.role, chatId),
       });
       return true;
     }
@@ -8301,6 +8600,77 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       blueprintName: blueprint.name,
     });
     await sendMessage(token, chatId, `🏭 ${blueprint.name}\nВведи количество для выпуска (1-${Math.max(1, blueprint.remainingUnits)}).`);
+    return true;
+  }
+
+  if (pendingAction.type === "company_bp_produce_qty") {
+    const membership = await getPlayerCompanyContext(player.id);
+    if (!membership || membership.role !== "owner") {
+      pendingActionByChatId.delete(chatId);
+      await sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
+      return true;
+    }
+    const quantityRaw = Number(text.trim() || 1);
+    const quantity = Math.max(1, Math.min(pendingAction.maxQuantity, Math.floor(quantityRaw)));
+    if (!Number.isFinite(quantityRaw) || quantityRaw <= 0) {
+      await sendMessage(token, chatId, `Введи число от 1 до ${pendingAction.maxQuantity}.`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return true;
+    }
+    try {
+      const blueprintSnapshot = await getCompanyBlueprintSnapshot(membership.company.id);
+      const blueprint = blueprintSnapshot.available.find((item) => item.id === pendingAction.blueprintId);
+      if (!blueprint) {
+        pendingActionByChatId.delete(chatId);
+        await sendMessage(token, chatId, "❌ Активный чертёж больше не найден.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return true;
+      }
+      const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
+      const departmentEffects = getDepartmentEffects(companyEconomy.departments);
+      const blueprintCategory = GADGET_BLUEPRINTS.find((item) => item.id === blueprint.id)?.category ?? "smartphones";
+      const batchDiscountMultiplier = Math.max(0.88, 1 - Math.max(0, quantity - 1) * 0.02);
+      const gramCost = Math.max(
+        1,
+        Math.round(
+          Number(blueprint.production?.costGram || 1)
+          * quantity
+          * batchDiscountMultiplier
+          * departmentEffects.productionCostMultiplier,
+        ),
+      );
+      const durationMs = calculateCompanyStandardProductionPreviewMs({
+        blueprintId: blueprint.id,
+        category: blueprintCategory,
+        quantity,
+        departmentEffects,
+        advancedPersonalityId: getAdvancedPersonalityId(player),
+      });
+      pendingActionByChatId.set(chatId, {
+        type: "company_bp_produce_confirm",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        quantity,
+      });
+      await sendMessage(
+        token,
+        chatId,
+        [
+          `🏭 ${blueprint.name}`,
+          `Партия: x${quantity}`,
+          `Время производства: ${formatDurationShort(durationMs)}`,
+          `Стоимость запуска: ${formatNumber(gramCost)} GRM`,
+          "Нажми «Запустить партию», чтобы начать производство.",
+        ].filter(Boolean).join("\n"),
+        { reply_markup: buildCompanyProductionConfirmInlineMarkup("standard") },
+      );
+    } catch (error) {
+      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+    }
     return true;
   }
 
@@ -8335,31 +8705,68 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       });
       return true;
     }
-    pendingActionByChatId.delete(chatId);
     try {
-      const result = await callInternalApi("POST", `/api/companies/${membership.company.id}/exclusive/produce`, {
-        userId: player.id,
+      const snapshot = await getCompanyExclusiveSnapshot(membership.company.id);
+      const blueprint = (snapshot.catalog ?? []).find((item) => item.id === pendingAction.blueprintId);
+      if (!blueprint) {
+        pendingActionByChatId.delete(chatId);
+        await sendMessage(token, chatId, "❌ Чертёж для выпуска больше не найден.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return true;
+      }
+      const actualQuantity = Math.max(1, Math.min(Number(blueprint.remainingUnits || 1), Math.floor(quantity)));
+      const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
+      const departmentEffects = getDepartmentEffects(companyEconomy.departments);
+      const gramCost = Math.max(
+        1,
+        Math.round(Number(blueprint.productionCostGram || 1) * actualQuantity * departmentEffects.productionCostMultiplier),
+      );
+      const durationMs = calculateCompanyExclusiveProductionPreviewMs({
+        category: blueprint.category,
+        quantity: actualQuantity,
+        departmentEffects,
+        advancedPersonalityId: getAdvancedPersonalityId(player),
+      });
+      pendingActionByChatId.set(chatId, {
+        type: "company_exclusive_produce_confirm",
         blueprintId: pendingAction.blueprintId,
-        quantity,
-      }) as any;
+        blueprintName: pendingAction.blueprintName,
+        quantity: actualQuantity,
+      });
       await sendMessage(
         token,
         chatId,
         [
-          `✅ Выпущено: ${result.produced?.length || 0} x ${pendingAction.blueprintName}`,
-          Number.isFinite(Number(result.companyBalance)) ? `Баланс компании: ${formatNumber(Number(result.companyBalance))} GRM` : "",
-          result.bonusApplied?.financeGrm ? `Финансы: +${result.bonusApplied.financeGrm} GRM` : "",
-          result.bonusApplied?.xp ? `XP: +${result.bonusApplied.xp}` : "",
-          result.bonusApplied?.skill ? `Навык ${result.bonusApplied.skill}: +${result.bonusApplied.amount}` : "",
-          result.gadgetWear?.summary ? String(result.gadgetWear.summary) : "",
-        ].filter(Boolean).join("\n"),
-        { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+          `🏭 ${pendingAction.blueprintName}`,
+          `Партия: x${actualQuantity}`,
+          `Время производства: ${formatDurationShort(durationMs)}`,
+          `Стоимость запуска: ${formatNumber(gramCost)} GRM компании`,
+          "Нажми «Запустить партию», чтобы начать выпуск.",
+        ].join("\n"),
+        { reply_markup: buildCompanyProductionConfirmInlineMarkup("exclusive") },
       );
     } catch (error) {
       await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
         reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
       });
     }
+    return true;
+  }
+
+  if (pendingAction.type === "company_bp_produce_confirm") {
+    if (text.trim().startsWith("/")) return false;
+    await sendMessage(token, chatId, "Нажми кнопку «Запустить партию» под предыдущим сообщением или «Изменить количество».", {
+      reply_markup: buildCompanyProductionConfirmInlineMarkup("standard"),
+    });
+    return true;
+  }
+
+  if (pendingAction.type === "company_exclusive_produce_confirm") {
+    if (text.trim().startsWith("/")) return false;
+    await sendMessage(token, chatId, "Нажми кнопку «Запустить партию» под предыдущим сообщением или «Изменить количество».", {
+      reply_markup: buildCompanyProductionConfirmInlineMarkup("exclusive"),
+    });
     return true;
   }
 
@@ -8421,7 +8828,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       await sendMessage(
         token,
         chatId,
-        `❌ Недостаточно энергии для учёбы. Нужно ${Math.round(studyEnergyCost * 100)}%, доступно ${formatEnergyPercent(game.studyTime)}.`,
+        `❌ Недостаточно энергии для учёбы. Нужно ${Math.round(studyEnergyCost * 100)}, доступно ${formatEnergyPercent(game.studyTime)}.`,
         { reply_markup: STUDY_RESULT_REPLY_MARKUP },
       );
       pendingActionByChatId.delete(chatId);
@@ -8430,12 +8837,13 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const nextStudyTime = Math.max(0, Number((game.studyTime - studyEnergyCost).toFixed(4)));
 
     const failReduction = getEducationFailureReduction(player.city, player.reputation || 0);
-    const effectiveFailure = Math.max(0, course.failureChance - failReduction);
+    const effectiveFailure = Math.max(0, course.failureChance + 10 - failReduction);
+    const baseSkills = getBaseSkillValues(game);
     const nextSkills = { ...(game?.skills || {}) } as Record<SkillName, number>;
     const skillCap = getTrainingSkillCapForLevel(player.level);
     const canGrowAnySkill = Object.entries(course.skillBoosts).some(([key, boost]) => {
-      if (!(key in nextSkills)) return false;
-      return Number(nextSkills[key as SkillName] || 0) < skillCap && Number(boost || 0) > 0;
+      if (!(key in nextSkills) || !(key in baseSkills)) return false;
+      return Number(baseSkills[key as SkillName] || 0) < skillCap && Number(boost || 0) > 0;
     });
     if (!canGrowAnySkill) {
       pendingActionByChatId.delete(chatId);
@@ -8450,11 +8858,10 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const success = Math.random() * 100 > effectiveFailure;
 
     if (!success) {
-      await storage.updateUser(player.id, {
+      const updatedUser = await storage.updateUser(player.id, {
         balance: Math.max(0, player.balance - courseCost),
       });
       applyGameStatePatch(player.id, { studyTime: nextStudyTime });
-      pendingActionByChatId.delete(chatId);
       await sendMessage(
         token,
         chatId,
@@ -8462,12 +8869,13 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
           `❌ Курс не пройден: ${course.icon} ${course.name}`,
           `Риск: ${effectiveFailure}%`,
           `-${getCurrencySymbol(player.city)}${courseCost} (оплата курса списана)`,
-          `⚡ Потрачено энергии учёбы: ${Math.round(studyEnergyCost * 100)}%`,
+          `⚡ Потрачено энергии учёбы: ${Math.round(studyEnergyCost * 100)}`,
           `⚡ Остаток энергии учёбы: ${formatEnergyPercent(nextStudyTime)}`,
           `💰 Остаток денег: ${getCurrencySymbol(player.city)}${formatNumber(Math.max(0, player.balance - courseCost))}`,
         ].join("\n"),
         { reply_markup: STUDY_RESULT_REPLY_MARKUP },
       );
+      await sendStudyCoursesSelectionMenu(token, chatId, updatedUser, pendingAction.levelKey);
       return true;
     }
 
@@ -8489,9 +8897,11 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       const bonusBoost = (citySkillProc ? 1 : 0) + (luckyProc ? 1 : 0);
       const plannedBoost = Number((baseBoost + bonusBoost).toFixed(2));
       const currentValue = Number(nextSkills[skill] || 0);
-      const finalBoost = Number(Math.max(0, Math.min(plannedBoost, skillCap - currentValue)).toFixed(2));
+      const currentBaseValue = Number(baseSkills[skill] || 0);
+      const finalBoost = Number(Math.max(0, Math.min(plannedBoost, skillCap - currentBaseValue)).toFixed(2));
       if (finalBoost <= 0) continue;
       nextSkills[skill] = Number((currentValue + finalBoost).toFixed(2));
+      baseSkills[skill] = Number((currentBaseValue + finalBoost).toFixed(2));
       appliedBoosts[skill] = finalBoost;
     }
     if (!Object.keys(appliedBoosts).length) {
@@ -8508,7 +8918,6 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     applyGameStatePatch(player.id, { skills: nextSkills, studyTime: nextStudyTime });
     const tutorialAdvance = await tryApplyTutorialEvent(player.id, "first_education_started");
     updateWeeklyQuestProgress(updatedUser, "study", 1);
-    pendingActionByChatId.delete(chatId);
 
       const continueTutorialLine = formatTutorialAdvanceNotice(tutorialAdvance, player.city) || await getTutorialContinueLine(player.id);
 
@@ -8522,13 +8931,14 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
         `Потолок навыков от обучения на этом уровне: ${skillCap}`,
         citySkillProc ? "🏙 Бонус города: +1 к каждому навыку курса." : "",
         luckyProc ? "🍀 Удача: +1 к каждому навыку курса." : "",
-        `⚡ Потрачено энергии учёбы: ${Math.round(studyEnergyCost * 100)}%`,
+        `⚡ Потрачено энергии учёбы: ${Math.round(studyEnergyCost * 100)}`,
         `⚡ Остаток энергии учёбы: ${formatEnergyPercent(nextStudyTime)}`,
         `💰 Остаток денег: ${getCurrencySymbol(updatedUser.city)}${formatNumber(updatedUser.balance)}`,
         continueTutorialLine || "",
       ].filter(Boolean).join("\n"),
       { reply_markup: STUDY_RESULT_REPLY_MARKUP },
     );
+    await sendStudyCoursesSelectionMenu(token, chatId, updatedUser, pendingAction.levelKey);
     return true;
   }
 
@@ -8779,389 +9189,63 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       return;
     }
 
-    if (data === "reg_tutorial:intro:start") {
-      const draft = registrationDraftByChatId.get(chatId);
-      if (!draft?.userId) {
-        callbackText = "Профиль не найден";
-        return;
+    const registrationCallback = await handleRegistrationCallback({
+      data,
+      token,
+      chatId,
+      messageId,
+      callbackId: query.id,
+      query,
+      webAppUrl,
+      registrationDraftByChatId,
+      registrationInterviewMessageByChatId,
+      registrationInterviewFeedbackMessageByChatId,
+      registrationTutorialAnimationByChatId,
+      pendingActionByChatId,
+      storage,
+      callInternalApi,
+      callTelegramApi,
+      sendMessage,
+      sendWithMainKeyboard,
+      sendTelegramRegistrationStepPrompt,
+      handleIncomingMessage,
+      buildInterviewAnswerFeedback,
+      formatProjectedRegistrationSkills,
+      formatStats,
+      normalizeCitySlideIndex,
+      normalizePersonalitySlideIndex,
+      normalizeGenderSlideIndex,
+      formatRegistrationCitySlide,
+      formatRegistrationPersonalitySlide,
+      formatRegistrationGenderSlide,
+      buildRegistrationCityInlineMarkup,
+      buildRegistrationPersonalityInlineMarkup,
+      buildRegistrationGenderInlineMarkup,
+      buildPlayerRegistrationState,
+      registrationInterviewQuestions: REGISTRATION_INTERVIEW_QUESTIONS,
+      tutorialDemoBlueprint: TUTORIAL_DEMO_BLUEPRINT,
+      runRegistrationTutorialProgressAnimation,
+      formatRegistrationTutorialBlueprintProgress,
+      formatRegistrationTutorialProduceProgress,
+      grantStarterHousing,
+      resolveTelegramRegistrationStep,
+      applyReferralFromStartPayload,
+      resolveTelegramSnapshot,
+      getCurrencySymbol,
+      referralNewPlayerReward: REFERRAL_NEW_PLAYER_REWARD,
+      getActiveHousing,
+      getStarterHousingForCity,
+      sendHousingCard,
+      cityOptions: CITY_OPTIONS,
+      personalityOptions: PERSONALITY_OPTIONS,
+      genderOptions: GENDER_OPTIONS,
+      saveRegistrationProgress,
+    });
+    if (registrationCallback?.handled) {
+      callbackText = registrationCallback.callbackText ?? callbackText;
+      if (typeof registrationCallback.shouldClearInlineButtons === "boolean") {
+        shouldClearInlineButtons = registrationCallback.shouldClearInlineButtons;
       }
-      callbackText = "Стажировка начата";
-      await callInternalApi("POST", "/api/registration/submit-answer", {
-        userId: draft.userId,
-        questionId: "intro_start",
-        answerId: "start",
-      });
-      const user = await storage.getUser(draft.userId);
-      if (user) {
-        await sendTelegramRegistrationStepPrompt(token, chatId, "registration_city");
-      }
-      return;
-    }
-
-    const tutorialCityPickMatch = data.match(/^reg_tutorial:city:(.+)$/);
-    if (tutorialCityPickMatch) {
-      const draft = registrationDraftByChatId.get(chatId);
-      if (!draft?.userId) {
-        callbackText = "Профиль не найден";
-        return;
-      }
-      callbackText = "Город выбран";
-      await callInternalApi("POST", "/api/registration/submit-answer", {
-        userId: draft.userId,
-        questionId: "city_selection",
-        answerId: tutorialCityPickMatch[1],
-      });
-      const user = await storage.getUser(draft.userId);
-      if (user) {
-        await sendTelegramRegistrationStepPrompt(token, chatId, "register_username");
-      }
-      return;
-    }
-
-    const tutorialAnswerMatch = data.match(/^reg_tutorial:answer:([^:]+):(.+)$/);
-    if (tutorialAnswerMatch) {
-      const draft = registrationDraftByChatId.get(chatId);
-      if (!draft?.userId) {
-        callbackText = "Профиль не найден";
-        return;
-      }
-      callbackText = "Ответ принят";
-      const response = await callInternalApi("POST", "/api/registration/submit-answer", {
-        userId: draft.userId,
-        questionId: tutorialAnswerMatch[1],
-        answerId: tutorialAnswerMatch[2],
-      }) as any;
-      const nextStep = response?.registration?.registrationStep;
-      const refreshedUser = await storage.getUser(draft.userId);
-      if (messageId) {
-        try {
-          await callTelegramApi(token, "deleteMessage", { chat_id: chatId, message_id: messageId });
-        } catch {
-          // ignore cleanup errors
-        }
-        registrationInterviewMessageByChatId.delete(chatId);
-      }
-      const previousFeedbackMessageId = registrationInterviewFeedbackMessageByChatId.get(chatId);
-      if (previousFeedbackMessageId) {
-        try {
-          await callTelegramApi(token, "deleteMessage", { chat_id: chatId, message_id: previousFeedbackMessageId });
-        } catch {
-          // ignore cleanup errors
-        }
-        registrationInterviewFeedbackMessageByChatId.delete(chatId);
-      }
-      if (refreshedUser) {
-        const feedbackMessage = await sendMessage(token, chatId, buildInterviewAnswerFeedback(
-          refreshedUser,
-          tutorialAnswerMatch[1],
-          tutorialAnswerMatch[2],
-        )) as { message_id?: number };
-        if (Number(feedbackMessage?.message_id || 0)) {
-          registrationInterviewFeedbackMessageByChatId.set(chatId, Number(feedbackMessage.message_id));
-        }
-      }
-      if (nextStep === "first_craft") {
-        const finalSkills = response?.registration?.registrationFlow?.selectedSkills ?? response?.registration?.skills ?? {};
-        await sendMessage(
-          token,
-          chatId,
-          [
-            "✅ Интервью завершено.",
-            "Твои стартовые навыки распределены по результатам ответов.",
-            formatProjectedRegistrationSkills(finalSkills),
-            response?.registration?.registrationFlow?.perfectInterview ? "🏆 Идеальное интервью. Первый прототип получит эксклюзивную метку." : "",
-          ].filter(Boolean).join("\n"),
-        );
-        await sendTelegramRegistrationStepPrompt(token, chatId, "registration_first_craft");
-      } else {
-        const user = await storage.getUser(draft.userId);
-        if (user) {
-          await sendTelegramRegistrationStepPrompt(token, chatId, "registration_aptitude");
-        }
-      }
-      return;
-    }
-
-    if (["reg_tutorial:bp_start", "reg_tutorial:bp_check", "reg_tutorial:produce"].includes(data)) {
-      const draft = registrationDraftByChatId.get(chatId);
-      if (!draft?.userId) {
-        callbackText = "Профиль не найден";
-        return;
-      }
-      const player = await storage.getUser(draft.userId);
-      if (!player) {
-        callbackText = "Профиль не найден";
-        return;
-      }
-      const company = await storage.getTutorialCompanyByOwner(player.id);
-      if (!company) {
-        callbackText = "Мастерская ещё не готова";
-        await sendTelegramRegistrationStepPrompt(token, chatId, "registration_first_craft");
-        return;
-      }
-
-      if (data === "reg_tutorial:bp_start") {
-        const running = registrationTutorialAnimationByChatId.get(chatId);
-        if (running) {
-          callbackText = running.phase === "blueprint"
-            ? "Чертёж уже разрабатывается"
-            : "Сейчас идёт сборка гаджета";
-          return;
-        }
-        callbackText = "Чертёж запущен";
-        await callInternalApi("POST", `/api/companies/${company.id}/blueprints/start`, {
-          userId: player.id,
-          blueprintId: TUTORIAL_DEMO_BLUEPRINT.id,
-        });
-        await runRegistrationTutorialProgressAnimation({
-          token,
-          chatId,
-          phase: "blueprint",
-          durationSeconds: TUTORIAL_DEMO_BLUEPRINT.timeSeconds,
-          formatter: formatRegistrationTutorialBlueprintProgress,
-          completeReplyMarkup: {
-            inline_keyboard: [[{ text: "🏭 Собрать гаджет", callback_data: "reg_tutorial:produce" }]],
-          },
-        });
-        return;
-      }
-
-      if (data === "reg_tutorial:bp_check") {
-        callbackText = "Проверяю";
-        const snapshot = await callInternalApi("GET", `/api/companies/${company.id}/blueprints`) as CompanyBlueprintSnapshot;
-        if (snapshot.active?.status !== "production_ready") {
-          await callInternalApi("POST", `/api/companies/${company.id}/blueprints/progress`, {
-            userId: player.id,
-            hours: 1,
-          });
-        }
-        const refreshed = await callInternalApi("GET", `/api/companies/${company.id}/blueprints`) as CompanyBlueprintSnapshot;
-        const status = refreshed.active?.status;
-        await sendMessage(
-          token,
-          chatId,
-          status === "production_ready"
-            ? "✅ Чертёж готов. Можно запускать первую сборку."
-            : "⏳ Чертёж ещё в работе. Подожди пару секунд и проверь снова.",
-        );
-        return;
-      }
-
-      const running = registrationTutorialAnimationByChatId.get(chatId);
-      if (running) {
-        callbackText = running.phase === "produce"
-          ? "Сборка уже идёт"
-          : "Сначала дождись готовности чертежа";
-        return;
-      }
-      const blueprintSnapshot = await callInternalApi("GET", `/api/companies/${company.id}/blueprints`) as CompanyBlueprintSnapshot;
-      if (blueprintSnapshot.active?.status !== "production_ready") {
-        callbackText = "Нужно разработать чертёж";
-        await sendMessage(token, chatId, "ℹ️ Чтобы собрать гаджет, сначала нужно разработать чертёж. Нажми «📐 Запустить чертёж» и дождись завершения.");
-        return;
-      }
-      callbackText = "Собираю";
-      await runRegistrationTutorialProgressAnimation({
-        token,
-        chatId,
-        phase: "produce",
-        durationSeconds: 4,
-        formatter: formatRegistrationTutorialProduceProgress,
-      });
-      const produced = await callInternalApi("POST", `/api/companies/${company.id}/produce`, {
-        userId: player.id,
-        parts: [],
-      }) as any;
-      await grantStarterHousing(player.id);
-      const refreshedUser = await storage.getUser(player.id);
-      pendingActionByChatId.delete(chatId);
-      if (refreshedUser && !resolveTelegramRegistrationStep(refreshedUser, chatId)) {
-        const referralResult = await applyReferralFromStartPayload(refreshedUser, draft.startPayload);
-        registrationDraftByChatId.delete(chatId);
-        const snapshot = await resolveTelegramSnapshot(query.from);
-        const referralNotice =
-          referralResult?.status === "applied"
-            ? `\n🎁 Реферальный бонус: +${getCurrencySymbol(snapshot.user.city)}${REFERRAL_NEW_PLAYER_REWARD}`
-            : "";
-        await sendWithMainKeyboard(
-          token,
-          chatId,
-          [
-            `✅ Первый прототип собран: ${produced?.name ?? TUTORIAL_DEMO_BLUEPRINT.name}`,
-            produced?.description ? `🌟 ${produced.description}` : "",
-            produced?.inventoryReward
-              ? `🎒 Предмет перемещён в инвентарь: ${String((produced.inventoryReward as any).name || "Starter Phone")}`
-              : "🎒 Гаджет перемещён в инвентарь.",
-            produced?.inventoryReward?.stats
-              ? `Бонусы предмета: ${formatStats((produced.inventoryReward as any).stats)}`
-              : "",
-            "Его можно надеть через инвентарь или продать как обычный гаджет.",
-            referralNotice.trim(),
-            "",
-            "Регистрация завершена. Доступ ко всей игре открыт.",
-          ].filter(Boolean).join("\n"),
-        );
-        const starterHouse = refreshedUser ? (getActiveHousing(refreshedUser) ?? getStarterHousingForCity(refreshedUser.city)) : null;
-        if (refreshedUser && starterHouse) {
-          await sendHousingCard(
-            token,
-            chatId,
-            refreshedUser,
-            starterHouse,
-            "🏠 После регистрации тебе выдан первый дом. Он уже активен и даёт стартовые бонусы.",
-          );
-        }
-        await sendMessage(
-          token,
-          chatId,
-          [
-            "🎓 Если захочешь быстрее освоиться, можно пройти стартовый туториал.",
-            "Команда: /tutorial",
-            "За полное прохождение выдаются бонусы и полезные стартовые награды.",
-          ].join("\n"),
-        );
-      } else {
-        await sendTelegramRegistrationStepPrompt(token, chatId, "registration_first_craft");
-      }
-      return;
-    }
-
-    const regCityNavMatch = data.match(/^reg_city:nav:(\d+)$/);
-    if (regCityNavMatch) {
-      shouldClearInlineButtons = false;
-      const pendingAction = pendingActionByChatId.get(chatId);
-      if (pendingAction?.type !== "register_city") {
-        callbackText = "Регистрация не активна";
-        return;
-      }
-      callbackText = "Город";
-      if (!messageId) return;
-      const index = normalizeCitySlideIndex(Number(regCityNavMatch[1]));
-      await callTelegramApi(token, "editMessageText", {
-        chat_id: chatId,
-        message_id: messageId,
-        text: await formatRegistrationCitySlide(index),
-        reply_markup: buildRegistrationCityInlineMarkup(index),
-      });
-      return;
-    }
-
-    if (data === "reg_city:noop") {
-      shouldClearInlineButtons = false;
-      callbackText = "Город";
-      return;
-    }
-
-    const regCityPickMatch = data.match(/^reg_city:pick:(\d+)$/);
-    if (regCityPickMatch) {
-      const pendingAction = pendingActionByChatId.get(chatId);
-      if (pendingAction?.type !== "register_city") {
-        callbackText = "Регистрация не активна";
-        return;
-      }
-      callbackText = "Город выбран";
-      const index = normalizeCitySlideIndex(Number(regCityPickMatch[1]));
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: CITY_OPTIONS[index],
-      });
-      return;
-    }
-
-    const regPersonalityNavMatch = data.match(/^reg_personality:nav:(\d+)$/);
-    if (regPersonalityNavMatch) {
-      shouldClearInlineButtons = false;
-      const pendingAction = pendingActionByChatId.get(chatId);
-      if (pendingAction?.type !== "register_personality") {
-        callbackText = "Регистрация не активна";
-        return;
-      }
-      callbackText = "Характер";
-      if (!messageId) return;
-      const index = normalizePersonalitySlideIndex(Number(regPersonalityNavMatch[1]));
-      await callTelegramApi(token, "editMessageText", {
-        chat_id: chatId,
-        message_id: messageId,
-        text: await formatRegistrationPersonalitySlide(index),
-        reply_markup: buildRegistrationPersonalityInlineMarkup(index),
-      });
-      return;
-    }
-
-    if (data === "reg_personality:noop") {
-      shouldClearInlineButtons = false;
-      callbackText = "Характер";
-      return;
-    }
-
-    const regPersonalityPickMatch = data.match(/^reg_personality:pick:(\d+)$/);
-    if (regPersonalityPickMatch) {
-      const pendingAction = pendingActionByChatId.get(chatId);
-      if (pendingAction?.type !== "register_personality") {
-        callbackText = "Регистрация не активна";
-        return;
-      }
-      callbackText = "Характер выбран";
-      const index = normalizePersonalitySlideIndex(Number(regPersonalityPickMatch[1]));
-      const draft = registrationDraftByChatId.get(chatId);
-      if (draft?.userId) {
-        const user = await saveRegistrationProgress(draft.userId, {
-          personalityId: PERSONALITY_OPTIONS[index].id,
-        });
-        if (user && buildPlayerRegistrationState(user).registrationStep === "aptitude_test") {
-          await sendTelegramRegistrationStepPrompt(token, chatId, "registration_aptitude");
-          return;
-        }
-      }
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: PERSONALITY_OPTIONS[index].label,
-      });
-      return;
-    }
-
-    const regGenderNavMatch = data.match(/^reg_gender:nav:(\d+)$/);
-    if (regGenderNavMatch) {
-      shouldClearInlineButtons = false;
-      const pendingAction = pendingActionByChatId.get(chatId);
-      if (pendingAction?.type !== "register_gender") {
-        callbackText = "Регистрация не активна";
-        return;
-      }
-      callbackText = "Пол";
-      if (!messageId) return;
-      const index = normalizeGenderSlideIndex(Number(regGenderNavMatch[1]));
-      await callTelegramApi(token, "editMessageText", {
-        chat_id: chatId,
-        message_id: messageId,
-        text: formatRegistrationGenderSlide(index),
-        reply_markup: buildRegistrationGenderInlineMarkup(index),
-      });
-      return;
-    }
-
-    if (data === "reg_gender:noop") {
-      shouldClearInlineButtons = false;
-      callbackText = "Пол";
-      return;
-    }
-
-    const regGenderPickMatch = data.match(/^reg_gender:pick:(\d+)$/);
-    if (regGenderPickMatch) {
-      const pendingAction = pendingActionByChatId.get(chatId);
-      if (pendingAction?.type !== "register_gender") {
-        callbackText = "Регистрация не активна";
-        return;
-      }
-      callbackText = "Пол выбран";
-      const index = normalizeGenderSlideIndex(Number(regGenderPickMatch[1]));
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: GENDER_OPTIONS[index].label,
-      });
       return;
     }
 
@@ -9303,6 +9387,53 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       return;
     }
 
+    if (data === "auction:locked") {
+      callbackText = "Лот недоступен";
+      await answerCallbackQuery(token, callbackId, "Первые 5 минут лот доступен только компании-разработчику");
+      shouldClearInlineButtons = false;
+      return;
+    }
+
+    const auctionBuyMatch = data.match(/^auction:buy:(.+)$/);
+    if (auctionBuyMatch) {
+      callbackText = "Покупка лота";
+      const player = await resolveOrCreateTelegramPlayer(query.from);
+      if (!(await ensureCityHubAccess(token, chatId, player, { chat: { id: chatId }, from: query.from, text: "/auction" }))) {
+        return;
+      }
+      try {
+        await callInternalApi("POST", "/api/market/buy", { listingId: auctionBuyMatch[1], buyerId: player.id });
+        const text = `✅ Покупка завершена.\n\n${await formatAuctionSection(player.id, chatId)}`;
+        if (messageId) {
+          await callTelegramApi(token, "editMessageText", {
+            chat_id: chatId,
+            message_id: messageId,
+            text,
+            reply_markup: await buildAuctionInlineMarkup(player.id, chatId),
+          });
+        } else {
+          await sendMessage(token, chatId, text, { reply_markup: await buildAuctionInlineMarkup(player.id, chatId) });
+        }
+        shouldClearInlineButtons = false;
+      } catch (error) {
+        await sendWithCityHubKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
+      }
+      return;
+    }
+
+    const auctionBidMatch = data.match(/^auction:bid:(.+)$/);
+    if (auctionBidMatch) {
+      callbackText = "Ставка";
+      const player = await resolveOrCreateTelegramPlayer(query.from);
+      if (!(await ensureCityHubAccess(token, chatId, player, { chat: { id: chatId }, from: query.from, text: "/auction" }))) {
+        return;
+      }
+      pendingActionByChatId.set(chatId, { type: "auction_bid_amount", listingId: auctionBidMatch[1] });
+      await sendWithCityHubKeyboard(token, chatId, "Введи сумму ставки в GRM.");
+      shouldClearInlineButtons = false;
+      return;
+    }
+
     const ratingMatch = data.match(/^rating:(players|companies):(level|reputation|wealth|blueprints|pvp)$/);
     if (ratingMatch) {
       callbackText = "Рейтинг";
@@ -9348,7 +9479,7 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
         return;
       }
 
-      if (data === "tutorial:open_jobs") {
+    if (data === "tutorial:open_jobs") {
         callbackText = "Вакансии";
         await handleIncomingMessage(token, webAppUrl, {
           chat: { id: chatId },
@@ -9454,201 +9585,72 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       }
     }
 
-    if (data.startsWith("repair:")) {
+    const jobPickMatch = data.match(/^job:pick:(\d+)$/);
+    if (jobPickMatch) {
+      callbackText = "Вакансия";
       const player = await resolveOrCreateTelegramPlayer(query.from);
-      if (!(await ensureCityHubAccess(token, chatId, player, { chat: { id: chatId }, from: query.from, text: "/repair_service" }))) {
-        callbackText = "Сервис недоступен";
+      if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "job"))) {
         return;
       }
-
-      const [, action, rawValue = ""] = data.split(":");
-      if (action === "refresh") {
-        callbackText = "Сервис обновлён";
-        const text = await formatRepairServiceMenu(player.id, chatId);
-        if (messageId) {
-          try {
-            await callTelegramApi(token, "editMessageText", {
-              chat_id: chatId,
-              message_id: messageId,
-              text,
-              reply_markup: buildRepairServiceInlineMarkup(chatId),
-            });
-          } catch (error) {
-            if (!extractErrorMessage(error).toLowerCase().includes("message is not modified")) {
-              throw error;
-            }
-          }
-        } else {
-          await sendMessage(token, chatId, text, { reply_markup: buildRepairServiceInlineMarkup(chatId) });
-        }
-        return;
+      const result = await runJobSelection(token, chatId, player, jobPickMatch[1]);
+      if (!result.ok) {
+        await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${result.message}\nОткрой вакансии ещё раз и выбери кнопку повторно.`);
       }
-
-      if (action === "back") {
-        callbackText = "Возврат в город";
-        await sendCityHubSummary(token, chatId, player.id);
-        return;
-      }
-
-      if (action === "preview") {
-        callbackText = "Оценка ремонта";
-        const gadgetRefs = repairGadgetRefsByChatId.get(chatId) ?? [];
-        const gadgetRef = gadgetRefs[Math.max(0, Number(rawValue) - 1)];
-        if (!gadgetRef) {
-          await sendRepairServiceMenu(token, chatId, player.id, "Гаджет не найден. Обнови список.");
-          return;
-        }
-        const gadgets = await listRepairableGadgets(player.id);
-        const gadget = gadgets.find((item) => String(item.id) === String(gadgetRef));
-        if (!gadget) {
-          await sendRepairServiceMenu(token, chatId, player.id, "Гаджет больше недоступен для ремонта.");
-          return;
-        }
-        const estimate = calculateRepairEstimate(gadget);
-        const text = [
-          "🔧 Оценка ремонта",
-          `Гаджет: ${gadget.name}`,
-          `Состояние: ${Math.round(gadget.condition ?? 0)}/${Math.round(gadget.maxCondition ?? 100)} (${getGadgetConditionStatusLabel(gadget)})`,
-          `Стоимость ремонта: ${getCurrencySymbol(player.city)}${estimate.minPrice} - ${getCurrencySymbol(player.city)}${estimate.maxPrice}`,
-          `Срок ремонта: ${formatRepairDuration(estimate.repairTimeMs)}`,
-          "",
-          "Нужно для ремонта:",
-          ...estimate.requiredParts.map((part) => `• ${part.label} x${part.quantity}`),
-          "",
-          "Подтвердить отправку в сервис?",
-        ].join("\n");
-        const reply_markup = {
-          inline_keyboard: [
-            [{ text: "✅ Отправить в сервис", callback_data: `repair:confirm:${rawValue}` }],
-            [{ text: "⬅️ Назад к списку", callback_data: "repair:refresh" }],
-          ],
-        };
-        if (messageId) {
-          await callTelegramApi(token, "editMessageText", {
-            chat_id: chatId,
-            message_id: messageId,
-            text,
-            reply_markup,
-          });
-        } else {
-          await sendMessage(token, chatId, text, { reply_markup });
-        }
-        return;
-      }
-
-      if (action === "confirm") {
-        callbackText = "Заказ создан";
-        const gadgetRefs = repairGadgetRefsByChatId.get(chatId) ?? [];
-        const gadgetRef = gadgetRefs[Math.max(0, Number(rawValue) - 1)] ?? rawValue;
-        try {
-          const order = await createRepairOrder({ userId: player.id, gadgetRef, playerChatId: chatId });
-          await sendRepairServiceMenu(
-            token,
-            chatId,
-            player.id,
-            [
-              "✅ Гаджет отправлен в сервис.",
-              `Стоимость ремонта: ${getCurrencySymbol(player.city)}${order.minPrice} - ${getCurrencySymbol(player.city)}${order.maxPrice}.`,
-              `Срок ремонта: ${formatRepairDuration(order.repairTimeMs)}.`,
-            ].join("\n"),
-          );
-        } catch (error) {
-          await sendRepairServiceMenu(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-        }
-        return;
-      }
-
-      if (action === "cancel") {
-        callbackText = "Заказ отменён";
-        try {
-          await cancelRepairOrderByPlayer(player.id, rawValue);
-          await sendRepairServiceMenu(token, chatId, player.id, "✅ Заказ на ремонт отменён. Гаджет разблокирован.");
-        } catch (error) {
-          await sendRepairServiceMenu(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-        }
-        return;
-      }
+      return;
     }
 
-    if (data.startsWith("repairco:")) {
+    if (data === "job:back") {
+      callbackText = "Назад";
       const player = await resolveOrCreateTelegramPlayer(query.from);
-      if (!(await ensureCompanyHubAccess(token, chatId, player, { chat: { id: chatId }, from: query.from, text: "/company_service" }))) {
-        callbackText = "Сервис компании недоступен";
-        return;
-      }
-      const membership = await getPlayerCompanyContext(player.id);
-      if (!membership || membership.role !== "owner") {
-        callbackText = "Только CEO";
-        await sendWithMainKeyboard(token, chatId, "Раздел сервиса компании доступен только CEO.");
-        return;
-      }
+      pendingActionByChatId.delete(chatId);
+      await sendCityHubSummary(token, chatId, player.id);
+      return;
+    }
 
-      const [, action, orderId = ""] = data.split(":");
-      if (action === "refresh") {
-        callbackText = "Сервис обновлён";
-        const text = await formatCompanyRepairServiceMenu(membership, chatId);
-        if (messageId) {
-          try {
-            await callTelegramApi(token, "editMessageText", {
-              chat_id: chatId,
-              message_id: messageId,
-              text,
-              reply_markup: buildCompanyRepairServiceInlineMarkup(membership),
-            });
-          } catch (error) {
-            if (!extractErrorMessage(error).toLowerCase().includes("message is not modified")) {
-              throw error;
-            }
-          }
-        } else {
-          await sendMessage(token, chatId, text, { reply_markup: buildCompanyRepairServiceInlineMarkup(membership) });
-        }
-        return;
+    const repairCallback = await handleRepairCallback({
+      data,
+      token,
+      chatId,
+      messageId,
+      query,
+      resolveOrCreateTelegramPlayer,
+      ensureCityHubAccess,
+      ensureCompanyHubAccess,
+      formatRepairServiceMenu,
+      buildRepairServiceInlineMarkup,
+      callTelegramApi,
+      extractErrorMessage,
+      sendMessage,
+      sendCityHubSummary,
+      repairGadgetRefsByChatId,
+      listRepairableGadgets,
+      sendRepairServiceMenu,
+      calculateRepairEstimate,
+      getGadgetConditionStatusLabel,
+      getCurrencySymbol,
+      formatRepairDuration,
+      createRepairOrder,
+      cancelRepairOrderByPlayer,
+      getPlayerCompanyContext,
+      sendWithMainKeyboard,
+      formatCompanyRepairServiceMenu,
+      buildCompanyRepairServiceInlineMarkup,
+      sendCompanyRootMenu,
+      getRepairOrder,
+      sendCompanyRepairServiceMenu,
+      hasCompanyRepairParts,
+      acceptRepairOrder,
+      consumeCompanyRepairParts,
+      startRepairOrder,
+      getTelegramIdByUserId,
+      failRepairOrder,
+    });
+    if (repairCallback?.handled) {
+      callbackText = repairCallback.callbackText ?? callbackText;
+      if (typeof repairCallback.shouldClearInlineButtons === "boolean") {
+        shouldClearInlineButtons = repairCallback.shouldClearInlineButtons;
       }
-
-      if (action === "back") {
-        callbackText = "Возврат в компанию";
-        await sendCompanyRootMenu(token, chatId, player);
-        return;
-      }
-
-      if (action === "accept") {
-        callbackText = "Заказ принят";
-        const order = getRepairOrder(orderId);
-        if (!order) {
-          await sendCompanyRepairServiceMenu(token, chatId, membership, player.id, "Заказ уже недоступен.");
-          return;
-        }
-        try {
-          if (!hasCompanyRepairParts(membership.company.id, order.requiredParts)) {
-            throw new Error("Недостаточно запчастей");
-          }
-          await acceptRepairOrder({
-            orderId: order.id,
-            company: membership.company,
-            acceptedBy: player.id,
-            companyChatId: chatId,
-          });
-          consumeCompanyRepairParts(membership.company.id, order.requiredParts);
-          await startRepairOrder({ orderId: order.id, companyId: membership.company.id, startedBy: player.id });
-
-          const playerChatId = Number(getTelegramIdByUserId(order.playerId) || order.playerChatId || 0);
-          if (Number.isFinite(playerChatId) && playerChatId > 0) {
-            await sendMessage(token, playerChatId, [
-              "✅ Компания приняла заказ.",
-              `Гаджет: ${order.gadgetName}`,
-              `Ремонт уже запущен. Срок: ${formatRepairDuration(order.repairTimeMs)}.`,
-            ].join("\n"));
-          }
-          await sendCompanyRepairServiceMenu(token, chatId, membership, player.id, "✅ Заказ принят. Запчасти списаны, ремонт запущен.");
-        } catch (error) {
-          if (order && order.status === "accepted" && order.assignedCompanyId === membership.company.id) {
-            await failRepairOrder(order.id, "Ошибка запуска ремонта");
-          }
-          await sendCompanyRepairServiceMenu(token, chatId, membership, player.id, `❌ ${extractErrorMessage(error)}`);
-        }
-        return;
-      }
+      return;
     }
 
     if (data.startsWith("stocks:")) {
@@ -9661,53 +9663,19 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       const [, action, ticker = "", qtyRaw = "0"] = data.split(":");
       try {
         if (action === "refresh") {
-          const snapshot = await getStockMarketSnapshot(player.id);
-          callbackText = "Биржа обновлена";
-          if (messageId) {
-            try {
-              await callTelegramApi(token, "editMessageText", {
-                chat_id: chatId,
-                message_id: messageId,
-                text: await formatStocksMenu(player.id),
-                reply_markup: buildStocksInlineMarkup(snapshot),
-              });
-            } catch (error) {
-              const message = extractErrorMessage(error).toLowerCase();
-              if (!message.includes("message is not modified")) {
-                throw error;
-              }
-            }
-          } else {
-            await sendMessage(token, chatId, await formatStocksMenu(player.id), {
-              reply_markup: buildStocksInlineMarkup(snapshot),
-            });
-          }
+          callbackText = "Открой биржу заново";
+          await sendMessage(token, chatId, await formatStocksMenu(player.id), {
+            reply_markup: buildStocksHomeReplyMarkup(),
+          });
           return;
         }
 
         if (action === "news") {
-          const snapshot = await getStockMarketSnapshot(player.id);
           callbackText = "Новости рынка";
           const text = await formatStocksNewsMenu(player.id);
-          if (messageId) {
-            try {
-              await callTelegramApi(token, "editMessageText", {
-                chat_id: chatId,
-                message_id: messageId,
-                text,
-                reply_markup: buildStocksInlineMarkup(snapshot),
-              });
-            } catch (error) {
-              const message = extractErrorMessage(error).toLowerCase();
-              if (!message.includes("message is not modified")) {
-                throw error;
-              }
-            }
-          } else {
-            await sendMessage(token, chatId, text, {
-              reply_markup: buildStocksInlineMarkup(snapshot),
-            });
-          }
+          await sendMessage(token, chatId, text, {
+            reply_markup: buildStocksHomeReplyMarkup(),
+          });
           return;
         }
 
@@ -9721,7 +9689,6 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
           const result = await buyStockAsset(player.id, ticker, quantity);
           const tutorialAdvance = await tryApplyTutorialEvent(player.id, "first_stock_bought");
           callbackText = `Куплено ${ticker}`;
-          const snapshot = await getStockMarketSnapshot(player.id);
           const text = [
             `✅ Куплено: ${result.ticker} x${result.quantity}`,
             `Цена: ${getCurrencySymbol(player.city)}${result.pricePerShare.toFixed(2)}`,
@@ -9730,23 +9697,13 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
             "",
             await formatStocksMenu(player.id),
           ].filter(Boolean).join("\n");
-          if (messageId) {
-            await callTelegramApi(token, "editMessageText", {
-              chat_id: chatId,
-              message_id: messageId,
-              text,
-              reply_markup: buildStocksInlineMarkup(snapshot),
-            });
-          } else {
-            await sendMessage(token, chatId, text, { reply_markup: buildStocksInlineMarkup(snapshot) });
-          }
+          await sendMessage(token, chatId, text, { reply_markup: buildStocksHomeReplyMarkup() });
           return;
         }
 
         if (action === "sell") {
           const result = await sellStockAsset(player.id, ticker, quantity);
           callbackText = `Продано ${ticker}`;
-          const snapshot = await getStockMarketSnapshot(player.id);
           const text = [
             `✅ Продано: ${result.ticker} x${result.quantity}`,
             `Цена: ${getCurrencySymbol(player.city)}${result.pricePerShare.toFixed(2)}`,
@@ -9754,21 +9711,60 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
             "",
             await formatStocksMenu(player.id),
           ].join("\n");
-          if (messageId) {
-            await callTelegramApi(token, "editMessageText", {
-              chat_id: chatId,
-              message_id: messageId,
-              text,
-              reply_markup: buildStocksInlineMarkup(snapshot),
-            });
-          } else {
-            await sendMessage(token, chatId, text, { reply_markup: buildStocksInlineMarkup(snapshot) });
-          }
+          await sendMessage(token, chatId, text, { reply_markup: buildStocksHomeReplyMarkup() });
           return;
         }
       } catch (error) {
         callbackText = "Ошибка биржи";
         await sendWithBankKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
+        return;
+      }
+    }
+
+    const shopBuyActionMatch = data.match(/^shopbuy:(use|equip):(.+)$/);
+    if (shopBuyActionMatch) {
+      const player = await resolveOrCreateTelegramPlayer(query.from);
+      const [, action, itemRef] = shopBuyActionMatch;
+      if (action === "use") {
+        callbackText = "Использование";
+        try {
+          const result = await useInventoryItem(player.id, itemRef);
+          const tutorialAdvance = await tryApplyTutorialEvent(player.id, "first_course_item_used");
+          const lines = [
+            `✅ Использован предмет: ${result.item.name}`,
+            `Эффект: ${formatStats(result.item.stats)}`,
+            "",
+            await formatLiveProfile(result.user, result.state),
+          ];
+          const tutorialNotice = formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
+          if (tutorialNotice) lines.push("", tutorialNotice);
+          if (result.notices.length) lines.push("", formatNotices(result.notices));
+          await sendWithCurrentHubKeyboard(token, chatId, player.id, lines.join("\n"));
+        } catch (error) {
+          await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
+        }
+        return;
+      }
+      if (action === "equip") {
+        callbackText = "Экипировка";
+        try {
+          const result = await toggleGearItem(player.id, itemRef);
+          const tutorialAdvance = result.isEquipped
+            ? await tryApplyTutorialEvent(player.id, "first_gadget_equipped")
+            : null;
+          const lines = [
+            `${result.isEquipped ? "🟢 Надето" : "⚪ Снято"}: ${result.item.name}`,
+            `Бонусы: ${formatStats(result.item.stats)}`,
+            "",
+            await formatLiveProfile(result.user, result.state),
+          ];
+          const tutorialNotice = formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
+          if (tutorialNotice) lines.push("", tutorialNotice);
+          if (result.notices.length) lines.push("", formatNotices(result.notices));
+          await sendWithCurrentHubKeyboard(token, chatId, player.id, lines.join("\n"));
+        } catch (error) {
+          await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
+        }
         return;
       }
     }
@@ -9779,6 +9775,37 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
     }
 
     const player = await resolveOrCreateTelegramPlayer(query.from);
+    const companyJoinMatch = data.match(/^company:join:(.+)$/);
+    if (companyJoinMatch) {
+      callbackText = "Вступление в компанию";
+      await handleIncomingMessage(token, webAppUrl, {
+        chat: { id: chatId },
+        from: query.from,
+        text: `/company_join ${companyJoinMatch[1]}`,
+      });
+      return;
+    }
+
+    if (data === "company:create_start") {
+      callbackText = "Создание компании";
+      const membership = await getPlayerCompanyContext(player.id);
+      if (membership) {
+        await sendMessage(token, chatId, "Ты уже состоишь в компании. Используй /company.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const companyCreateCost = getCompanyCreateCostForPlayer(player.city);
+      pendingActionByChatId.set(chatId, { type: "company_create" });
+      await sendMessage(
+        token,
+        chatId,
+        `Введи название новой компании (3-40 символов).\nПосле этого бот попросит один эмоджи.\nСтоимость: ${getCurrencySymbol(player.city)}${companyCreateCost}`,
+        { reply_markup: buildCompanyReplyMarkup(null) },
+      );
+      return;
+    }
+
     const currentExclusiveAction = await getCurrentExclusiveAction(player.id, chatId);
     if (currentExclusiveAction && currentExclusiveAction !== "development") {
       callbackText = "Действие заблокировано";
@@ -9915,8 +9942,7 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
         });
         return;
       }
-      const warehouseParts = getCompanyWarehouseParts(membership.company.id).slice(0, 12);
-      const refs = warehouseParts.map((item) => `${item.id}::${item.rarity}`);
+      const refs = getCompanyWarehouseParts(membership.company.id).map((item) => `${item.id}::${item.rarity}`);
       companyExclusivePartRefsByChatId.set(chatId, refs);
       const selectedRefs = [...(companyExclusiveSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
       const partIndex = Number(exclusiveToggleMatch[1]) - 1;
@@ -9947,7 +9973,32 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       return;
     }
 
-    if (data === "company:exclusive_part_reset") {
+    const exclusivePageMatch = data.match(/^company:exclusive_part_page:(stay|\d+)$/);
+    if (exclusivePageMatch) {
+      callbackText = "Страница";
+      shouldClearInlineButtons = false;
+      if (exclusivePageMatch[1] !== "stay") {
+        companyExclusivePartPageByChatId.set(chatId, Math.max(0, Number(exclusivePageMatch[1]) || 0));
+      }
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_exclusive_parts") {
+        await sendMessage(token, chatId, "Сначала запусти разработку эксклюзивного гаджета через «Старт».", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      await sendCompanyExclusivePartsPicker(
+        token,
+        chatId,
+        membership,
+        player.id,
+        pendingAction.gadgetName,
+        messageId,
+      );
+      return;
+    }
+
+      if (data === "company:exclusive_part_reset") {
       callbackText = "Сброс";
       shouldClearInlineButtons = false;
       const pendingAction = pendingActionByChatId.get(chatId);
@@ -9958,6 +10009,7 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
         return;
       }
       companyExclusiveSelectedPartRefsByChatId.set(chatId, []);
+      companyExclusivePartPageByChatId.set(chatId, 0);
       await sendCompanyExclusivePartsPicker(
         token,
         chatId,
@@ -9974,6 +10026,7 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       pendingActionByChatId.delete(chatId);
       companyExclusiveSelectedPartRefsByChatId.delete(chatId);
       companyExclusivePartRefsByChatId.delete(chatId);
+      companyExclusivePartPageByChatId.delete(chatId);
       setCompanyMenuSection(chatId, "root");
       rememberTelegramMenu(player.id, { menu: "company", section: "root" });
       await sendCompanyRootMenu(token, chatId, player);
@@ -9990,8 +10043,7 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
         });
         return;
       }
-      const warehouseParts = getCompanyWarehouseParts(membership.company.id).slice(0, 12);
-      const refs = warehouseParts.map((item) => `${item.id}::${item.rarity}`);
+      const refs = getCompanyWarehouseParts(membership.company.id).map((item) => `${item.id}::${item.rarity}`);
       companyExclusivePartRefsByChatId.set(chatId, refs);
       const selectedRefs = [...(companyExclusiveSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
       companyExclusiveSelectedPartRefsByChatId.set(chatId, selectedRefs);
@@ -10074,11 +10126,18 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
 
     if (data === "company:topup") {
       callbackText = "Пополнение компании";
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: "/company_topup",
-      });
+      pendingActionByChatId.set(chatId, { type: "company_topup", companyId: String(membership.company.id) });
+      const rate = getLocalToGRMRate(player.city);
+      await sendWithMainKeyboard(
+        token,
+        chatId,
+        [
+          "💱 Пополнение компании в GRM",
+          `Твой курс: 1 локальная единица = ${formatRate(rate)} GRM`,
+          `Баланс игрока: ${getCurrencySymbol(player.city)}${player.balance}`,
+          "Введи сумму в локальной валюте.",
+        ].join("\n"),
+      );
       return;
     }
 
@@ -10117,14 +10176,100 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       return;
     }
 
-    if (data === "company:salary_setup") {
-      callbackText = "Зарплаты";
+    if (data === "company:staffing") {
+      callbackText = "HR";
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
+        return;
+      }
+      await sendMessage(token, chatId, await formatCompanyStaffingSection(membership, chatId), {
+        reply_markup: buildCompanyStaffingInlineMarkup(chatId, membership.role),
+      });
+      return;
+    }
+
+    const staffPickMatch = data.match(/^company:staff_pick:(.+)$/);
+    if (staffPickMatch) {
+      callbackText = "Выбор сотрудника";
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
+        return;
+      }
+      const members = await storage.getCompanyMembers(membership.company.id);
+      const targetMember = members.find((member) => member.userId === staffPickMatch[1]);
+      if (!targetMember || targetMember.role === "owner") {
+        await sendMessage(token, chatId, "Для CEO отдел не назначается.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
       await sendMessage(
         token,
         chatId,
-        "Назначение зарплаты сотруднику:\n/company_set_salary <номер сотрудника> <GRM>\n\nПример: /company_set_salary 2 60",
+        `Выбери отдел для ${targetMember.username}:`,
+        { reply_markup: buildCompanyDepartmentSelectInlineMarkup(targetMember.userId, membership.role, chatId) },
       );
-      await sendCompanyManagementSection(token, chatId, membership);
+      return;
+    }
+
+    const staffAssignMatch = data.match(/^company:staff_assign:([^:]+):(researchAndDevelopment|production|marketing|finance|infrastructure)$/);
+    if (staffAssignMatch) {
+      callbackText = "Назначение в отдел";
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
+        return;
+      }
+      try {
+        await callInternalApi("POST", `/api/companies/${membership.company.id}/staffing/assign`, {
+          actorUserId: player.id,
+          targetUserId: staffAssignMatch[1],
+          department: staffAssignMatch[2],
+        });
+        await sendMessage(token, chatId, "✅ Сотрудник назначен в отдел.");
+      } catch (error) {
+        await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
+      }
+      await sendMessage(token, chatId, await formatCompanyStaffingSection(membership, chatId), {
+        reply_markup: buildCompanyStaffingInlineMarkup(chatId, membership.role),
+      });
+      return;
+    }
+
+    if (data === "company:salary_setup") {
+      callbackText = "Зарплаты";
+      await sendMessage(token, chatId, await formatCompanySalariesSection(membership, chatId), {
+        reply_markup: buildCompanySalariesInlineMarkup(membership, chatId),
+      });
+      return;
+    }
+
+    const salaryPickMatch = data.match(/^company:salary_pick:(.+)$/);
+    if (salaryPickMatch) {
+      callbackText = "Выбор зарплаты";
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+        return;
+      }
+      const members = await storage.getCompanyMembers(membership.company.id);
+      const targetMember = members.find((member) => member.userId === salaryPickMatch[1]);
+      if (!targetMember) {
+        await sendMessage(token, chatId, "Сотрудник не найден.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      pendingActionByChatId.set(chatId, {
+        type: "company_set_salary_amount",
+        companyId: String(membership.company.id),
+        memberUserId: targetMember.userId,
+        memberUsername: targetMember.username,
+      });
+      await sendMessage(
+        token,
+        chatId,
+        `Введи зарплату для ${targetMember.username} в GRM.\nТекущее ограничение: 0-5000.`,
+        { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+      );
       return;
     }
 
@@ -10184,6 +10329,23 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       return;
     }
 
+    const companyBlueprintStartMatch = data.match(/^company:bp_start:(.+)$/);
+    if (companyBlueprintStartMatch) {
+      callbackText = "Старт разработки";
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+        return;
+      }
+      if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "development"))) {
+        return;
+      }
+      if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Разработка базового чертежа"))) {
+        return;
+      }
+      await startCompanyBlueprintDevelopment(token, chatId, membership, player, companyBlueprintStartMatch[1]);
+      return;
+    }
+
     if (data === "company:bp_produce") {
       callbackText = "Производство";
       await handleIncomingMessage(token, webAppUrl, {
@@ -10191,6 +10353,215 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
         from: query.from,
         text: "/company_bp_produce",
       });
+      return;
+    }
+
+    if (data === "company:bp_confirm_back") {
+      callbackText = "Изменить количество";
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_bp_produce_confirm") {
+        await sendMessage(token, chatId, "Открой «Производство гаджетов» ещё раз.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const blueprintSnapshot = await getCompanyBlueprintSnapshot(membership.company.id);
+      const blueprint = blueprintSnapshot.available.find((item) => item.id === pendingAction.blueprintId);
+      if (!blueprint) {
+        pendingActionByChatId.delete(chatId);
+        await sendMessage(token, chatId, "Чертёж больше не найден.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const warehouseParts = [...getCompanyWarehouseParts(membership.company.id)];
+      const requiredParts = blueprint.production?.parts ?? {};
+      const maxByParts = Object.entries(requiredParts).reduce((limit, [partType, qtyRaw]) => {
+        const perUnit = Math.max(1, Number(qtyRaw || 0));
+        const available = warehouseParts
+          .filter((item) => item.type === partType)
+          .reduce((sum, item) => sum + Math.max(1, Number(item.quantity || 1)), 0);
+        return Math.min(limit, Math.floor(available / perUnit));
+      }, 10);
+      const maxQuantity = Math.max(1, Math.min(10, Number.isFinite(maxByParts) ? maxByParts : 1));
+      pendingActionByChatId.set(chatId, {
+        type: "company_bp_produce_qty",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        maxQuantity,
+      });
+      await sendMessage(token, chatId, `🏭 ${blueprint.name}\nВведи количество для запуска производства (1-${maxQuantity}).`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return;
+    }
+
+    if (data === "company:bp_confirm_start") {
+      callbackText = "Запуск партии";
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_bp_produce_confirm") {
+        await sendMessage(token, chatId, "Сначала выбери чертёж и количество партии.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      try {
+        const blueprintSnapshot = await getCompanyBlueprintSnapshot(membership.company.id);
+        const blueprint = blueprintSnapshot.available.find((item) => item.id === pendingAction.blueprintId);
+        if (!blueprint) {
+          pendingActionByChatId.delete(chatId);
+          await sendMessage(token, chatId, "❌ Активный чертёж больше не найден.", {
+            reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+          });
+          return;
+        }
+
+        const warehouseParts = [...getCompanyWarehouseParts(membership.company.id)];
+        const requiredParts = blueprint.production?.parts ?? {};
+        const pool: Array<{ id: string; type: string; rarity: RarityName }> = [];
+        for (const item of warehouseParts) {
+          const qty = Math.max(1, item.quantity || 1);
+          for (let i = 0; i < qty; i += 1) {
+            pool.push({ id: item.id, type: item.type, rarity: normalizePartRarity(item.rarity) });
+          }
+        }
+        const selectedParts: Array<{ id: string; type: string; rarity: RarityName }> = [];
+        for (const [partType, qtyRaw] of Object.entries(requiredParts)) {
+          const needed = Math.max(0, Number(qtyRaw || 0)) * pendingAction.quantity;
+          for (let i = 0; i < needed; i += 1) {
+            const idx = pool.findIndex((item) => item.type === partType);
+            if (idx === -1) {
+              throw new Error(`Недостаточно деталей типа ${partType} для партии x${pendingAction.quantity}`);
+            }
+            selectedParts.push(pool[idx]);
+            pool.splice(idx, 1);
+          }
+        }
+
+        const result = await callInternalApi("POST", `/api/companies/${membership.company.id}/produce`, {
+          userId: player.id,
+          parts: selectedParts,
+          quantity: pendingAction.quantity,
+        }) as any;
+        pendingActionByChatId.delete(chatId);
+        const consumeCounter = new Map<string, number>();
+        for (const part of selectedParts) {
+          consumeCounter.set(part.id, (consumeCounter.get(part.id) ?? 0) + 1);
+        }
+        const nextWarehouseParts: CompanyWarehousePartItem[] = [];
+        for (const part of warehouseParts) {
+          const toConsume = consumeCounter.get(part.id) ?? 0;
+          if (toConsume <= 0) {
+            nextWarehouseParts.push(part);
+            continue;
+          }
+          const left = Math.max(0, Math.max(1, part.quantity || 1) - toConsume);
+          consumeCounter.set(part.id, Math.max(0, toConsume - Math.max(1, part.quantity || 1)));
+          if (left > 0) {
+            nextWarehouseParts.push({ ...part, quantity: left });
+          }
+        }
+        setCompanyWarehouseParts(membership.company.id, nextWarehouseParts);
+        await sendMessage(
+          token,
+          chatId,
+          [
+            `🏭 Партия запущена: ${pendingAction.blueprintName} x${pendingAction.quantity}`,
+            `Готовность через: ${formatProductionOrderRemaining(result.order)}`,
+            Number.isFinite(Number(result.gramSpent)) ? `Списано: ${formatNumber(Number(result.gramSpent))} GRM` : "",
+            Number.isFinite(Number(result.companyBalance)) ? `Баланс компании: ${formatNumber(Number(result.companyBalance))} GRM` : "",
+            result.gadgetWear?.summary ? String(result.gadgetWear.summary) : "",
+            "Когда партия будет готова, открой «Производство гаджетов» ещё раз.",
+          ].filter(Boolean).join("\n"),
+          { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+        );
+      } catch (error) {
+        await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+      }
+      return;
+    }
+
+    const companyExclusiveProducePickMatch = data.match(/^company:exclusive_produce_pick:(.+)$/);
+    if (companyExclusiveProducePickMatch) {
+      callbackText = "Выбор выпуска";
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+        return;
+      }
+      const snapshot = await getCompanyExclusiveSnapshot(membership.company.id);
+      const target = (snapshot.catalog ?? []).find((item) => item.id === companyExclusiveProducePickMatch[1]);
+      if (!target) {
+        await sendMessage(token, chatId, "Чертёж не найден. Открой «Выпуск» ещё раз.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      pendingActionByChatId.set(chatId, {
+        type: "company_exclusive_produce_qty",
+        blueprintId: target.id,
+        blueprintName: target.name,
+      });
+      await sendMessage(token, chatId, `🏭 ${target.name}\nВведи количество для выпуска (1-${Math.max(1, target.remainingUnits)}).`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return;
+    }
+
+    if (data === "company:exclusive_confirm_back") {
+      callbackText = "Изменить количество";
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_exclusive_produce_confirm") {
+        await sendMessage(token, chatId, "Открой «Выпуск» ещё раз.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      pendingActionByChatId.set(chatId, {
+        type: "company_exclusive_produce_qty",
+        blueprintId: pendingAction.blueprintId,
+        blueprintName: pendingAction.blueprintName,
+      });
+      await sendMessage(token, chatId, `🏭 ${pendingAction.blueprintName}\nВведи количество для выпуска.`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return;
+    }
+
+    if (data === "company:exclusive_confirm_start") {
+      callbackText = "Запуск эксклюзивной партии";
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_exclusive_produce_confirm") {
+        await sendMessage(token, chatId, "Сначала выбери чертёж и количество партии.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      try {
+        const result = await callInternalApi("POST", `/api/companies/${membership.company.id}/exclusive/produce`, {
+          userId: player.id,
+          blueprintId: pendingAction.blueprintId,
+          quantity: pendingAction.quantity,
+        }) as any;
+        pendingActionByChatId.delete(chatId);
+        await sendMessage(
+          token,
+          chatId,
+          [
+            `🏭 Партия запущена: ${pendingAction.blueprintName} x${pendingAction.quantity}`,
+            `Готовность через: ${formatProductionOrderRemaining(result.order)}`,
+            Number.isFinite(Number(result.companyBalance)) ? `Баланс компании: ${formatNumber(Number(result.companyBalance))} GRM` : "",
+            result.gadgetWear?.summary ? String(result.gadgetWear.summary) : "",
+            "Когда партия будет готова, открой «Выпуск» ещё раз.",
+          ].filter(Boolean).join("\n"),
+          { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+        );
+      } catch (error) {
+        await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+      }
       return;
     }
 
@@ -10254,6 +10625,149 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
         from: query.from,
         text: `/company_contract_accept ${contractAcceptMatch[1]}`,
       });
+      return;
+    }
+
+    const contractPartToggleMatch = data.match(/^company:contract_part_toggle:(\d+)$/);
+    if (contractPartToggleMatch) {
+      callbackText = "Выбор детали";
+      shouldClearInlineButtons = false;
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_contract_parts") {
+        await sendMessage(token, chatId, "Сначала открой контракт компании и запусти выбор деталей.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const contracts = await getCityContracts(membership.company.city);
+      const contract = contracts.find((item) => item.id === pendingAction.contractId);
+      if (!contract) {
+        clearPendingActionRuntimeState(chatId, pendingAction);
+        await sendMessage(token, chatId, "Контракт больше не найден. Открой раздел работы компании заново.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const refs = getCompanyWarehousePartUnitRefs(membership.company.id, pendingAction.requiredPartType).map((item) => item.ref);
+      companyContractPartRefsByChatId.set(chatId, refs);
+      const selectedRefs = [...(companyContractSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
+      const partIndex = Number(contractPartToggleMatch[1]) - 1;
+      const targetRef = refs[partIndex];
+      if (!targetRef) {
+        await answerCallbackQuery(token, callbackId, "Деталь не найдена");
+        return;
+      }
+      const existingIndex = selectedRefs.indexOf(targetRef);
+      if (existingIndex >= 0) {
+        selectedRefs.splice(existingIndex, 1);
+      } else {
+        if (selectedRefs.length >= pendingAction.requiredQuantity) {
+          await answerCallbackQuery(token, callbackId, `Можно выбрать только ${pendingAction.requiredQuantity}`);
+          return;
+        }
+        selectedRefs.push(targetRef);
+      }
+      companyContractSelectedPartRefsByChatId.set(chatId, selectedRefs);
+      await sendCompanyContractPartsPicker(token, chatId, membership, contract, messageId);
+      return;
+    }
+
+    const contractPartPageMatch = data.match(/^company:contract_part_page:(stay|\d+)$/);
+    if (contractPartPageMatch) {
+      callbackText = "Страница деталей";
+      shouldClearInlineButtons = false;
+      if (contractPartPageMatch[1] !== "stay") {
+        companyContractPartPageByChatId.set(chatId, Math.max(0, Number(contractPartPageMatch[1]) || 0));
+      }
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_contract_parts") {
+        await sendMessage(token, chatId, "Сначала открой контракт компании и запусти выбор деталей.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const contracts = await getCityContracts(membership.company.city);
+      const contract = contracts.find((item) => item.id === pendingAction.contractId);
+      if (!contract) {
+        clearPendingActionRuntimeState(chatId, pendingAction);
+        await sendMessage(token, chatId, "Контракт больше не найден. Открой раздел работы компании заново.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      await sendCompanyContractPartsPicker(token, chatId, membership, contract, messageId);
+      return;
+    }
+
+    if (data === "company:contract_part_reset") {
+      callbackText = "Сброс деталей";
+      shouldClearInlineButtons = false;
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_contract_parts") {
+        await sendMessage(token, chatId, "Сначала открой контракт компании и запусти выбор деталей.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const contracts = await getCityContracts(membership.company.city);
+      const contract = contracts.find((item) => item.id === pendingAction.contractId);
+      if (!contract) {
+        clearPendingActionRuntimeState(chatId, pendingAction);
+        await sendMessage(token, chatId, "Контракт больше не найден. Открой раздел работы компании заново.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      companyContractSelectedPartRefsByChatId.set(chatId, []);
+      companyContractPartPageByChatId.set(chatId, 0);
+      await sendCompanyContractPartsPicker(token, chatId, membership, contract, messageId);
+      return;
+    }
+
+    if (data === "company:contract_part_back") {
+      callbackText = "Назад к контрактам";
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (pendingAction && pendingAction.type === "company_contract_parts") {
+        clearPendingActionRuntimeState(chatId, pendingAction);
+      }
+      await sendCompanyWorkSection(token, chatId, membership);
+      return;
+    }
+
+    if (data === "company:contract_part_done") {
+      callbackText = "Сдача деталей";
+      shouldClearInlineButtons = false;
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_contract_parts") {
+        await sendMessage(token, chatId, "Сначала открой контракт компании и запусти выбор деталей.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const contracts = await getCityContracts(membership.company.city);
+      const contract = contracts.find((item) => item.id === pendingAction.contractId);
+      if (!contract) {
+        clearPendingActionRuntimeState(chatId, pendingAction);
+        await sendMessage(token, chatId, "Контракт больше не найден. Открой раздел работы компании заново.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const refs = getCompanyWarehousePartUnitRefs(membership.company.id, pendingAction.requiredPartType).map((item) => item.ref);
+      const selectedRefs = [...(companyContractSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
+      companyContractSelectedPartRefsByChatId.set(chatId, selectedRefs);
+      if (selectedRefs.length !== pendingAction.requiredQuantity) {
+        await answerCallbackQuery(token, callbackId, `Нужно выбрать ${pendingAction.requiredQuantity} деталей`);
+        await sendCompanyContractPartsPicker(token, chatId, membership, contract, messageId);
+        return;
+      }
+      try {
+        await completeCompanyContractDelivery(token, chatId, membership, contract, player.id, { partRefs: selectedRefs });
+        clearPendingActionRuntimeState(chatId, pendingAction);
+      } catch (error) {
+        await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
+      }
+      await sendCompanyWorkSection(token, chatId, membership);
       return;
     }
 
@@ -10429,6 +10943,10 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
+  if (await maybeStartCitySectionTravel(token, chatId, playerForRegistration, message, command)) {
+    return;
+  }
+
   if (!["/help", "/cancel", "/start", "/starttg"].includes(command)) {
     const currentExclusiveAction = await getCurrentExclusiveAction(playerForRegistration.id, chatId);
     if (currentExclusiveAction && !isCommandCompatibleWithExclusiveAction(command, currentExclusiveAction)) {
@@ -10456,27 +10974,23 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       "• /me | /status — быстрый профиль",
       "• /profession — выбрать профессию с 15 уровня",
       "• /jobs — список вакансий",
-      "• /job <номер> — выполнить вакансию",
+      "• Вакансии запускаются из /jobs кнопками.",
       "• /study — меню обучения",
       "• /tutorial — стартовое обучение (8 шагов)",
       "• /repair_service — городской сервис ремонта гаджетов",
+      "• Аукцион теперь поддерживает покупку и ставки кнопками.",
       "",
       "🛍 Магазин и инвентарь",
       "• /shop — каталог магазина",
-      "• /buy <номер> — купить предмет",
-      "• /sell <номер> — продать запчасть/гаджет",
+      "• Покупка и продажа теперь идут через кнопки и меню.",
       "• /inventory — показать инвентарь",
       "• /inv — короткая команда инвентаря",
-      "• /use <номер> — использовать расходник",
-      "• /equip <номер> — надеть/снять экипировку",
-      "• /service <номер> — обслужить гаджет",
-      "• /use_1, /equip_2, /service_3 — быстрые команды из списка",
+      "• Использование, экипировка, обслуживание и разбор доступны из инвентаря.",
       "",
       "🏦 Банк и GRM",
       "• /bank — банковское меню кнопками",
       "• /credits | /deposits — программы",
-      "• /credit <номер> <сумма> <дни>",
-      "• /deposit <номер> <сумма> <дни>",
+      "• После открытия программы бот ждёт обычный ответ: номер сумма дни.",
       "• /repay | /withdraw — закрыть продукт",
       "• /gram — обмен валюты и GRM",
       "• /exchange_to_gram <сумма>",
@@ -10490,9 +11004,9 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       "• /company_part_deposit — открыть перенос запчастей на склад компании",
       "• /company_part_deposit 1 3 — быстрый перенос (пример)",
       "• /cpd1 — быстрый выбор 1-й запчасти",
-      "• /company_topup <локальная сумма>",
-      "• /company_set_salary <сотрудник> <GRM> (CEO), /company_salary_claim",
-      "• /company_department_upgrade <departmentKey> | /company_expand | /company_upgrade (CEO)",
+      "• Пополнение компании, зарплаты и отделы теперь настраиваются кнопками в меню компании.",
+      "• /company_salary_claim остаётся как совместимый скрытый алиас.",
+      "• /company_expand | /company_upgrade (CEO)",
       "• /company_ipo | /company_ipo_run (CEO)",
       "",
       "🏁 Weekly Hackathon",
@@ -10510,16 +11024,15 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       "• /pvp_find — найти соперника (1v1)",
       "• /pvp_leave — выйти из PvP очереди",
       "• /pvp_history — последние PvP бои",
-      "• /company_contract_accept <номер>",
-      "• /company_contract_deliver <номер>",
-      "• /company_bp_start <номер> | /company_bp_produce (CEO)",
-      "• /company_exclusive | /company_exclusive_start <название> | <1,2,3>",
-      "• /company_exclusive_progress | /company_exclusive_produce <номер> [qty]",
+      "• Контракты компании принимаются и сдаются кнопками в разделе «Работа».",
+      "• Для контрактов на запчасти CEO отдельно выбирает детали со склада компании.",
+      "• /company_bureau | /company_bp_produce (CEO)",
+      "• /company_exclusive — раздел редких гаджетов",
+      "• Старт базовых чертежей и выпуск эксклюзивов теперь выбираются кнопками в меню компании.",
       "• /company_upgrade | /company_expand (CEO)",
-      "• /company_create <название> (потом выбрать эмоджи)",
-      "• /company_join <номер>",
+      "• Создание и вступление в компанию запускаются из реестра компаний кнопками.",
       "• /company_leave",
-      "• /company_requests, /company_accept <номер>, /company_decline <номер> (CEO)",
+      "• Заявки в компанию одобряются и отклоняются кнопками в HR-разделе.",
       "",
       "👥 Рефералы",
       "• /ref — твоя реферальная ссылка",
@@ -10716,7 +11229,9 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
   if (command === "/auction") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    await sendWithCityHubKeyboard(token, chatId, await formatAuctionSection(player.id, chatId));
+    await sendMessage(token, chatId, await formatAuctionSection(player.id, chatId), {
+      reply_markup: await buildAuctionInlineMarkup(player.id, chatId),
+    });
     return;
   }
 
@@ -10734,57 +11249,36 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/repair_service") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    await sendRepairServiceMenu(token, chatId, player.id);
-    return;
-  }
-
-  if (command === "/repair_send") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    const ref = String(args[0] || "").trim();
-    if (!ref) {
-      await sendRepairServiceMenu(token, chatId, player.id, "Выбери гаджет кнопкой ниже.");
-      return;
-    }
-    try {
-      const gadgetRefs = repairGadgetRefsByChatId.get(chatId) ?? [];
-      const gadgetRef = gadgetRefs[Math.max(0, Number(ref) - 1)] ?? ref;
-      const order = await createRepairOrder({ userId: player.id, gadgetRef, playerChatId: chatId });
-      await sendRepairServiceMenu(
-        token,
-        chatId,
-        player.id,
-        [
-          "✅ Гаджет отправлен в сервис.",
-          `Стоимость ремонта: ${getCurrencySymbol(player.city)}${order.minPrice} - ${getCurrencySymbol(player.city)}${order.maxPrice}.`,
-          `Срок ремонта: ${formatRepairDuration(order.repairTimeMs)}.`,
-        ].join("\n"),
-      );
-    } catch (error) {
-      await sendRepairServiceMenu(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/repair_cancel") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    const ref = String(args[0] || "").trim();
-    if (!ref) {
-      await sendRepairServiceMenu(token, chatId, player.id, "Выбери заказ на отмену кнопкой ниже.");
-      return;
-    }
-    try {
-      const orderIds = repairOrderRefsByChatId.get(chatId) ?? [];
-      const orderId = orderIds[Math.max(0, Number(ref) - 1)] ?? ref;
-      await cancelRepairOrderByPlayer(player.id, orderId);
-      await sendRepairServiceMenu(token, chatId, player.id, "✅ Заказ на ремонт отменён. Гаджет разблокирован.");
-    } catch (error) {
-      await sendRepairServiceMenu(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
+  if (await handleRepairMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    ensureCityHubAccess,
+    ensureCompanyHubAccess,
+    sendRepairServiceMenu,
+    repairGadgetRefsByChatId,
+    createRepairOrder,
+    getCurrencySymbol,
+    formatRepairDuration,
+    extractErrorMessage,
+    repairOrderRefsByChatId,
+    cancelRepairOrderByPlayer,
+    getPlayerCompanyContext,
+    sendWithMainKeyboard,
+    sendCompanyRepairServiceMenu,
+    listRepairOrdersForCity,
+    getRepairOrder,
+    hasCompanyRepairParts,
+    acceptRepairOrder,
+    consumeCompanyRepairParts,
+    startRepairOrder,
+    getTelegramIdByUserId,
+    sendMessage,
+    failRepairOrder,
+  })) {
     return;
   }
 
@@ -11005,7 +11499,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     }
     pendingActionByChatId.set(chatId, { type: "job_select" });
     rememberTelegramMenu(player.id, { menu: "jobs" });
-    await sendMessage(token, chatId, formatJobsMenu(snapshot), { reply_markup: buildNumericSelectionReplyMarkup(jobsCount) });
+    await sendMessage(token, chatId, formatJobsMenu(snapshot), { reply_markup: buildJobsInlineMarkup(snapshot) });
     return;
   }
 
@@ -11013,7 +11507,15 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     const ref = args.join(" ").trim();
     if (!ref) {
       const player = await resolveOrCreateTelegramPlayer(message.from);
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /job <номер вакансии>");
+      const snapshot = await resolveTelegramSnapshot(message.from);
+      const jobsCount = listJobsByCity(snapshot.user.city, getPlayerProfessionId(snapshot.user), snapshot.user.level).length;
+      if (jobsCount <= 0) {
+        await sendWithCurrentHubKeyboard(token, chatId, player.id, "В вашем городе нет вакансий.");
+        return;
+      }
+      pendingActionByChatId.set(chatId, { type: "job_select" });
+      rememberTelegramMenu(player.id, { menu: "jobs" });
+      await sendMessage(token, chatId, formatJobsMenu(snapshot), { reply_markup: buildJobsInlineMarkup(snapshot) });
       return;
     }
     const player = await resolveOrCreateTelegramPlayer(message.from);
@@ -11021,338 +11523,138 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "job"))) {
       return;
     }
-    try {
-      const result = await completeJob(player.id, ref);
-      const currency = getCurrencySymbol(result.user.city);
-      const lines = result.failed
-        ? [
-            `❌ Вакансия провалена: ${result.job.name}`,
-            `Риск провала: ${Math.round(Number(result.failureChance ?? 0))}%`,
-            `-${currency}${Math.max(0, Number(result.penaltyMoney ?? 0))} (штраф)`,
-            `⚡ Потрачено энергии работы: ${Math.round(Number(result.energyCost ?? 0) * 100)}%`,
-            `⚡ Остаток энергии работы: ${formatEnergyPercent(result.state.workTime)}`,
-            `💰 Итого денег: ${currency}${formatNumber(result.user.balance)}`,
-            `⭐ Итого опыта: ур. ${result.user.level}, ${result.user.experience}/100 XP`,
-          ]
-        : [
-            `✅ Вакансия выполнена: ${result.job.name}`,
-            `+${currency}${result.finalMoney}, +${result.finalExp} XP, +${Math.max(0, Number(result.reputationGain ?? 2))} репутации`,
-            `⚡ Потрачено энергии работы: ${Math.round(Number(result.energyCost ?? 0) * 100)}%`,
-            `⚡ Остаток энергии работы: ${formatEnergyPercent(result.state.workTime)}`,
-            `💰 Итого денег: ${currency}${formatNumber(result.user.balance)}`,
-            `⭐ Итого опыта: ур. ${result.user.level}, ${result.user.experience}/100 XP`,
-          ];
-      if (!result.failed) {
-        await tryApplyTutorialEvent(player.id, "first_job_done");
-        updateWeeklyQuestProgress(result.user, "jobs", 1);
-      }
-      if (!result.failed && result.droppedPart) lines.push(`🎁 Деталь: ${result.droppedPart.name} (${result.droppedPart.rarity})`);
-      if (!result.failed) {
-        const tutorialContinueLine = await getTutorialContinueLine(player.id);
-        if (tutorialContinueLine) lines.push("", tutorialContinueLine);
-      }
-      await sendMessage(token, chatId, lines.join("\n"), { reply_markup: JOB_RESULT_REPLY_MARKUP });
-      if (!result.failed && player.level < ADVANCED_PERSONALITY_UNLOCK_LEVEL && result.user.level >= ADVANCED_PERSONALITY_UNLOCK_LEVEL) {
-        await maybePromptAdvancedPersonality(token, chatId, result.user);
-      }
-      if (!result.failed && player.level < PROFESSION_UNLOCK_LEVEL && result.user.level >= PROFESSION_UNLOCK_LEVEL) {
-        await maybePromptProfession(token, chatId, result.user);
-      }
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}\nПопробуй снова или нажми «⬅️ Назад».`);
+    const result = await runJobSelection(token, chatId, player, ref);
+    if (!result.ok) {
+      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${result.message}\nОткрой вакансии ещё раз и выбери подходящую кнопку.`);
     }
     return;
   }
 
-  if (command === "/shop") {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
-    await sendShopMenu(token, chatId, snapshot, snapshot.user.id, "all");
+  if (await handleInventoryMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveTelegramSnapshot,
+    ensureCityHubAccess,
+    sendShopMenu,
+    resolveShopSellRefFromChat,
+    resolveOrCreateTelegramPlayer,
+    sellInventoryItem,
+    getCurrencySymbol,
+    formatLiveProfile,
+    formatNotices,
+    sendWithCityHubKeyboard,
+    extractErrorMessage,
+    buyShopItem,
+    resolveShopBuyRefFromChat,
+    tryApplyTutorialEvent,
+    updateWeeklyQuestProgress,
+    formatStats,
+    formatWeeklyQuestProgressNotice,
+    formatTutorialAdvanceNotice,
+    buildShopPurchaseInlineMarkup,
+    buildInventoryMenu,
+    inventoryRefsByChatId,
+    sendMessage,
+    buildInventoryInlineButtons,
+    resolveInventoryRefFromChat,
+    sendWithCurrentHubKeyboard,
+    useInventoryItem,
+    toggleGearItem,
+    serviceGadgetItem,
+    scrapBrokenGadgetItem,
+  })) {
     return;
   }
 
-  if (command === "/shop_parts") {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
-    await sendShopMenu(token, chatId, snapshot, snapshot.user.id, "parts");
+  if (await handleCompanyNavigationMessage({
+    command,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    playerTravelByUserId,
+    getTravelRemainingSeconds,
+    formatTravelTargetLabel,
+    sendWithMainKeyboard,
+    ensureExclusiveActionAllowed,
+    getPlayerHubLocation,
+    forceReturnHome,
+    setCompanyMenuSection,
+    getHousingTravelDurationMs,
+    travelToCompanyMs: TRAVEL_TO_COMPANY_MS,
+    rememberTelegramMenu,
+    getPlayerCompanyContext,
+    sendCompanyProfile,
+    storage,
+    getTopCompanies,
+    companyListByChatId,
+    sendMessage,
+    formatCompanyMenuWithoutMembership,
+    buildCompanyRegistryInlineMarkup,
+    buildCompanyReplyMarkup,
+    setPlayerHubLocation,
+    ensureCompanyHubAccess,
+    sendWithCurrentHubKeyboard,
+    formatHackathonMenu,
+    formatSabotageMenu,
+    hackathonSabotageTargetRefsByChatId,
+    getCompanyMenuParentSection,
+    getCompanyMenuSection,
+    sendCompanyRootMenu,
+    sendCompanyWorkSection,
+    ensureCompanyProcessUnlocked,
+    getCompanyMiningStatus,
+    formatMiningPlansMenu,
+    buildCompanyMiningInlineButtons,
+    extractErrorMessage,
+    sendCompanyWarehouseSection,
+    sendCompanyBureauSection,
+    sendCompanyManagementSection,
+    formatCompanySalariesSection,
+    sendCompanyEconomySection,
+    sendCompanyDepartmentsSection,
+    sendCompanyIpoSection,
+    sendCompanyRequestsSection,
+  })) {
     return;
   }
 
-  if (command === "/shop_courses") {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
-    await sendShopMenu(token, chatId, snapshot, snapshot.user.id, "parts");
-    return;
-  }
-
-  if (command === "/shop_gadgets") {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
-    await sendShopMenu(token, chatId, snapshot, snapshot.user.id, "gadgets");
-    return;
-  }
-
-  if (command === "/sell") {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
-    const ref = args.join(" ").trim();
-    if (!ref) {
-      await sendShopMenu(token, chatId, snapshot, snapshot.user.id, "sell");
-      return;
-    }
-
-    const resolvedRef = resolveShopSellRefFromChat(chatId, ref);
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    try {
-      const result = await sellInventoryItem(player.id, resolvedRef);
-      const currency = getCurrencySymbol(result.user.city);
-      const lines = [
-        `✅ РџСЂРѕРґР°РЅРѕ: ${result.item.name}`,
-        `+${currency}${result.salePrice}`,
-        "",
-        await formatLiveProfile(result.user, result.state as GameView),
-      ];
-      if (result.notices.length) lines.push("", formatNotices(result.notices));
-      await sendWithCityHubKeyboard(token, chatId, lines.join("\n"));
-    } catch (error) {
-      await sendWithCityHubKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/buy") {
-    const ref = args.join(" ").trim();
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    if (!ref) {
-      await sendWithCityHubKeyboard(token, chatId, "РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: /buy <РЅРѕРјРµСЂ С‚РѕРІР°СЂР°>");
-      return;
-    }
-    try {
-      const result = await buyShopItem(player.id, resolveShopBuyRefFromChat(chatId, ref));
-      const tutorialAdvance = await tryApplyTutorialEvent(
-        player.id,
-        result.item.type === "consumable" ? "first_course_item_bought" : "first_gadget_bought",
-      );
-      const questProgress = updateWeeklyQuestProgress(result.user, "shop", 1);
-      const currency = getCurrencySymbol(result.user.city);
-      const lines = [`✅ РљСѓРїР»РµРЅРѕ: ${result.item.name}`, `-${currency}${result.item.price}`, `Р‘РѕРЅСѓСЃС‹: ${formatStats(result.item.stats)}`, "", await formatLiveProfile(result.user, result.state as GameView)];
-      const questNotice = formatWeeklyQuestProgressNotice(questProgress);
-      if (questNotice) lines.splice(3, 0, questNotice);
-      const tutorialNotice = formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
-      if (tutorialNotice) lines.push("", tutorialNotice);
-      if (result.notices.length) lines.push("", formatNotices(result.notices));
-      await sendWithCityHubKeyboard(token, chatId, lines.join("\n"));
-    } catch (error) {
-      await sendWithCityHubKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/inventory" || command === "/inv") {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    const inventoryView = buildInventoryMenu(snapshot);
-    inventoryRefsByChatId.set(chatId, inventoryView.refs);
-    const notices = formatNotices(snapshot.notices);
-    const base = inventoryView.text;
-    await sendMessage(token, chatId, notices ? `${base}\n\n${notices}` : base, {
-      reply_markup: buildInventoryInlineButtons(inventoryView),
-    });
-    return;
-  }
-
-  if (command === "/use") {
-    const ref = resolveInventoryRefFromChat(chatId, args.join(" ").trim());
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!ref) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /use <номер предмета>");
-      return;
-    }
-    try {
-      const result = await useInventoryItem(player.id, ref);
-      const tutorialAdvance = await tryApplyTutorialEvent(player.id, "first_course_item_used");
-      const lines = [`✅ Использован предмет: ${result.item.name}`, `Эффект: ${formatStats(result.item.stats)}`, "", await formatLiveProfile(result.user, result.state as GameView)];
-      const tutorialNotice = formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
-      if (tutorialNotice) lines.push("", tutorialNotice);
-      if (result.notices.length) lines.push("", formatNotices(result.notices));
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, lines.join("\n"));
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/equip") {
-    const ref = resolveInventoryRefFromChat(chatId, args.join(" ").trim());
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!ref) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /equip <номер предмета>");
-      return;
-    }
-    try {
-      const result = await toggleGearItem(player.id, ref);
-      const tutorialAdvance = result.isEquipped
-        ? await tryApplyTutorialEvent(player.id, "first_gadget_equipped")
-        : null;
-      const lines = [`${result.isEquipped ? "🟢 Надето" : "⚪ Снято"}: ${result.item.name}`, `Бонусы: ${formatStats(result.item.stats)}`, "", await formatLiveProfile(result.user, result.state as GameView)];
-      const tutorialNotice = formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
-      if (tutorialNotice) lines.push("", tutorialNotice);
-      if (result.notices.length) lines.push("", formatNotices(result.notices));
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, lines.join("\n"));
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/bank") {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
-    const base = formatBankMenu(snapshot);
-    const notices = formatNotices(snapshot.notices);
-    rememberTelegramMenu(snapshot.user.id, { menu: "bank" });
-    await sendWithBankKeyboard(token, chatId, notices ? `${base}\n\n${notices}` : base);
-    return;
-  }
-
-  if (command === "/stocks") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    rememberTelegramMenu(player.id, { menu: "bank" });
-    const snapshot = await getStockMarketSnapshot(player.id);
-    await sendMessage(token, chatId, await formatStocksMenu(player.id), {
-      reply_markup: buildStocksInlineMarkup(snapshot),
-    });
-    return;
-  }
-
-  if (command === "/stocks_buy") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    const ticker = String(args[0] ?? "").trim().toUpperCase();
-    const quantity = Number(args[1] ?? 0);
-    if (!ticker || !Number.isFinite(quantity) || quantity <= 0) {
-      await sendWithBankKeyboard(token, chatId, "Использование: /stocks_buy <тикер> <кол-во>\nПример: /stocks_buy NSFT 3");
-      return;
-    }
-    try {
-      const result = await buyStockAsset(player.id, ticker, quantity);
-      const tutorialAdvance = await tryApplyTutorialEvent(player.id, "first_stock_bought");
-      await sendWithBankKeyboard(
-        token,
-        chatId,
-        [
-          `✅ Куплено: ${result.ticker} x${result.quantity}`,
-          `Цена за бумагу: ${getCurrencySymbol(player.city)}${result.pricePerShare.toFixed(2)}`,
-          `Списано: ${getCurrencySymbol(player.city)}${result.totalCost.toFixed(2)}`,
-          formatTutorialAdvanceNotice(tutorialAdvance, player.city),
-          "",
-          await formatStocksMenu(player.id),
-        ].filter(Boolean).join("\n"),
-      );
-    } catch (error) {
-      await sendWithBankKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/stocks_sell") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    const ticker = String(args[0] ?? "").trim().toUpperCase();
-    const quantity = Number(args[1] ?? 0);
-    if (!ticker || !Number.isFinite(quantity) || quantity <= 0) {
-      await sendWithBankKeyboard(token, chatId, "Использование: /stocks_sell <тикер> <кол-во>\nПример: /stocks_sell NSFT 2");
-      return;
-    }
-    try {
-      const result = await sellStockAsset(player.id, ticker, quantity);
-      await sendWithBankKeyboard(
-        token,
-        chatId,
-        [
-          `✅ Продано: ${result.ticker} x${result.quantity}`,
-          `Цена за бумагу: ${getCurrencySymbol(player.city)}${result.pricePerShare.toFixed(2)}`,
-          `Получено: ${getCurrencySymbol(player.city)}${result.totalRevenue.toFixed(2)}`,
-          "",
-          await formatStocksMenu(player.id),
-        ].join("\n"),
-      );
-    } catch (error) {
-      await sendWithBankKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/gram" || command === "/exchange") {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
-    rememberTelegramMenu(snapshot.user.id, { menu: "bank" });
-    await sendWithBankKeyboard(token, chatId, formatGramExchangeMenu(snapshot));
-    return;
-  }
-
-  if (command === "/exchange_to_gram") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    const amountRaw = args.join(" ").trim();
-    if (!amountRaw) {
-      pendingActionByChatId.set(chatId, { type: "exchange_to_gram" });
-      rememberTelegramMenu(player.id, { menu: "bank" });
-      await sendWithBankKeyboard(token, chatId, "Введи сумму в валюте для покупки GRM.");
-      return;
-    }
-    const amountCurrency = parseDecimalInput(amountRaw);
-    if (amountCurrency === null) {
-      await sendWithBankKeyboard(token, chatId, "Неверный формат. Пример: /exchange_to_gram 500");
-      return;
-    }
-    try {
-      const result = await exchangeCurrencyToGram(player.id, amountCurrency);
-      await sendWithBankKeyboard(
-        token,
-        chatId,
-        [
-          `✅ РћР±РјРµРЅ РІС‹РїРѕР»РЅРµРЅ: -${getCurrencySymbol(result.user.city)}${result.amountCurrency}, +${formatGramValue(result.amountGram)} GRM`,
-          "",
-          await formatLiveProfile(result.user, result.state as GameView),
-        ].join("\n"),
-      );
-    } catch (error) {
-      await sendWithBankKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/exchange_from_gram") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    const amountRaw = args.join(" ").trim();
-    if (!amountRaw) {
-      pendingActionByChatId.set(chatId, { type: "exchange_from_gram" });
-      rememberTelegramMenu(player.id, { menu: "bank" });
-      await sendWithBankKeyboard(token, chatId, "Введи количество GRM для продажи.");
-      return;
-    }
-    const amountGram = parseDecimalInput(amountRaw);
-    if (amountGram === null) {
-      await sendWithBankKeyboard(token, chatId, "Неверный формат. Пример: /exchange_from_gram 12.5");
-      return;
-    }
-    try {
-      const result = await exchangeGramToCurrency(player.id, amountGram);
-      await sendWithBankKeyboard(
-        token,
-        chatId,
-        [
-          `✅ РћР±РјРµРЅ РІС‹РїРѕР»РЅРµРЅ: -${formatGramValue(result.amountGram)} GRM, +${getCurrencySymbol(result.user.city)}${result.amountCurrency}`,
-          "",
-          await formatLiveProfile(result.user, result.state as GameView),
-        ].join("\n"),
-      );
-    } catch (error) {
-      await sendWithBankKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
+  if (await handleEconomyMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveTelegramSnapshot,
+    ensureCityHubAccess,
+    formatBankMenu,
+    formatNotices,
+    rememberTelegramMenu,
+    sendWithBankKeyboard,
+    resolveOrCreateTelegramPlayer,
+    getStockMarketSnapshot,
+    formatStocksMenu,
+    formatStocksNewsMenu,
+    sendMessage,
+    buildStocksHomeReplyMarkup,
+    buildStocksTickerReplyMarkup,
+    buyStockAsset,
+    tryApplyTutorialEvent,
+    getCurrencySymbol,
+    formatTutorialAdvanceNotice,
+    sellStockAsset,
+    formatGramExchangeMenu,
+    pendingActionByChatId,
+    parseDecimalInput,
+    exchangeCurrencyToGram,
+    formatGramValue,
+    formatLiveProfile,
+    exchangeGramToCurrency,
+    extractErrorMessage,
+  })) {
     return;
   }
 
@@ -12031,223 +12333,6 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/company") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const activeTravel = playerTravelByUserId.get(player.id);
-    if (activeTravel) {
-      const secondsLeft = getTravelRemainingSeconds(player.id);
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы уже в пути в ${formatTravelTargetLabel(activeTravel.target)}. Осталось ~${secondsLeft} сек.`);
-      return;
-    }
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "travel"))) {
-      return;
-    }
-
-    const currentLocation = getPlayerHubLocation(player.id);
-    if (currentLocation === "city") {
-      await forceReturnHome(token, chatId, player, message, "⛔ Из города нельзя сразу перейти в компанию.");
-      return;
-    }
-
-    if (currentLocation === "home") {
-      setCompanyMenuSection(chatId, "root");
-      const travelMs = getHousingTravelDurationMs(player, TRAVEL_TO_COMPANY_MS);
-      const arrivesAtMs = Date.now() + travelMs;
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы вышли из дома в компанию. Прибытие через ${Math.ceil(travelMs / 1000)} сек.`);
-      const timer = setTimeout(async () => {
-        try {
-          const state = playerTravelByUserId.get(player.id);
-          if (!state || state.arrivesAtMs !== arrivesAtMs || state.target !== "company") return;
-          playerTravelByUserId.delete(player.id);
-          setPlayerHubLocation(player.id, "company");
-
-          const membership = await getPlayerCompanyContext(player.id);
-          if (membership) {
-            rememberTelegramMenu(player.id, { menu: "company", section: "root" });
-            await sendCompanyProfile(token, state.chatId, membership);
-            return;
-          }
-
-          const companies = (await storage.getAllCompanies()).filter((company) => !company.isTutorial);
-          const top = getTopCompanies(companies);
-          companyListByChatId.set(state.chatId, top.map((company) => company.id));
-          await sendMessage(token, state.chatId, `✅ Вы прибыли в компанию.\n\n${formatCompanyMenuWithoutMembership(companies, player.city)}`, {
-            reply_markup: buildCompanyReplyMarkup(null),
-          });
-        } catch (error) {
-          console.error("Travel to company completion error:", error);
-        }
-      }, travelMs);
-      playerTravelByUserId.set(player.id, { target: "company", arrivesAtMs, timer, chatId });
-      return;
-    }
-
-    setPlayerHubLocation(player.id, "company");
-    setCompanyMenuSection(chatId, "root");
-    rememberTelegramMenu(player.id, { menu: "company", section: "root" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (membership) {
-      await sendCompanyProfile(token, chatId, membership);
-      return;
-    }
-
-    const companies = (await storage.getAllCompanies()).filter((company) => !company.isTutorial);
-    const top = getTopCompanies(companies);
-    companyListByChatId.set(chatId, top.map((company) => company.id));
-      await sendMessage(token, chatId, formatCompanyMenuWithoutMembership(companies, player.city), {
-      reply_markup: buildCompanyReplyMarkup(null, chatId),
-    });
-    return;
-  }
-
-  if (command === "/company_menu_work") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "work");
-    rememberTelegramMenu(player.id, { menu: "company", section: "work" });
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, "💼 Работа компании");
-    return;
-  }
-
-  if (command === "/company_menu_warehouse") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "warehouse");
-    rememberTelegramMenu(player.id, { menu: "company", section: "warehouse" });
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, "📦 Склад компании");
-    return;
-  }
-
-  if (command === "/company_menu_bureau") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "bureau");
-    rememberTelegramMenu(player.id, { menu: "company", section: "bureau" });
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, "🧪 Бюро компании");
-    return;
-  }
-
-  if (command === "/company_menu_management") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "management");
-    rememberTelegramMenu(player.id, { menu: "company", section: "management" });
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, "🛠 Управление компанией");
-    return;
-  }
-
-  if (command === "/company_menu_management_hr") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "management_hr");
-    rememberTelegramMenu(player.id, { menu: "company", section: "management_hr" });
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, "👥 HR компании");
-    return;
-  }
-
-  if (command === "/company_menu_management_departments") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "management_departments");
-    rememberTelegramMenu(player.id, { menu: "company", section: "management_departments" });
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, "🏛 Отделы и апгрейды");
-    return;
-  }
-
-  if (command === "/company_menu_hackathon") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "hackathon");
-    rememberTelegramMenu(player.id, { menu: "company", section: "hackathon" });
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, "🏁 Раздел хакатона компании");
-    return;
-  }
-
-  if (command === "/company_menu_hackathon_event") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "hackathon_event");
-    rememberTelegramMenu(player.id, { menu: "company", section: "hackathon_event" });
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, await formatHackathonMenu(player));
-    return;
-  }
-
-  if (command === "/company_menu_hackathon_sabotage") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "hackathon_sabotage");
-    rememberTelegramMenu(player.id, { menu: "company", section: "hackathon_sabotage" });
-    const payload = await formatSabotageMenu(player);
-    if (typeof payload === "string") {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, payload);
-      return;
-    }
-    hackathonSabotageTargetRefsByChatId.set(chatId, payload.refs);
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, payload.text);
-    return;
-  }
-
-  if (command === "/company_back") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const nextSection = getCompanyMenuParentSection(getCompanyMenuSection(chatId));
-    setCompanyMenuSection(chatId, nextSection);
-    if (nextSection === "management") {
-      rememberTelegramMenu(player.id, { menu: "company", section: "management" });
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "🛠 Управление компанией");
-      return;
-    }
-    if (nextSection === "bureau") {
-      rememberTelegramMenu(player.id, { menu: "company", section: "bureau" });
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "🧪 Бюро компании");
-      return;
-    }
-    rememberTelegramMenu(player.id, { menu: "company", section: "root" });
-    await sendCompanyRootMenu(token, chatId, player);
-    return;
-  }
-
-  if (command === "/company_work") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "work");
-    rememberTelegramMenu(player.id, { menu: "company", section: "work" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    await sendCompanyWorkSection(token, chatId, membership);
-    return;
-  }
-
-  if (command === "/company_mining") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "work");
-    rememberTelegramMenu(player.id, { menu: "company", section: "work" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Добыча запчастей"))) {
-      return;
-    }
-
-    try {
-      const currentStatus = await getCompanyMiningStatus(membership.company.id, player.id);
-      await sendMessage(token, chatId, formatMiningPlansMenu(currentStatus), {
-        reply_markup: buildCompanyMiningInlineButtons(currentStatus),
-      });
-    } catch (error) {
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-    }
-    return;
-  }
-
   if (command === "/company_mining_start") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
@@ -12332,102 +12417,6 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/company_warehouse") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "warehouse");
-    rememberTelegramMenu(player.id, { menu: "company", section: "warehouse" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    await sendCompanyWarehouseSection(token, chatId, membership, player.id);
-    return;
-  }
-
-  if (command === "/company_service") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Раздел сервиса компании доступен только CEO.");
-      return;
-    }
-    await sendCompanyRepairServiceMenu(token, chatId, membership, player.id);
-    return;
-  }
-
-  if (command === "/company_service_accept") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Раздел сервиса компании доступен только CEO.");
-      return;
-    }
-    const ref = String(args[0] || "").trim();
-    if (!ref) {
-      await sendCompanyRepairServiceMenu(token, chatId, membership, player.id, "Выбери заказ кнопкой ниже.");
-      return;
-    }
-    try {
-      const queued = listRepairOrdersForCity(membership.company.city).filter((order) => order.status === "queued");
-      const order = queued[Math.max(0, Number(ref) - 1)] ?? getRepairOrder(ref);
-      if (!order) throw new Error("Заказ не найден");
-      if (!hasCompanyRepairParts(membership.company.id, order.requiredParts)) {
-        throw new Error("Недостаточно запчастей");
-      }
-      await acceptRepairOrder({
-        orderId: order.id,
-        company: membership.company,
-        acceptedBy: player.id,
-        companyChatId: chatId,
-      });
-      consumeCompanyRepairParts(membership.company.id, order.requiredParts);
-      await startRepairOrder({ orderId: order.id, companyId: membership.company.id, startedBy: player.id });
-      const playerChatId = Number(getTelegramIdByUserId(order.playerId) || order.playerChatId || 0);
-      if (Number.isFinite(playerChatId) && playerChatId > 0) {
-        await sendMessage(token, playerChatId, [
-          "✅ Компания приняла заказ.",
-          `Гаджет: ${order.gadgetName}`,
-          `Срок ремонта: ${formatRepairDuration(order.repairTimeMs)}.`,
-        ].join("\n"));
-      }
-      await sendCompanyRepairServiceMenu(token, chatId, membership, player.id, "✅ Заказ принят. Запчасти списаны, ремонт запущен.");
-    } catch (error) {
-      const order = getRepairOrder(String(args[0] || "").trim());
-      if (order && order.status === "accepted" && order.assignedCompanyId === membership.company.id) {
-        await failRepairOrder(order.id, "Ошибка запуска ремонта");
-      }
-      await sendCompanyRepairServiceMenu(token, chatId, membership, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/company_service_start") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Раздел сервиса компании доступен только CEO.");
-      return;
-    }
-    const orderId = String(args[0] || "").trim();
-    if (!orderId) {
-      await sendCompanyRepairServiceMenu(token, chatId, membership, player.id, "Укажи заказ для запуска.");
-      return;
-    }
-    try {
-      await startRepairOrder({ orderId, companyId: membership.company.id, startedBy: player.id });
-      await sendCompanyRepairServiceMenu(token, chatId, membership, player.id, "✅ Ремонт запущен.");
-    } catch (error) {
-      await sendCompanyRepairServiceMenu(token, chatId, membership, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
   if (command === "/company_auction_list") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     const membership = await getPlayerCompanyContext(player.id);
@@ -12436,21 +12425,23 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       return;
     }
     if (!["owner", "manager"].includes(String(membership.role || "").toLowerCase())) {
-      await sendMessage(token, chatId, "Только руководящий состав может выставлять гаджеты на аукцион.");
+      await sendMessage(token, chatId, "Только руководящий состав может выставлять лоты компании на аукцион.");
       return;
     }
     const ref = String(args[0] || "").trim();
     const price = Number(args[1] || 0);
     const durationHours = Math.max(2, Math.min(12, Number(args[2] || 2)));
     if (!ref || !Number.isFinite(price) || price <= 0) {
-      await sendMessage(token, chatId, "Использование: /company_auction_list <номер гаджета> <цена> [часы]");
+      await sendMessage(token, chatId, "Использование: /company_auction_list <номер гаджета|pномер запчасти> <цена> [часы]");
       return;
     }
     try {
-      const gadgetId = resolveWarehouseGadgetRefFromChat(chatId, ref);
+      const partRef = resolveWarehousePartRefFromChat(chatId, ref);
+      const gadgetId = partRef ? undefined : resolveWarehouseGadgetRefFromChat(chatId, ref);
       await callInternalApi("POST", `/api/companies/${membership.company.id}/market/list`, {
         userId: player.id,
         gadgetId,
+        partRef,
         price,
         mode: "auction",
         durationHours,
@@ -12493,7 +12484,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     const inventory = [...(game.inventory ?? [])];
     const partItem = inventory.find((item) => item.type === "part" && item.id === partRef);
     if (!partItem) {
-      await sendMessage(token, chatId, "❌ Запчасть не найдена. Открой /company_part_deposit и выбери номер.");
+      await sendMessage(token, chatId, "❌ На склад компании можно добавлять только запчасти. Открой /company_part_deposit и выбери деталь из списка.");
       return;
     }
 
@@ -12512,7 +12503,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     const used = getCompanyWarehouseUsedSlots(membership.company.id, companySnapshot.produced.length);
     const free = Math.max(0, capacity - used);
     if (moveQty > free) {
-      await sendMessage(token, chatId, `❌ Недостаточно места на складе компании. Свободно слотов: ${free}.`);
+      await sendMessage(token, chatId, `❌ Склад заполнен, добавить невозможно. Свободно слотов: ${free}.`);
       return;
     }
 
@@ -12600,50 +12591,6 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/company_bureau") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "bureau");
-    rememberTelegramMenu(player.id, { menu: "company", section: "bureau" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    await sendCompanyBureauSection(token, chatId, membership, player.id);
-    return;
-  }
-
-  if (command === "/company_management") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "management");
-    rememberTelegramMenu(player.id, { menu: "company", section: "management" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    await sendCompanyManagementSection(token, chatId, membership);
-    return;
-  }
-
-  if (command === "/company_salaries") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "management");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    await sendMessage(token, chatId, await formatCompanySalariesSection(membership, chatId), {
-      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-    });
-    return;
-  }
-
   if (command === "/company_staffing") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
@@ -12655,7 +12602,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       return;
     }
     await sendMessage(token, chatId, await formatCompanyStaffingSection(membership, chatId), {
-      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      reply_markup: buildCompanyStaffingInlineMarkup(chatId, membership.role),
     });
     return;
   }
@@ -12671,7 +12618,9 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     const memberRef = String(args[0] || "").trim();
     const departmentKey = resolveCompanyDepartmentKey(String(args[1] || ""));
     if (!memberRef || !departmentKey) {
-      await sendMessage(token, chatId, "Использование: /company_assign_department <номер> <departmentKey>");
+      await sendMessage(token, chatId, await formatCompanyStaffingSection(membership, chatId), {
+        reply_markup: buildCompanyStaffingInlineMarkup(chatId, membership.role),
+      });
       return;
     }
     const memberRefs = companyMemberRefsByChatId.get(chatId) ?? [];
@@ -12688,7 +12637,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
     }
     await sendMessage(token, chatId, await formatCompanyStaffingSection(membership, chatId), {
-      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      reply_markup: buildCompanyStaffingInlineMarkup(chatId, membership.role),
     });
     return;
   }
@@ -12705,21 +12654,16 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     const argsText = args.join(" ").trim();
     if (!argsText) {
       await sendMessage(token, chatId, await formatCompanySalariesSection(membership, chatId), {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        reply_markup: buildCompanySalariesInlineMarkup(membership, chatId),
       });
-      await sendMessage(
-        token,
-        chatId,
-        "Использование: /company_set_salary <номер сотрудника> <GRM>\nПример: /company_set_salary 2 60",
-      );
       return;
     }
 
     const [memberRef, amountRaw] = argsText.split(/\s+/);
     const amount = Math.floor(Number(amountRaw));
     if (!memberRef || !Number.isFinite(amount) || amount < 0) {
-      await sendMessage(token, chatId, "Неверный формат. Пример: /company_set_salary 2 60", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      await sendMessage(token, chatId, "Неверная сумма зарплаты. Выбери сотрудника кнопкой и введи число от 0 до 5000.", {
+        reply_markup: buildCompanySalariesInlineMarkup(membership, chatId),
       });
       return;
     }
@@ -12743,8 +12687,8 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     }
 
     const targetMember = members.find((member) => member.userId === target.userId);
-    if (!targetMember || targetMember.role === "owner") {
-      await sendMessage(token, chatId, "Для CEO зарплата не назначается.", {
+    if (!targetMember) {
+      await sendMessage(token, chatId, "Сотрудник не найден.", {
         reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
       });
       return;
@@ -12758,7 +12702,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
     );
     await sendMessage(token, chatId, await formatCompanySalariesSection(membership, chatId), {
-      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      reply_markup: buildCompanySalariesInlineMarkup(membership, chatId),
     });
     return;
   }
@@ -12771,11 +12715,6 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
       return;
     }
-    if (membership.role === "owner") {
-      await sendWithMainKeyboard(token, chatId, "CEO не получает зарплату. Назначай зарплаты сотрудникам: /company_set_salary.");
-      return;
-    }
-
     const latestCompany = await storage.getCompany(membership.company.id);
     if (!latestCompany) {
       await sendWithMainKeyboard(token, chatId, "Компания не найдена.");
@@ -12842,35 +12781,6 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/company_economy") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    rememberTelegramMenu(player.id, { menu: "company", section: "root" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    await sendCompanyEconomySection(token, chatId, membership);
-    return;
-  }
-
-  if (command === "/company_departments") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "management_departments");
-    rememberTelegramMenu(player.id, { menu: "company", section: "management_departments" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    await sendCompanyDepartmentsSection(token, chatId, membership);
-    return;
-  }
-
   if (command === "/company_topup") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
@@ -12901,7 +12811,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
 
     const amountLocal = parseDecimalInput(amountRaw);
     if (amountLocal === null) {
-      await sendWithMainKeyboard(token, chatId, "Неверный формат. Пример: /company_topup 1000");
+      await sendWithMainKeyboard(token, chatId, "Неверный формат. Введи сумму в локальной валюте, например: 1000.");
       return;
     }
 
@@ -12940,11 +12850,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       ? COMPANY_DEPARTMENT_ORDER[Math.max(0, Number(rawValue) - 1)] ?? null
       : resolveCompanyDepartmentKey(rawValue);
     if (!departmentRaw) {
-      await sendWithMainKeyboard(
-        token,
-        chatId,
-        "Использование: /company_department_upgrade <номер|departmentKey>\nКлючи: researchAndDevelopment, production, marketing, finance, infrastructure",
-      );
+      await sendCompanyDepartmentsSection(token, chatId, membership);
       return;
     }
 
@@ -12966,19 +12872,6 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     if (refreshed) {
       await sendCompanyDepartmentsSection(token, chatId, refreshed);
     }
-    return;
-  }
-
-  if (command === "/company_ipo") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "management");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    await sendCompanyIpoSection(token, chatId, membership);
     return;
   }
 
@@ -13040,55 +12933,19 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
 
     const action = command === "/company_contract_accept" ? "accept" : "deliver";
     try {
-      const result = await callInternalApi("POST", `/api/city-contracts/${selected.id}/${action}`, {
-        userId: player.id,
-        companyId: membership.company.id,
-      }) as {
-        contract?: {
-          rewardMoney?: number;
-          requiredQuantity?: number;
-        };
-        company?: any;
-      };
-
-      if (action === "deliver") {
-        const latestCompany = result.company ?? membership.company;
-        const currentMembers = await storage.getCompanyMembers(membership.company.id);
-        const companyEconomy = await ensureCompanyEconomyState(latestCompany, currentMembers.length);
-        const departmentEffects = getDepartmentEffects(companyEconomy.departments);
-
-        const baseReward = Math.max(0, Number(result.contract?.rewardMoney ?? 0));
-        const deliveredQuantity = Math.max(0, Math.floor(Number(result.contract?.requiredQuantity ?? 0)));
-        const marketingBonus = baseReward * Math.max(0, departmentEffects.priceMultiplier - 1);
-        const financeBonus = baseReward * Math.max(0, departmentEffects.profitMultiplier - 1);
-        const bonusCapital = marketingBonus + financeBonus;
-        const demandSalesBonus = Math.max(0, Math.floor(deliveredQuantity * Math.max(0, departmentEffects.demandMultiplier - 1)));
-
-        const updatedEconomy = reconcileCompanyEconomy({
-          ...companyEconomy,
-          capitalGRM: companyEconomy.capitalGRM + bonusCapital,
-          profitGRM: companyEconomy.profitGRM + baseReward + bonusCapital,
-          assetsGRM: companyEconomy.assetsGRM + bonusCapital * 0.25,
-          gadgetsSold: companyEconomy.gadgetsSold + deliveredQuantity + demandSalesBonus,
-        });
-        await saveCompanyEconomyState(latestCompany, updatedEconomy);
-
-        await sendMessage(
-          token,
-          chatId,
-          [
-            "✅ Контракт сдан.",
-            `Р‘Р°Р·Р°: +${formatNumber(baseReward)} GRM`,
-            bonusCapital > 0
-              ? `Р‘РѕРЅСѓСЃ РѕС‚РґРµР»РѕРІ (Marketing/Finance): +${formatNumber(bonusCapital)} GRM`
-              : "Бонус отделов: нет",
-            demandSalesBonus > 0
-              ? `Р”РѕРї. РїСЂРѕРґР°Р¶Рё РїРѕ СЃРїСЂРѕСЃСѓ: +${demandSalesBonus}`
-              : "Доп. продажи по спросу: нет",
-          ].join("\n"),
-        );
+      if (action === "deliver" && selected.kind === "parts_supply") {
+        await startCompanyContractPartSelection(token, chatId, membership, player.id, selected);
+        return;
       } else {
-        await sendMessage(token, chatId, "✅ Контракт принят.");
+        if (action === "deliver") {
+          await completeCompanyContractDelivery(token, chatId, membership, selected, player.id);
+        } else {
+          await callInternalApi("POST", `/api/city-contracts/${selected.id}/${action}`, {
+            userId: player.id,
+            companyId: membership.company.id,
+          });
+          await sendMessage(token, chatId, "✅ Контракт принят.");
+        }
       }
     } catch (error) {
       await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
@@ -13114,87 +12971,10 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
 
     const ref = args.join(" ").trim();
     if (!ref) {
-      await sendMessage(token, chatId, "РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: /company_bp_start <РЅРѕРјРµСЂ С‡РµСЂС‚РµР¶Р°> РёР»Рё /devN");
+      await sendOrEditCompanyBureauSection(token, chatId, membership, player.id);
       return;
     }
-
-    const snapshot = await getCompanyBlueprintSnapshot(membership.company.id);
-    const developed = getDevelopedBlueprintIds(membership.company.id, snapshot);
-    const unlockedBlueprints = getUnlockedBlueprints(snapshot.available, developed);
-    companyBlueprintRefsByChatId.set(chatId, unlockedBlueprints.map((item) => item.id));
-    const blueprint = resolveBlueprintRef(chatId, ref, unlockedBlueprints);
-    if (!blueprint) {
-      await sendMessage(token, chatId, "Чертеж не найден или пока не разблокирован. Открой раздел «Бюро» кнопкой ниже.");
-      return;
-    }
-    const ceoSnapshot = await resolveTelegramSnapshot(message.from);
-    const ceoSkills = (ceoSnapshot.game as GameView).skills;
-    const required = {
-      coding: Math.max(0, Number(blueprint.requirements?.coding ?? 0)),
-      design: Math.max(0, Number(blueprint.requirements?.design ?? 0)),
-      analytics: Math.max(0, Number(blueprint.requirements?.analytics ?? 0)),
-    };
-    const participants = new Set<string>();
-    if (
-      (required.coding > 0 && Number(ceoSkills?.coding ?? 0) > 0)
-      || (required.design > 0 && Number(ceoSkills?.design ?? 0) > 0)
-      || (required.analytics > 0 && Number(ceoSkills?.analytics ?? 0) > 0)
-    ) {
-      participants.add(player.id);
-    }
-    companyBlueprintContribByCompanyId.set(membership.company.id, {
-      blueprintId: blueprint.id,
-      required,
-      invested: { coding: 0, design: 0, analytics: 0 },
-      participants,
-      completed: false,
-    });
-
-    try {
-      // TODO: РџРѕРґРєР»СЋС‡РёС‚СЊ СЃРµСЂРІРµСЂРЅСѓСЋ СЃС‚РѕРёРјРѕСЃС‚СЊ Р·Р°РїСѓСЃРєР° СЂР°Р·СЂР°Р±РѕС‚РєРё Рё РїСЂРёРјРµРЅРёС‚СЊ R&D blueprintCostMultiplier.
-      const started = await callInternalApi("POST", `/api/companies/${membership.company.id}/blueprints/start`, {
-        userId: player.id,
-        blueprintId: blueprint.id,
-      }) as { status?: string };
-
-      const progressMessage = await sendMessage(
-        token,
-        chatId,
-        [
-          `✅ Р—Р°РїСѓС‰РµРЅР° СЂР°Р·СЂР°Р±РѕС‚РєР°: ${blueprint.name}`,
-          "Участники компании могут присоединиться и вкладывать навыки каждую секунду.",
-        ].join("\n"),
-      );
-      const progressMessageId = Number(progressMessage?.message_id);
-      if (Number.isFinite(progressMessageId)) {
-        companyBlueprintProgressMessageByChatId.set(chatId, progressMessageId);
-        await updateCompanyBlueprintProgressMessage(
-          token,
-          chatId,
-          membership.company.name,
-          membership.company.id,
-          player.id,
-        );
-        if ((started?.status || "in_progress") === "in_progress") {
-          startCompanyBlueprintProgressTicker(
-            token,
-            chatId,
-            membership.company.name,
-            membership.company.id,
-            player.id,
-          );
-          await notifyCompanyMembersAboutBlueprintStart(
-            token,
-            membership.company.id,
-            membership.company.name,
-            blueprint.name,
-          );
-        }
-      }
-    } catch (error) {
-      companyBlueprintContribByCompanyId.delete(membership.company.id);
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
+    await startCompanyBlueprintDevelopment(token, chatId, membership, player, ref);
     return;
   }
 
@@ -13227,6 +13007,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     if (raw) {
       const gadgetName = normalizeExclusiveDraftName(raw.split("|")[0] || raw);
       companyExclusiveSelectedPartRefsByChatId.delete(chatId);
+      companyExclusivePartPageByChatId.set(chatId, 0);
       pendingActionByChatId.set(chatId, { type: "company_exclusive_parts", gadgetName });
       await sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, gadgetName);
       return;
@@ -13309,11 +13090,45 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       return;
     }
     const snapshot = await getCompanyExclusiveSnapshot(membership.company.id);
+    if (snapshot.productionOrder?.isExclusive) {
+      if (snapshot.productionOrder.status === "ready_to_claim") {
+        try {
+          const claimed = await callInternalApi("POST", `/api/companies/${membership.company.id}/production/claim`, {
+            userId: player.id,
+          }) as any;
+          await sendMessage(
+            token,
+            chatId,
+            [
+              `✅ Партия выдана: ${snapshot.productionOrder.blueprintName} x${claimed.produced?.length || snapshot.productionOrder.quantity}`,
+              claimed.bonusApplied?.financeGrm ? `Финансы: +${claimed.bonusApplied.financeGrm} GRM` : "",
+              claimed.bonusApplied?.xp ? `XP: +${claimed.bonusApplied.xp}` : "",
+              claimed.bonusApplied?.skill ? `Навык ${claimed.bonusApplied.skill}: +${claimed.bonusApplied.amount}` : "",
+              claimed.gadgetWear?.summary ? String(claimed.gadgetWear.summary) : "",
+            ].filter(Boolean).join("\n"),
+            { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+          );
+        } catch (error) {
+          await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
+            reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+          });
+        }
+        return;
+      }
+
+      await sendMessage(
+        token,
+        chatId,
+        `🏭 Уже идет выпуск: ${snapshot.productionOrder.blueprintName} x${snapshot.productionOrder.quantity}\nОсталось: ${formatProductionOrderRemaining(snapshot.productionOrder)}`,
+        { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+      );
+      return;
+    }
     const ref = String(args[0] || "").trim();
     if (!ref) {
       pendingActionByChatId.set(chatId, { type: "company_exclusive_produce_select" });
       await sendMessage(token, chatId, formatExclusiveProduceMenu(snapshot), {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        reply_markup: buildCompanyExclusiveProduceInlineMarkup(snapshot, membership.role, chatId),
       });
       return;
     }
@@ -13368,6 +13183,35 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
 
     try {
       const blueprintSnapshot = await getCompanyBlueprintSnapshot(membership.company.id);
+      const productionOrder = blueprintSnapshot.productionOrder;
+      if (productionOrder) {
+        if (productionOrder.status === "ready_to_claim") {
+          const claimed = await callInternalApi("POST", `/api/companies/${membership.company.id}/production/claim`, {
+            userId: player.id,
+          }) as any;
+          await sendMessage(
+            token,
+            chatId,
+            [
+              `✅ Партия выдана: ${productionOrder.blueprintName} x${claimed.produced?.length || productionOrder.quantity}`,
+              productionOrder.isExclusive && claimed.bonusApplied?.financeGrm ? `Финансы: +${claimed.bonusApplied.financeGrm} GRM` : "",
+              productionOrder.isExclusive && claimed.bonusApplied?.xp ? `XP: +${claimed.bonusApplied.xp}` : "",
+              productionOrder.isExclusive && claimed.bonusApplied?.skill ? `Навык ${claimed.bonusApplied.skill}: +${claimed.bonusApplied.amount}` : "",
+              claimed.gadgetWear?.summary ? String(claimed.gadgetWear.summary) : "",
+            ].filter(Boolean).join("\n"),
+          );
+          await sendCompanyWarehouseSection(token, chatId, membership, player.id);
+          return;
+        }
+
+        await sendMessage(
+          token,
+          chatId,
+          `🏭 Уже идет производство: ${productionOrder.blueprintName} x${productionOrder.quantity}\nОсталось: ${formatProductionOrderRemaining(productionOrder)}`,
+          { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+        );
+        return;
+      }
       const active = blueprintSnapshot.active;
       if (!active || active.status !== "production_ready") {
         await sendMessage(token, chatId, "❌ Чертеж еще не готов к производству. Дождитесь завершения разработки.");
@@ -13388,97 +13232,36 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
 
       const warehouseParts = [...getCompanyWarehouseParts(membership.company.id)];
       const requiredParts = blueprint.production?.parts ?? {};
+      const maxByParts = Object.entries(requiredParts).reduce((limit, [partType, qtyRaw]) => {
+        const perUnit = Math.max(1, Number(qtyRaw || 0));
+        const available = warehouseParts
+          .filter((item) => item.type === partType)
+          .reduce((sum, item) => sum + Math.max(1, Number(item.quantity || 1)), 0);
+        return Math.min(limit, Math.floor(available / perUnit));
+      }, 10);
 
-      const pool: Array<{ id: string; type: string; rarity: RarityName }> = [];
-      for (const item of warehouseParts) {
-        const qty = Math.max(1, item.quantity || 1);
-        for (let i = 0; i < qty; i += 1) {
-          pool.push({
-            id: item.id,
-            type: item.type,
-            rarity: normalizePartRarity(item.rarity),
-          });
-        }
-      }
-
-      const selectedParts: Array<{ id: string; type: string; rarity: RarityName }> = [];
-      for (const [partType, qtyRaw] of Object.entries(requiredParts)) {
-        const qty = Math.max(0, Number(qtyRaw) || 0);
-        for (let i = 0; i < qty; i += 1) {
-          const idx = pool.findIndex((item) => item.type === partType);
-          if (idx === -1) {
-            throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РґРµС‚Р°Р»РµР№ С‚РёРїР° ${partType}`);
-          }
-          selectedParts.push(pool[idx]);
-          pool.splice(idx, 1);
-        }
-      }
-
-      const produced = await callInternalApi("POST", `/api/companies/${membership.company.id}/produce`, {
-        userId: player.id,
-        parts: selectedParts,
-      }) as { name: string; quality: number; gramSpent: number; gadgetWear?: { summary?: string | null } };
-
-      const baseGramSpent = Math.max(0, Number(produced.gramSpent ?? 0));
-      const discountedGramSpent = Number((baseGramSpent * departmentEffects.productionCostMultiplier).toFixed(2));
-      const gramRefund = Number(Math.max(0, baseGramSpent - discountedGramSpent).toFixed(2));
-      if (gramRefund > 0) {
-        const liveSnapshot = await getUserWithGameState(player.id);
-        if (liveSnapshot) {
-          const nextGramBalance = Number((Number(liveSnapshot.game.gramBalance || 0) + gramRefund).toFixed(2));
-          applyGameStatePatch(player.id, { gramBalance: nextGramBalance });
-        }
-      }
-
-      const consumeCounter = new Map<string, number>();
-      for (const part of selectedParts) {
-        consumeCounter.set(part.id, (consumeCounter.get(part.id) ?? 0) + 1);
-      }
-      const nextWarehouseParts: CompanyWarehousePartItem[] = [];
-      for (const part of warehouseParts) {
-        const toConsume = consumeCounter.get(part.id) ?? 0;
-        if (toConsume <= 0) {
-          nextWarehouseParts.push(part);
-          continue;
-        }
-        const left = Math.max(0, Math.max(1, part.quantity || 1) - toConsume);
-        consumeCounter.set(part.id, Math.max(0, toConsume - Math.max(1, part.quantity || 1)));
-        if (left > 0) {
-          nextWarehouseParts.push({ ...part, quantity: left });
-        }
-      }
-      setCompanyWarehouseParts(membership.company.id, nextWarehouseParts);
-
-      // TODO: РџРѕСЃР»Рµ РґРѕР±Р°РІР»РµРЅРёСЏ СЃРµСЂРІРµСЂРЅРѕРіРѕ API РјРѕРґРёС„РёРєР°С‚РѕСЂРѕРІ РїСЂРёРјРµРЅСЏС‚СЊ Р±РѕРЅСѓСЃ РєР°С‡РµСЃС‚РІР° РїСЂСЏРјРѕ Рє stats РіР°РґР¶РµС‚Р°.
-      const effectiveQuality = Number((produced.quality * (1 + departmentEffects.gadgetQualityBonus)).toFixed(2));
-      const refreshedCompany = await storage.getCompany(membership.company.id);
-      if (refreshedCompany) {
-        const members = await storage.getCompanyMembers(refreshedCompany.id);
-        await ensureCompanyEconomyState(refreshedCompany, members.length);
-      }
-
+      const maxQuantity = Math.max(1, Math.min(10, Number.isFinite(maxByParts) ? maxByParts : 1));
+      pendingActionByChatId.set(chatId, {
+        type: "company_bp_produce_qty",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        maxQuantity,
+      });
       await sendMessage(
         token,
         chatId,
         [
-          `✅ Р“Р°РґР¶РµС‚ РїСЂРѕРёР·РІРµРґС‘РЅ: ${produced.name}`,
-          `РљР°С‡РµСЃС‚РІРѕ (Р±Р°Р·Р°): x${formatNumber(produced.quality)}`,
-          `РљР°С‡РµСЃС‚РІРѕ СЃ РѕС‚РґРµР»Р°РјРё (R&D + Dev spare parts): x${formatNumber(effectiveQuality)}`,
-          gramRefund > 0
-            ? `РџРѕС‚СЂР°С‡РµРЅРѕ: ${formatNumber(discountedGramSpent)} GRM (СЃРєРёРґРєР° Production ${formatNumber(gramRefund)} GRM)`
-            : `РџРѕС‚СЂР°С‡РµРЅРѕ: ${formatNumber(baseGramSpent)} GRM`,
-          produced.gadgetWear?.summary ? String(produced.gadgetWear.summary) : "",
-          // TODO: Р РµР°Р»РёР·РѕРІР°С‚СЊ РјРЅРѕР¶РµСЃС‚РІРµРЅРЅС‹Р№ РІС‹РїСѓСЃРє РЅР° СЃРµСЂРІРµСЂРµ Рё РїСЂРёРјРµРЅРёС‚СЊ productionVolumeMultiplier Рє РєРѕР»РёС‡РµСЃС‚РІСѓ gadget.
-          departmentEffects.productionVolumeMultiplier > 1
-            ? "ℹ️ Бонус объема Production учтен как TODO до серверной поддержки множественного выпуска."
-            : "",
-        ].filter(Boolean).join("\n"),
+          `🏭 ${blueprint.name}`,
+          `Доступно для партии: до ${maxQuantity} шт.`,
+          `Себестоимость за 1 шт: ${formatNumber(Math.max(1, Math.round(Number(blueprint.production?.costGram || 0) * departmentEffects.productionCostMultiplier)))} GRM`,
+          "Введи количество для запуска производства.",
+        ].join("\n"),
+        { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
       );
+      return;
     } catch (error) {
       await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
     }
-
-    await sendCompanyWarehouseSection(token, chatId, membership, player.id);
     return;
   }
 
@@ -13582,54 +13365,6 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/service") {
-    const ref = resolveInventoryRefFromChat(chatId, args.join(" ").trim());
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!ref) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /service <номер предмета>");
-      return;
-    }
-    try {
-      const result = await serviceGadgetItem(player.id, ref);
-      const lines = [
-        `🔧 Гаджет обслужен: ${result.item.name}`,
-        `Стоимость: ${getCurrencySymbol(result.user.city)}${result.serviceCost}`,
-        "",
-        await formatLiveProfile(result.user, result.state as GameView),
-      ];
-      if (result.notices.length) lines.push("", formatNotices(result.notices));
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, lines.join("\n"));
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/scrap") {
-    const ref = resolveInventoryRefFromChat(chatId, args.join(" ").trim());
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!ref) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /scrap <номер предмета>");
-      return;
-    }
-    try {
-      const result = await scrapBrokenGadgetItem(player.id, ref);
-      const lines = [
-        `♻️ Гаджет разобран: ${result.item.name}`,
-        result.recoveredParts.length
-          ? `Компоненты: ${result.recoveredParts.map((part) => part.name).join(", ")}`
-          : "Полезных компонентов не удалось спасти.",
-        "",
-        await formatLiveProfile(result.user, result.state as GameView),
-      ];
-      if (result.notices.length) lines.push("", formatNotices(result.notices));
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, lines.join("\n"));
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
   if (command === "/company_join") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     const membership = await getPlayerCompanyContext(player.id);
@@ -13642,8 +13377,10 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
 
     const ref = args.join(" ").trim();
     if (!ref) {
-      await sendMessage(token, chatId, "Использование: /company_join <номер или id>. Список: /company", {
-        reply_markup: buildCompanyReplyMarkup(null),
+      const companies = (await storage.getAllCompanies()).filter((company) => !company.isTutorial);
+      companyListByChatId.set(chatId, getTopCompanies(companies).map((company) => company.id));
+      await sendMessage(token, chatId, "Выбери компанию для вступления:", {
+        reply_markup: buildCompanyRegistryInlineMarkup(companies),
       });
       return;
     }
@@ -13718,21 +13455,6 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     await sendMessage(token, chatId, `✅ Ты вышел из компании "${membership.company.name}".`, {
       reply_markup: buildCompanyReplyMarkup(null),
     });
-    return;
-  }
-
-  if (command === "/company_requests") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "management_hr");
-    rememberTelegramMenu(player.id, { menu: "company", section: "management_hr" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-
-    await sendCompanyRequestsSection(token, chatId, membership);
     return;
   }
 
@@ -13841,18 +13563,18 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
   if (command === "/credits") {
     const snapshot = await resolveTelegramSnapshot(message.from);
     if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
-    pendingActionByChatId.set(chatId, { type: "open_bank_product", productType: "credit" });
     rememberTelegramMenu(snapshot.user.id, { menu: "bank" });
-    await sendMessage(token, chatId, formatBankProgramsMenu("credit", snapshot), { reply_markup: buildBankSelectionReplyMarkup("credit") });
+    pendingActionByChatId.delete(chatId);
+    await sendWithBankKeyboard(token, chatId, "🚧 Кредиты пока временно недоступны в городе.\n\nОстаются доступны: обмен GRM, биржа и банковый обзор.");
     return;
   }
 
   if (command === "/deposits") {
     const snapshot = await resolveTelegramSnapshot(message.from);
     if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
-    pendingActionByChatId.set(chatId, { type: "open_bank_product", productType: "deposit" });
     rememberTelegramMenu(snapshot.user.id, { menu: "bank" });
-    await sendMessage(token, chatId, formatBankProgramsMenu("deposit", snapshot), { reply_markup: buildBankSelectionReplyMarkup("deposit") });
+    pendingActionByChatId.delete(chatId);
+    await sendWithBankKeyboard(token, chatId, "🚧 Вклады пока временно недоступны в городе.\n\nОстаются доступны: обмен GRM, биржа и банковый обзор.");
     return;
   }
 
