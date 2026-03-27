@@ -7,13 +7,16 @@ export async function sendCompanyWorkSection(input: {
   token: string;
   chatId: number;
   membership: any;
-  formatCompanyWorkSection: (membership: any, chatId: number) => Promise<{ text: string }>;
+  formatCompanyWorkSection: (membership: any, chatId: number) => Promise<{ text: string; contracts?: any[] }>;
+  buildCompanyWorkInlineButtons: (contracts: any[], companyId: string) => unknown;
   buildCompanyReplyMarkup: (role?: string | null, chatId?: number) => unknown;
   sendMessage: (token: string, chatId: number, text: string, extra?: Record<string, unknown>) => Promise<unknown>;
 }) {
   const view = await input.formatCompanyWorkSection(input.membership, input.chatId);
   await input.sendMessage(input.token, input.chatId, view.text, {
-    reply_markup: input.buildCompanyReplyMarkup(input.membership.role, input.chatId),
+    reply_markup: view.contracts?.length
+      ? input.buildCompanyWorkInlineButtons(view.contracts, input.membership.company.id)
+      : input.buildCompanyReplyMarkup(input.membership.role, input.chatId),
   });
 }
 
@@ -23,6 +26,7 @@ export async function sendCompanyWarehouseSection(input: {
   membership: any;
   playerId?: string;
   formatCompanyWarehouseSection: (membership: any, chatId: number) => Promise<{ text: string }>;
+  buildCompanyWarehouseInlineMarkup: (chatId: number) => any;
   getUserWithGameState: (userId: string) => Promise<any>;
   pendingActionByChatId: Map<number, any>;
   formatCompanyPartDepositList: (game: any, chatId: number, withQuickCommands?: boolean) => string;
@@ -30,12 +34,16 @@ export async function sendCompanyWarehouseSection(input: {
 }) {
   const view = await input.formatCompanyWarehouseSection(input.membership, input.chatId);
   if (!input.playerId) {
-    await input.sendMessage(input.token, input.chatId, view.text);
+    await input.sendMessage(input.token, input.chatId, view.text, {
+      reply_markup: input.buildCompanyWarehouseInlineMarkup(input.chatId),
+    });
     return;
   }
   const snapshot = await input.getUserWithGameState(input.playerId);
   if (!snapshot) {
-    await input.sendMessage(input.token, input.chatId, view.text);
+    await input.sendMessage(input.token, input.chatId, view.text, {
+      reply_markup: input.buildCompanyWarehouseInlineMarkup(input.chatId),
+    });
     return;
   }
   input.pendingActionByChatId.set(input.chatId, { type: "company_part_deposit" });
@@ -43,6 +51,7 @@ export async function sendCompanyWarehouseSection(input: {
     input.token,
     input.chatId,
     `${view.text}\n\n${input.formatCompanyPartDepositList(snapshot.game, input.chatId, true)}`,
+    { reply_markup: input.buildCompanyWarehouseInlineMarkup(input.chatId) },
   );
 }
 

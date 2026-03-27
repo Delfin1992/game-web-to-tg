@@ -18,6 +18,7 @@ export const companyExclusiveSelectedPartRefsByChatId = new Map<number, string[]
 export const companyExclusivePartPageByChatId = new Map<number, number>();
 export const companyWarehouseGadgetRefsByChatId = new Map<number, string[]>();
 export const companyWarehousePartRefsByChatId = new Map<number, string[]>();
+export const companyWarehouseFilterByChatId = new Map<number, string>();
 export const marketListingRefsByChatId = new Map<number, string[]>();
 export const hackathonPartRefsByChatId = new Map<number, string[]>();
 export const hackathonSabotageTargetRefsByChatId = new Map<number, string[]>();

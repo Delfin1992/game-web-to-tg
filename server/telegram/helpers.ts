@@ -158,11 +158,12 @@ export function sleep(ms: number) {
 
 export function parseBankOpenInput(input: string) {
   const [programRef, amountRaw, daysRaw] = input.trim().split(/\s+/);
-  if (!programRef || !amountRaw || !daysRaw) return null;
+  if (!programRef || !amountRaw) return null;
   const amount = Number(amountRaw);
-  const days = Number(daysRaw);
-  if (!Number.isFinite(amount) || !Number.isFinite(days)) return null;
-  return { programRef, amount: Math.floor(amount), days: Math.floor(days) };
+  const days = daysRaw ? Number(daysRaw) : 0;
+  if (!Number.isFinite(amount)) return null;
+  if (daysRaw && !Number.isFinite(days)) return null;
+  return { programRef, amount: Math.floor(amount), days: Math.max(0, Math.floor(days || 0)) };
 }
 
 export function parseDecimalInput(input: string) {

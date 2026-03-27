@@ -237,7 +237,7 @@ export async function handleCompanyNavigationMessage(input: {
     input.rememberTelegramMenu(player.id, { menu: "company", section: "work" });
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership) {
-      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     await input.sendCompanyWorkSection(token, chatId, membership);
@@ -251,7 +251,7 @@ export async function handleCompanyNavigationMessage(input: {
     input.rememberTelegramMenu(player.id, { menu: "company", section: "work" });
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership) {
-      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     if (!(await input.ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Добыча запчастей"))) {
@@ -278,7 +278,7 @@ export async function handleCompanyNavigationMessage(input: {
     input.rememberTelegramMenu(player.id, { menu: "company", section: "warehouse" });
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership) {
-      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     await input.sendCompanyWarehouseSection(token, chatId, membership, player.id);
@@ -292,7 +292,7 @@ export async function handleCompanyNavigationMessage(input: {
     input.rememberTelegramMenu(player.id, { menu: "company", section: "bureau" });
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership) {
-      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     await input.sendCompanyBureauSection(token, chatId, membership, player.id);
@@ -306,7 +306,7 @@ export async function handleCompanyNavigationMessage(input: {
     input.rememberTelegramMenu(player.id, { menu: "company", section: "management" });
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership) {
-      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     await input.sendCompanyManagementSection(token, chatId, membership);
@@ -318,7 +318,7 @@ export async function handleCompanyNavigationMessage(input: {
     input.setCompanyMenuSection(chatId, "management");
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership) {
-      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     await input.sendMessage(token, chatId, await input.formatCompanySalariesSection(membership, chatId), {
@@ -333,7 +333,7 @@ export async function handleCompanyNavigationMessage(input: {
     input.rememberTelegramMenu(player.id, { menu: "company", section: "root" });
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership) {
-      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     await input.sendCompanyEconomySection(token, chatId, membership);
@@ -347,7 +347,7 @@ export async function handleCompanyNavigationMessage(input: {
     input.rememberTelegramMenu(player.id, { menu: "company", section: "management_departments" });
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership) {
-      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     await input.sendCompanyDepartmentsSection(token, chatId, membership);
@@ -359,7 +359,7 @@ export async function handleCompanyNavigationMessage(input: {
     input.setCompanyMenuSection(chatId, "management");
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership) {
-      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await input.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     await input.sendCompanyIpoSection(token, chatId, membership);

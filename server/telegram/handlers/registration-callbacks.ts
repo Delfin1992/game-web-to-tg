@@ -47,9 +47,19 @@ export async function handleRegistrationCallback(input: {
   resolveTelegramSnapshot: (user?: any) => Promise<any>;
   getCurrencySymbol: (city: string) => string;
   referralNewPlayerReward: number;
+  referralInviterReward: number;
+  getTelegramIdByUserId: (userId: string) => string | undefined;
   getActiveHousing: (user: any) => any;
   getStarterHousingForCity: (city: string) => any;
   sendHousingCard: (token: string, chatId: number, user: any, house: any, prefix?: string) => Promise<void>;
+  notifyReferralInviter: (input: {
+    token: string;
+    inviterChatId: number;
+    inviterCity: string;
+    inviterBalance: number;
+    invitedUsername: string;
+    referralInviterReward: number;
+  }) => Promise<void>;
   cityOptions: readonly string[];
   personalityOptions: ReadonlyArray<{ id: string; label: string }>;
   genderOptions: ReadonlyArray<{ id: string; label: string }>;
@@ -246,6 +256,24 @@ export async function handleRegistrationCallback(input: {
       const referralResult = await input.applyReferralFromStartPayload(refreshedUser, draft.startPayload);
       input.registrationDraftByChatId.delete(chatId);
       const snapshot = await input.resolveTelegramSnapshot(query.from);
+      if (referralResult?.status === "applied") {
+        const inviterTelegramId = input.getTelegramIdByUserId(referralResult.inviter.id);
+        const inviterChatId = Number(inviterTelegramId);
+        if (Number.isFinite(inviterChatId) && inviterChatId !== chatId) {
+          try {
+            await input.notifyReferralInviter({
+              token,
+              inviterChatId,
+              inviterCity: referralResult.inviter.city,
+              inviterBalance: referralResult.inviter.balance,
+              invitedUsername: snapshot.user.username,
+              referralInviterReward: input.referralInviterReward,
+            });
+          } catch (error) {
+            console.warn("⚠️ Не удалось отправить уведомление рефереру:", error);
+          }
+        }
+      }
       const referralNotice =
         referralResult?.status === "applied"
           ? `\n🎁 Реферальный бонус: +${input.getCurrencySymbol(snapshot.user.city)}${input.referralNewPlayerReward}`
@@ -283,7 +311,7 @@ export async function handleRegistrationCallback(input: {
         chatId,
         [
           "🎓 Если захочешь быстрее освоиться, можно пройти стартовый туториал.",
-          "Команда: /tutorial",
+          "Кнопка: «🎓 Обучение»",
           "За полное прохождение выдаются бонусы и полезные стартовые награды.",
         ].join("\n"),
       );
