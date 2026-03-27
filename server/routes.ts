@@ -28,6 +28,7 @@ import { GADGET_BLUEPRINTS, getAvailableBlueprints, RARITY_QUALITY_MULTIPLIERS, 
 import {
   applyGameStatePatch,
   applyGadgetWear,
+  consumePvpBankBoost,
   createGadgetConditionProfile,
   getUserWithGameState,
   spendGram,
@@ -102,7 +103,7 @@ import {
   startWeeklyHackathonScheduler,
 } from "./weekly-hackathon";
 import {
-  PROFESSIONS,
+  PLAYABLE_PROFESSIONS,
   PROFESSION_UNLOCK_LEVEL,
   getProfessionById,
   isProfessionId,
@@ -110,9 +111,11 @@ import {
 import {
   canSelectProfession,
   getAdvancedPersonalityId,
+  getProfessionPromptShown,
   getPlayerProfessionId,
   setPlayerProfession,
 } from "./player-meta";
+import { canEnterPvp, getPvpAccessMessage } from "./pvp-access";
 import {
   generateEvent,
   getCurrentGlobalEvents,
@@ -122,7 +125,7 @@ import {
 } from "./game/events/event-engine";
 import { startGlobalEventScheduler } from "./game/events/event-scheduler";
 import { registerProductionSignal } from "./game/events/event-history";
-import { PVP_DUEL_CONFIG } from "../shared/pvp-duel";
+import { getPvpShopRotation, PVP_DUEL_CONFIG } from "../shared/pvp-duel";
 import {
   clearPendingPvpBoosts,
   getPendingPvpBoosts,
@@ -148,8 +151,13 @@ import { getDepartmentEffects, reconcileCompanyEconomy, type CompanyDepartmentEf
 import { assignCompanyMemberDepartment, clearCompanyStaffing, getCompanyStaffingSnapshot } from "./company-staffing";
 import { type CompanyDepartmentKey } from "../shared/company-staffing";
 import {
-  buildExclusiveBlueprintDefinition,
   EXCLUSIVE_RESEARCH_SKILLS,
+  EXCLUSIVE_UPGRADE_BASE_COST_GRM,
+  EXCLUSIVE_UPGRADE_BASE_DURATION_MINUTES,
+  EXCLUSIVE_UPGRADE_MAX_LEVEL,
+  EXCLUSIVE_UPGRADE_RARITY_SCORE,
+  EXCLUSIVE_UPGRADE_REQUIRED_PARTS,
+  EXCLUSIVE_UPGRADE_SUCCESS_MULTIPLIER,
   getExclusiveResearchState,
   type ExclusiveBlueprintDefinition,
   type ExclusiveProjectState,
@@ -172,6 +180,7 @@ type CompanyProductionOrder = {
   kind: "standard" | "exclusive";
   blueprintId: string;
   blueprintName: string;
+  baseName?: string;
   category: string;
   quantity: number;
   startedAt: number;
@@ -183,6 +192,7 @@ type CompanyProductionOrder = {
   maxPrice: number;
   gramCost: number;
   isExclusive?: boolean;
+  exclusiveLevel?: number;
   exclusiveBonusType?: "finance" | "xp" | "skills";
   exclusiveBonusValue?: number;
   exclusiveBonusLabel?: string;
@@ -193,6 +203,7 @@ type ProducedGadget = {
   blueprintId: string;
   companyId: string;
   name: string;
+  baseName?: string;
   category: string;
   description?: string;
   stats: Record<string, number>;
@@ -207,6 +218,7 @@ type ProducedGadget = {
   reliability?: number;
   producedAt: number;
   isExclusive?: boolean;
+  exclusiveLevel?: number;
   exclusiveBonusType?: "finance" | "xp" | "skills";
   exclusiveBonusValue?: number;
   exclusiveBonusLabel?: string;
@@ -235,6 +247,72 @@ function isValidCompanyEmojiInput(value: string) {
 
 function buildCompanyDisplayName(name: string, emoji: string) {
   return `${emoji} ${name}`.trim();
+}
+
+function getLeadingCompanyEmoji(name: string) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return "";
+  const firstToken = trimmed.split(/\s+/)[0] || "";
+  return isValidCompanyEmojiInput(firstToken) ? firstToken : "";
+}
+
+function buildProducedCompanyGadgetName(companyName: string, gadgetName: string) {
+  const emoji = getLeadingCompanyEmoji(companyName);
+  return emoji ? `${emoji} ${String(gadgetName || "").trim()}`.trim() : String(gadgetName || "").trim();
+}
+
+function normalizeProducedCategory(category: string) {
+  const value = String(category || "").trim().toLowerCase();
+  if (value === "smartphone") return "smartphones";
+  if (value === "smartwatch") return "smartwatches";
+  if (value === "tablet") return "tablets";
+  if (value === "laptop") return "laptops";
+  if (value === "asic") return "asic_miners";
+  return value || "smartphones";
+}
+
+function getExclusiveRequiredPartTypeForCategory(category: string) {
+  const normalized = normalizeProducedCategory(category);
+  if (normalized === "smartphones") return "processor";
+  if (normalized === "smartwatches") return "strap";
+  if (normalized === "tablets") return "display";
+  if (normalized === "laptops") return "storage";
+  if (normalized === "asic_miners") return "asic_chip";
+  return "processor";
+}
+
+function isPartCompatibleWithExclusiveCategory(category: string, partType: string) {
+  const normalized = normalizeProducedCategory(category);
+  const compatible: Record<string, string[]> = {
+    smartphones: ["processor", "display", "camera", "battery", "case", "motherboard"],
+    smartwatches: ["processor", "display", "strap", "battery", "case", "controller"],
+    tablets: ["processor", "memory", "display", "battery", "case", "storage", "camera"],
+    laptops: ["processor", "memory", "display", "battery", "motherboard", "cooling", "case", "storage"],
+    asic_miners: ["asic_chip", "cooling", "power", "case", "controller"],
+  };
+  return (compatible[normalized] ?? compatible.smartphones).includes(String(partType || "").trim());
+}
+
+function getProducedGadgetExclusiveLevel(gadget: Partial<ProducedGadget> | null | undefined) {
+  return Math.max(0, Number(gadget?.exclusiveLevel || 0));
+}
+
+function getExclusiveUpgradeCostGrm(category: string, nextLevel: number) {
+  const normalized = normalizeProducedCategory(category);
+  const base = EXCLUSIVE_UPGRADE_BASE_COST_GRM[normalized] ?? 2000;
+  return Math.round(base * (1 + Math.max(0, nextLevel - 1) * 0.55));
+}
+
+function getExclusiveUpgradeDurationMinutes(category: string, nextLevel: number) {
+  const normalized = normalizeProducedCategory(category);
+  const base = EXCLUSIVE_UPGRADE_BASE_DURATION_MINUTES[normalized] ?? 30;
+  return Math.round(base * Math.pow(1.6, Math.max(0, nextLevel - 1)));
+}
+
+function getExclusiveUpgradeSuccessChance(parts: Array<{ rarity?: string }>, nextLevel: number) {
+  const rarityScore = parts.reduce((sum, item) => sum + Number(EXCLUSIVE_UPGRADE_RARITY_SCORE[String(item?.rarity || "Common") as keyof typeof EXCLUSIVE_UPGRADE_RARITY_SCORE] || 0), 0);
+  const base = 0.38 - Math.max(0, nextLevel - 1) * 0.06;
+  return Math.max(0.35, Math.min(0.9, Number((base + rarityScore / 100).toFixed(2))));
 }
 
 type MarketListing = {
@@ -541,6 +619,7 @@ function serializeSafeUser(user: any) {
     professionProfile: profession ? getProfessionById(profession) ?? null : null,
     professionUnlocked: Number(user.level || 0) >= PROFESSION_UNLOCK_LEVEL,
     needsProfessionChoice: canSelectProfession(user),
+    professionPromptShown: getProfessionPromptShown(user),
     ...buildPlayerRegistrationState(user),
   };
 }
@@ -614,34 +693,6 @@ function getExclusiveProject(companyId: string) {
   return exclusiveProjectByCompanyId.get(companyId) ?? null;
 }
 
-async function buildExclusiveSeedPartsFromInventory(userId: string, partRefs: string[]) {
-  const snapshot = await getUserWithGameState(userId);
-  if (!snapshot) throw new Error("Игрок не найден");
-  const game = snapshot.game as any;
-  const inventory = Array.isArray(game.inventory) ? [...game.inventory] : [];
-  const seedParts: ExclusiveSeedPart[] = [];
-
-  for (const partRef of partRefs) {
-    const index = inventory.findIndex((item: any) => item.type === "part" && String(item.id) === partRef);
-    if (index < 0) {
-      throw new Error(`Деталь ${partRef} не найдена в инвентаре CEO`);
-    }
-    const item = inventory[index];
-    seedParts.push({
-      id: String(item.id),
-      rarity: String(item.rarity || "Common") as any,
-      type: String(ALL_PARTS[String(item.id)]?.type || item.type) as any,
-      name: String(item.name || ALL_PARTS[String(item.id)]?.name || item.id),
-    });
-    const qty = Math.max(1, Number(item.quantity || 1));
-    if (qty <= 1) inventory.splice(index, 1);
-    else inventory[index] = { ...item, quantity: qty - 1 };
-  }
-
-  applyGameStatePatch(userId, { inventory });
-  return { seedParts, snapshot };
-}
-
 function getExclusiveSkillRewardSkill(professionId?: string | null) {
   if (professionId === "designer") return "design";
   if (professionId === "qa") return "testing";
@@ -659,7 +710,68 @@ function readDuelSkills(snapshot: Awaited<ReturnType<typeof getUserWithGameState
   const modeling = Math.max(0, Number(skills.modeling || 0));
   const testing = Math.max(0, Number(skills.testing || 0));
   const attention = Math.max(0, Number(skills.attention || 0));
-  return { analytics, design, drawing, coding, modeling, testing, attention };
+  return {
+    analytics: Number(analytics.toFixed(2)),
+    design: Number(design.toFixed(2)),
+    drawing,
+    coding: Number(coding.toFixed(2)),
+    modeling,
+    testing: Number(testing.toFixed(2)),
+    attention: Number(attention.toFixed(2)),
+  };
+}
+
+function readEquippedPvpGadget(snapshot: Awaited<ReturnType<typeof getUserWithGameState>>) {
+  const inventory = Array.isArray((snapshot?.game as any)?.inventory) ? (snapshot?.game as any).inventory : [];
+  const equipped = inventory
+    .filter((item: any) => item?.type === "gadget" && item?.isEquipped)
+    .map((item: any) => {
+      const stats = item?.stats && typeof item.stats === "object" ? item.stats : {};
+      const normalizedStats = {
+        analytics: Math.max(0, Number(stats.analytics || 0)),
+        coding: Math.max(0, Number(stats.coding || 0)),
+        testing: Math.max(0, Number(stats.testing || 0)),
+        attention: Math.max(0, Number(stats.attention || 0)),
+        design: Math.max(0, Number(stats.design || 0)),
+        drawing: Math.max(0, Number(stats.drawing || 0)),
+        modeling: Math.max(0, Number(stats.modeling || 0)),
+      };
+      const powerScore =
+        normalizedStats.analytics
+        + normalizedStats.design
+        + normalizedStats.coding
+        + normalizedStats.testing
+        + normalizedStats.attention
+        + normalizedStats.modeling * 0.4
+        + normalizedStats.drawing * 0.35;
+      return {
+        id: String(item?.id || "gadget"),
+        name: String(item?.name || "Гаджет"),
+        stats: normalizedStats,
+        powerScore: Number(powerScore.toFixed(2)),
+      };
+    })
+    .sort((a: any, b: any) => Number(b.powerScore || 0) - Number(a.powerScore || 0));
+  return equipped[0] ?? null;
+}
+
+function computePvpPowerScore(input: {
+  skills: ReturnType<typeof readDuelSkills>;
+  level: number;
+  gadget?: ReturnType<typeof readEquippedPvpGadget>;
+}) {
+  const { skills, level, gadget } = input;
+  const skillPower =
+    Number(skills.analytics || 0)
+    + Number(skills.design || 0)
+    + Number(skills.coding || 0)
+    + Number(skills.testing || 0)
+    + Number(skills.attention || 0)
+    + Number(skills.modeling || 0) * 0.4
+    + Number(skills.drawing || 0) * 0.35;
+  const gadgetPower = Number(gadget?.powerScore || 0) * 0.65;
+  const levelPower = Math.max(1, Number(level || 1)) * PVP_DUEL_CONFIG.scoring.levelPowerWeight;
+  return Number((skillPower + gadgetPower + levelPower).toFixed(2));
 }
 
 async function applyDuelResultToPlayers(result: PvpDuelResult | null) {
@@ -680,10 +792,18 @@ async function applyDuelResultToPlayers(result: PvpDuelResult | null) {
   const aDailyMatches = a.pvpDailyStamp === stamp ? Number(a.pvpDailyMatches || 0) + 1 : 1;
   const bDailyMatches = b.pvpDailyStamp === stamp ? Number(b.pvpDailyMatches || 0) + 1 : 1;
 
-  const aLevelState = applyExperienceGainForLevel(a, xpA);
-  const bLevelState = applyExperienceGainForLevel(b, xpB);
   const snapshotA = await getUserWithGameState(a.id);
   const snapshotB = await getUserWithGameState(b.id);
+  const boostA = isWinnerA ? consumePvpBankBoost(a.id) : null;
+  const boostB = isWinnerB ? consumePvpBankBoost(b.id) : null;
+  const xpBonusA = boostA ? Math.round(xpA * Number(boostA.xpBonusPct || 0)) : 0;
+  const xpBonusB = boostB ? Math.round(xpB * Number(boostB.xpBonusPct || 0)) : 0;
+  const repBonusA = boostA ? Math.round(repA * Number(boostA.rewardBonusPct || 0)) : 0;
+  const repBonusB = boostB ? Math.round(repB * Number(boostB.rewardBonusPct || 0)) : 0;
+  const ratingBonusA = boostA ? Math.round(Number(boostA.ratingBonusFlat || 0)) : 0;
+  const ratingBonusB = boostB ? Math.round(Number(boostB.ratingBonusFlat || 0)) : 0;
+  const aLevelState = applyExperienceGainForLevel(a, xpA + xpBonusA);
+  const bLevelState = applyExperienceGainForLevel(b, xpB + xpBonusB);
   const energyCostA = Math.max(0, Number(result.energyCostA || 0));
   const energyCostB = Math.max(0, Number(result.energyCostB || 0));
   if (snapshotA) {
@@ -700,8 +820,8 @@ async function applyDuelResultToPlayers(result: PvpDuelResult | null) {
   await storage.updateUser(a.id, {
     level: aLevelState.level,
     experience: aLevelState.experience,
-    reputation: Number(a.reputation || 0) + repA,
-    pvpRating: Math.max(0, Number(result.playerARatingAfter || 0)),
+    reputation: Number(a.reputation || 0) + repA + repBonusA,
+    pvpRating: Math.max(0, Number(result.playerARatingAfter || 0) + ratingBonusA),
     pvpMatches: Number(a.pvpMatches || 0) + 1,
     pvpWins: Number(a.pvpWins || 0) + (isWinnerA ? 1 : 0),
     pvpLosses: Number(a.pvpLosses || 0) + (isDraw ? 0 : isWinnerA ? 0 : 1),
@@ -713,8 +833,8 @@ async function applyDuelResultToPlayers(result: PvpDuelResult | null) {
   await storage.updateUser(b.id, {
     level: bLevelState.level,
     experience: bLevelState.experience,
-    reputation: Number(b.reputation || 0) + repB,
-    pvpRating: Math.max(0, Number(result.playerBRatingAfter || 0)),
+    reputation: Number(b.reputation || 0) + repB + repBonusB,
+    pvpRating: Math.max(0, Number(result.playerBRatingAfter || 0) + ratingBonusB),
     pvpMatches: Number(b.pvpMatches || 0) + 1,
     pvpWins: Number(b.pvpWins || 0) + (isWinnerB ? 1 : 0),
     pvpLosses: Number(b.pvpLosses || 0) + (isDraw ? 0 : isWinnerB ? 0 : 1),
@@ -1078,6 +1198,8 @@ function buildPlayerInventoryGadgetFromProduced(gadget: ProducedGadget) {
   return {
     id: gadget.id,
     name: gadget.name,
+    baseName: gadget.baseName,
+    category: gadget.category,
     stats: { ...(gadget.stats || {}) },
     rarity: gadget.isExclusive ? "Exclusive" : "Rare",
     quantity: 1,
@@ -1088,7 +1210,9 @@ function buildPlayerInventoryGadgetFromProduced(gadget: ProducedGadget) {
     maxCondition: gadget.maxCondition,
     isBroken: Boolean(gadget.isBroken),
     reliability: Number(gadget.reliability ?? 1),
+    quality: Number(gadget.quality ?? 1),
     isExclusive: Boolean(gadget.isExclusive),
+    exclusiveLevel: getProducedGadgetExclusiveLevel(gadget),
     exclusiveBonusType: gadget.exclusiveBonusType,
     exclusiveBonusValue: gadget.exclusiveBonusValue,
     exclusiveBonusLabel: gadget.exclusiveBonusLabel,
@@ -1317,6 +1441,7 @@ function buildProducedGadgetsFromOrder(input: {
       blueprintId: input.order.blueprintId,
       companyId: input.companyId,
       name: input.order.blueprintName,
+      baseName: input.order.baseName || input.order.blueprintName,
       category: input.order.category,
       stats: Object.fromEntries(
         Object.entries(input.order.stats).map(([key, value]) => [key, Number(value.toFixed ? value.toFixed(2) : Number(value || 0).toFixed(2))]),
@@ -1327,6 +1452,7 @@ function buildProducedGadgetsFromOrder(input: {
       ...gadgetCondition,
       producedAt: Date.now(),
       isExclusive: input.order.isExclusive,
+      exclusiveLevel: Math.max(0, Number(input.order.exclusiveLevel || 0)),
       exclusiveBonusType: input.order.exclusiveBonusType,
       exclusiveBonusValue: input.order.exclusiveBonusValue,
       exclusiveBonusLabel: input.order.exclusiveBonusLabel,
@@ -1387,6 +1513,61 @@ function calculateExclusiveProductionDurationSeconds(input: {
     Number(input.departmentEffects.productionSpeedMultiplier || 1) * engineerSpeed,
   );
   return Math.max(8 * 60, Math.ceil((base * quantityMultiplier) / speedDivisor));
+}
+
+function buildExclusiveUpgradeBlueprint(input: {
+  companyId: string;
+  companyName: string;
+  gadget: ProducedGadget;
+  selectedParts: Array<{ id: string; name?: string; rarity: string; type: string }>;
+}) {
+  const currentLevel = getProducedGadgetExclusiveLevel(input.gadget);
+  const nextLevel = Math.min(EXCLUSIVE_UPGRADE_MAX_LEVEL, currentLevel + 1);
+  const category = normalizeProducedCategory(input.gadget.category);
+  const successChance = getExclusiveUpgradeSuccessChance(input.selectedParts, nextLevel);
+  const developmentCostGrm = getExclusiveUpgradeCostGrm(category, nextLevel);
+  const developmentHoursRequired = Number((getExclusiveUpgradeDurationMinutes(category, nextLevel) / 60).toFixed(2));
+  const requiredPartType = getExclusiveRequiredPartTypeForCategory(category);
+  const partSummary = input.selectedParts.map((part) => `${String(part.name || ALL_PARTS[part.id as keyof typeof ALL_PARTS]?.name || part.id)} [${part.rarity}]`);
+  const levelMultiplier = Math.pow(EXCLUSIVE_UPGRADE_SUCCESS_MULTIPLIER, nextLevel);
+  const upgradedStats = Object.fromEntries(
+    Object.entries(input.gadget.stats || {}).map(([key, value]) => [key, Number((Number(value || 0) * levelMultiplier).toFixed(2))]),
+  );
+  const originalName = String(input.gadget.baseName || input.gadget.name || "Гаджет").trim();
+  const upgradedName = `${originalName} EX+${nextLevel}`;
+  return {
+    id: `exclusive-upgrade-${randomUUID()}`,
+    companyId: input.companyId,
+    companyName: input.companyName,
+    name: buildProducedCompanyGadgetName(input.companyName, upgradedName),
+    category,
+    flavor: `Улучшенная версия ${originalName} уровня EX+${nextLevel}`,
+    successChance,
+    developmentHoursRequired,
+    developmentCostGrm,
+    productionCostGram: 0,
+    totalUnits: 1,
+    remainingUnits: 1,
+    baseStats: upgradedStats,
+    dominantProfessionId: null,
+    seedParts: input.selectedParts.map((part) => ({
+      id: String(part.id),
+      rarity: String(part.rarity || "Common") as any,
+      type: String(part.type || ALL_PARTS[String(part.id)]?.type || requiredPartType) as any,
+      name: String(part.name || ALL_PARTS[String(part.id)]?.name || part.id),
+    })),
+    partSummary,
+    requiredResearch: createEmptyExclusiveResearchMap(),
+    bonusType: "skills" as const,
+    bonusValue: 0,
+    bonusLabel: `EX+${nextLevel}: x${EXCLUSIVE_UPGRADE_SUCCESS_MULTIPLIER} к характеристикам гаджета`,
+    targetGadgetId: input.gadget.id,
+    targetGadgetName: originalName,
+    targetExclusiveLevel: currentLevel,
+    upgradeLevel: nextLevel,
+    requiredPartType: requiredPartType as any,
+    requiredPartCount: EXCLUSIVE_UPGRADE_REQUIRED_PARTS,
+  } satisfies ExclusiveBlueprintDefinition;
 }
 
 async function settleExpiredAuctions() {
@@ -1897,6 +2078,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       studyTime: Math.round(game.studyTime * 100),
       gramBalance: game.gramBalance,
       activeBankProduct: game.activeBankProduct,
+      activePvpBankBoost: (game as any).activePvpBankBoost ?? null,
       jobDropPity: game.jobDropPity,
       tutorial,
       notices,
@@ -1927,6 +2109,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         studyTime: updates.studyTime,
         gramBalance: updates.gramBalance,
         activeBankProduct: updates.activeBankProduct,
+        activePvpBankBoost: updates.activePvpBankBoost,
       });
 
       const snapshot = await getUserWithGameState(req.params.id);
@@ -1946,6 +2129,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         studyTime: Math.round(game.studyTime * 100),
         gramBalance: game.gramBalance,
         activeBankProduct: game.activeBankProduct,
+        activePvpBankBoost: (game as any).activePvpBankBoost ?? null,
         jobDropPity: game.jobDropPity,
         tutorial,
         notices,
@@ -1994,6 +2178,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         studyTime: Math.round(game.studyTime * 100),
         gramBalance: game.gramBalance,
         activeBankProduct: game.activeBankProduct,
+        activePvpBankBoost: (game as any).activePvpBankBoost ?? null,
         jobDropPity: game.jobDropPity,
         tutorial,
         notices,
@@ -2336,10 +2521,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await flushCompletedPvpDuels();
       const user = await storage.getUser(userId);
       if (!user) return res.status(404).json({ error: "User not found" });
+      const access = canEnterPvp(user);
       const state = getPvpQueueState(userId);
       const stamp = getUtcDayStamp();
       const dailyMatches = user.pvpDailyStamp === stamp ? Number(user.pvpDailyMatches || 0) : 0;
       res.json({
+        access,
+        accessMessage: access.ok ? null : getPvpAccessMessage(access.reason),
         inQueue: state.inQueue,
         queueJoinedAtMs: state.queueJoinedAtMs,
         queueWaitSec: state.queueWaitSec,
@@ -2348,6 +2536,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         activeDuel: state.activeDuel,
         pendingBoosts: state.pendingBoosts,
         boostCatalog: getPvpBoostCatalog(),
+        boostRotation: getPvpShopRotation(),
         rating: Number(user.pvpRating || 1000),
         wins: Number(user.pvpWins || 0),
         losses: Number(user.pvpLosses || 0),
@@ -2366,15 +2555,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const boostId = String(req.body?.boostId || "") as any;
       if (!userId || !boostId) return res.status(400).json({ error: "userId and boostId are required" });
       const boost = getPvpBoostCatalog().find((item) => item.id === boostId);
-      if (!boost) return res.status(404).json({ error: "Boost not found" });
+      if (!boost) return res.status(404).json({ error: "Этот PvP-предмет сегодня недоступен в ротации" });
       const user = await storage.getUser(userId);
       if (!user) return res.status(404).json({ error: "User not found" });
+      const access = canEnterPvp(user);
+      if (!access.ok) {
+        return res.status(400).json({ error: getPvpAccessMessage(access.reason), reason: access.reason });
+      }
       const currentState = getPvpQueueState(user.id);
       if (currentState.activeDuel && !currentState.activeDuel.awaitingStart) {
-        return res.status(400).json({ error: "Нельзя покупать PvP boost во время активной дуэли" });
+        return res.status(400).json({ error: "Нельзя менять PvP-предмет во время активной дуэли" });
       }
       if (!currentState.activeDuel && currentState.pendingBoosts?.includes(boost.id)) {
-        return res.status(400).json({ error: "Этот boost уже куплен для следующей дуэли" });
+        return res.status(400).json({ error: "Этот PvP-предмет уже выбран для следующей дуэли" });
       }
       const payment = await spendGram(user.id, boost.costGram, `PvP boost: ${boost.name}`);
       const pendingBoosts = purchasePvpBoost(user.id, boost.id);
@@ -2393,6 +2586,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const userId = String(req.body?.userId || "");
       if (!userId) return res.status(400).json({ error: "userId is required" });
+      const user = await storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      const access = canEnterPvp(user);
+      if (!access.ok) {
+        return res.status(400).json({ error: getPvpAccessMessage(access.reason), reason: access.reason });
+      }
       const duel = startActivePvpDuelNow(userId);
       if (!duel) return res.status(404).json({ error: "Активная дуэль не найдена" });
       const state = getPvpQueueState(userId);
@@ -2408,6 +2607,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!userId) return res.status(400).json({ error: "userId is required" });
       const user = await storage.getUser(userId);
       if (!user) return res.status(404).json({ error: "User not found" });
+      const access = canEnterPvp(user);
+      if (!access.ok) {
+        return res.status(400).json({ error: getPvpAccessMessage(access.reason), reason: access.reason });
+      }
 
       const stamp = getUtcDayStamp();
       const dailyMatches = user.pvpDailyStamp === stamp ? Number(user.pvpDailyMatches || 0) : 0;
@@ -2434,13 +2637,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           return res.status(400).json({ error: "Нельзя входить в PvP во время активного городского контракта компании" });
         }
       }
-      const selectedBoosts = getPendingPvpBoosts(user.id);
-      const baseEnergyCost = Number(PVP_DUEL_CONFIG.process.baseEnergyCost || 0);
-      const energyCost = selectedBoosts.includes("energy_drink")
-        ? Number((baseEnergyCost * PVP_DUEL_CONFIG.process.energyDrinkMultiplier).toFixed(4))
-        : baseEnergyCost;
       const skills = readDuelSkills(snapshot);
+      const gadget = readEquippedPvpGadget(snapshot);
       const skillSum = skills.analytics + skills.design + skills.drawing + skills.coding + skills.modeling + skills.testing + skills.attention;
+      const pvpPowerScore = computePvpPowerScore({ skills, level: Number(user.level || 1), gadget });
+      const energyCost = Number(PVP_DUEL_CONFIG.process.baseEnergyCost || 0);
 
       await storage.updateUser(user.id, { lastActiveAt: Math.floor(Date.now() / 1000) });
       queuePlayerForPvp({
@@ -2448,8 +2649,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         username: user.username,
         level: Number(user.level || 1),
         rating: Number(user.pvpRating || 1000),
+        professionId: access.professionId,
         skills,
         skillSum,
+        pvpPowerScore,
+        gadget,
       });
 
       await flushCompletedPvpDuels();
@@ -2464,6 +2668,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         activeDuel: state.activeDuel,
         pendingBoosts: state.pendingBoosts,
         energyCost,
+        pvpPowerScore,
+        activeGadget: gadget ? { id: gadget.id, name: gadget.name } : null,
         matched: !!result,
       });
     } catch (error: any) {
@@ -3154,14 +3360,65 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const company = await storage.getCompany(req.params.id);
       if (!company) return res.status(404).json({ error: "Company not found" });
       const productionOrder = syncCompanyProductionOrder(company.id);
+      const produced = companyGadgets.get(company.id) ?? [];
       res.json({
         active: getExclusiveProject(company.id),
         catalog: getExclusiveCatalog(company.id),
-        produced: (companyGadgets.get(company.id) ?? []).filter((item) => item.isExclusive),
+        produced: produced.filter((item) => item.isExclusive),
+        upgradeCandidates: produced.filter((item) => !item.isExclusive),
         productionOrder,
       });
     } catch (error: any) {
       res.status(500).json({ error: error?.message || "Failed to load exclusive gadgets" });
+    }
+  });
+
+  app.post("/api/companies/:id/exclusive/preview", async (req, res) => {
+    try {
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      const userId = String(req.body?.userId || "");
+      const gadgetId = String(req.body?.gadgetId || "");
+      const seedPartsInput = Array.isArray(req.body?.seedParts) ? req.body.seedParts : [];
+      if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can preview exclusive upgrade" });
+      if (!gadgetId) return res.status(400).json({ error: "Для EX-апгрейда сначала выберите базовый гаджет компании" });
+      if (seedPartsInput.length !== EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
+        return res.status(400).json({ error: `Для апгрейда нужно выбрать ровно ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей` });
+      }
+      const produced = companyGadgets.get(company.id) ?? [];
+      const targetGadget = produced.find((item) => item.id === gadgetId);
+      if (!targetGadget) return res.status(404).json({ error: "Базовый гаджет для апгрейда не найден" });
+      const currentLevel = getProducedGadgetExclusiveLevel(targetGadget);
+      if (currentLevel >= EXCLUSIVE_UPGRADE_MAX_LEVEL) {
+        return res.status(400).json({ error: `Гаджет уже достиг максимального уровня EX+${EXCLUSIVE_UPGRADE_MAX_LEVEL}` });
+      }
+      const normalizedSeedParts = seedPartsInput.map((item: any) => ({
+        id: String(item.id),
+        rarity: String(item.rarity || "Common") as any,
+        type: String(item.type || ALL_PARTS[String(item.id)]?.type || "processor") as any,
+        name: String(item.name || ALL_PARTS[String(item.id)]?.name || item.id),
+      })) as ExclusiveSeedPart[];
+      const invalidPart = normalizedSeedParts.find((part) => !isPartCompatibleWithExclusiveCategory(targetGadget.category, part.type));
+      if (invalidPart) {
+        return res.status(400).json({ error: `Деталь ${invalidPart.name || invalidPart.id} не подходит для апгрейда этого гаджета` });
+      }
+      const blueprint = buildExclusiveUpgradeBlueprint({
+        companyId: company.id,
+        companyName: company.name,
+        gadget: targetGadget,
+        selectedParts: normalizedSeedParts.map((part) => ({
+          id: part.id,
+          name: part.name,
+          rarity: String(part.rarity || "Common"),
+          type: String(part.type || "processor"),
+        })),
+      });
+      res.json({
+        blueprint,
+        companyBalanceAfterStart: Number(company.balance || 0) - Number(blueprint.developmentCostGrm || 0),
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to preview exclusive upgrade" });
     }
   });
 
@@ -3170,44 +3427,70 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const company = await storage.getCompany(req.params.id);
       if (!company) return res.status(404).json({ error: "Company not found" });
       const userId = String(req.body?.userId || "");
-      const name = normalizeExclusiveName(req.body?.name);
-      const partRefs = Array.isArray(req.body?.partRefs) ? req.body.partRefs.map((item: unknown) => String(item)) : [];
+      const gadgetId = String(req.body?.gadgetId || "");
       const seedPartsInput = Array.isArray(req.body?.seedParts) ? req.body.seedParts : [];
-      const selectedPartsCount = seedPartsInput.length || partRefs.length;
-      if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can start exclusive gadget design" });
-      if (name.length < 3) return res.status(400).json({ error: "Название эксклюзивного гаджета должно быть от 3 символов" });
-      if (selectedPartsCount < 3 || selectedPartsCount > 6) {
-        return res.status(400).json({ error: "Для эксклюзивного гаджета нужно выбрать от 3 до 6 деталей" });
+      const selectedPartsCount = seedPartsInput.length;
+      if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can start exclusive gadget upgrade" });
+      if (!gadgetId) {
+        return res.status(400).json({ error: "Для EX-апгрейда сначала выберите базовый гаджет компании" });
       }
       if (getExclusiveProject(company.id)?.status === "in_progress") {
         return res.status(400).json({ error: "У компании уже идет разработка эксклюзивного гаджета" });
       }
 
-      const { seedParts, snapshot } = seedPartsInput.length
-        ? {
-            seedParts: seedPartsInput.map((item: any) => ({
-              id: String(item.id),
-              rarity: String(item.rarity || "Common") as any,
-              type: String(item.type || ALL_PARTS[String(item.id)]?.type || "processor") as any,
-              name: String(item.name || ALL_PARTS[String(item.id)]?.name || item.id),
-            })) as ExclusiveSeedPart[],
-            snapshot: await getUserWithGameState(userId),
-          }
-        : await buildExclusiveSeedPartsFromInventory(userId, partRefs);
+      const normalizedSeedParts = seedPartsInput.map((item: any) => ({
+        id: String(item.id),
+        rarity: String(item.rarity || "Common") as any,
+        type: String(item.type || ALL_PARTS[String(item.id)]?.type || "processor") as any,
+        name: String(item.name || ALL_PARTS[String(item.id)]?.name || item.id),
+      })) as ExclusiveSeedPart[];
+      const snapshot = await getUserWithGameState(userId);
       if (!snapshot) return res.status(404).json({ error: "CEO snapshot not found" });
-      const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(company);
-      const professionId = getPlayerProfessionId(snapshot.user);
-      const blueprint = buildExclusiveBlueprintDefinition({
-        id: `exclusive-${randomUUID()}`,
+      let blueprint: ExclusiveBlueprintDefinition;
+      let reservedTargetGadget: ProducedGadget | null = null;
+
+      if (selectedPartsCount !== EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
+        return res.status(400).json({ error: `Для апгрейда нужно выбрать ровно ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей` });
+      }
+      const produced = companyGadgets.get(company.id) ?? [];
+      const targetGadget = produced.find((item) => item.id === gadgetId);
+      if (!targetGadget) return res.status(404).json({ error: "Базовый гаджет для апгрейда не найден" });
+      const currentLevel = getProducedGadgetExclusiveLevel(targetGadget);
+      if (currentLevel >= EXCLUSIVE_UPGRADE_MAX_LEVEL) {
+        return res.status(400).json({ error: `Гаджет уже достиг максимального уровня EX+${EXCLUSIVE_UPGRADE_MAX_LEVEL}` });
+      }
+      if (targetGadget.isBroken) {
+        return res.status(400).json({ error: "Сначала нужно отремонтировать гаджет, а потом запускать апгрейд" });
+      }
+      if (normalizedSeedParts.length !== EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
+        return res.status(400).json({ error: `Для апгрейда нужно выбрать ровно ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей` });
+      }
+      const invalidPart = normalizedSeedParts.find((part) => !isPartCompatibleWithExclusiveCategory(targetGadget.category, part.type));
+      if (invalidPart) {
+        return res.status(400).json({ error: `Деталь ${invalidPart.name || invalidPart.id} не подходит для апгрейда этого гаджета` });
+      }
+      blueprint = buildExclusiveUpgradeBlueprint({
         companyId: company.id,
         companyName: company.name,
-        gadgetName: name,
-        seedParts,
-        ceoSkills: (snapshot.game as any).skills ?? {},
-        ceoProfessionId: professionId,
-        departmentEffects,
+        gadget: targetGadget,
+        selectedParts: normalizedSeedParts.map((part) => ({
+          id: part.id,
+          name: part.name,
+          rarity: String(part.rarity || "Common"),
+          type: String(part.type || "processor"),
+        })),
       });
+      reservedTargetGadget = removeProducedGadget(company.id, targetGadget.id);
+      if (!reservedTargetGadget) {
+        return res.status(404).json({ error: "Не удалось зарезервировать базовый гаджет для апгрейда" });
+      }
+
       if (Number(company.balance || 0) < Number(blueprint.developmentCostGrm || 0)) {
+        if (reservedTargetGadget) {
+          const produced = companyGadgets.get(company.id) ?? [];
+          produced.push(reservedTargetGadget);
+          companyGadgets.set(company.id, produced);
+        }
         return res.status(400).json({ error: `Недостаточно GRM компании для старта разработки (${blueprint.developmentCostGrm} GRM)` });
       }
       await storage.updateCompany(company.id, {
@@ -3219,10 +3502,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         status: "in_progress",
         progressHours: 0,
         startedAt: Date.now(),
+        readyAt: Date.now() + Math.round(Number(blueprint.developmentHoursRequired || 0) * 60 * 60 * 1000),
         investedResearch: createEmptyExclusiveResearchMap(),
         progressTicks: 0,
         lastContribution: createEmptyExclusiveResearchMap(),
         participantUserIds: [userId],
+        targetGadget: reservedTargetGadget
+          ? {
+              id: reservedTargetGadget.id,
+              name: reservedTargetGadget.name,
+              category: reservedTargetGadget.category,
+              stats: { ...(reservedTargetGadget.stats || {}) },
+              quality: Number(reservedTargetGadget.quality || 1),
+              reliability: Number(reservedTargetGadget.reliability ?? 1),
+              condition: Number(reservedTargetGadget.condition || reservedTargetGadget.maxCondition || 100),
+              maxCondition: Number(reservedTargetGadget.maxCondition || 100),
+              minPrice: Number(reservedTargetGadget.minPrice || 0),
+              maxPrice: Number(reservedTargetGadget.maxPrice || 0),
+              exclusiveLevel: getProducedGadgetExclusiveLevel(reservedTargetGadget),
+            }
+          : undefined,
       };
       exclusiveProjectByCompanyId.set(company.id, project);
       const gadgetWear = await applyGadgetWear(userId, {
@@ -3249,6 +3548,93 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const snapshot = await getUserWithGameState(userId);
       if (!snapshot) return res.status(404).json({ error: "Профиль сотрудника не найден" });
       const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(company);
+      if (project.targetGadget) {
+        const readyAt = Number(project.readyAt || (project.startedAt + Number(project.blueprint.developmentHoursRequired || 0) * 60 * 60 * 1000));
+        const totalMs = Math.max(1, readyAt - Number(project.startedAt || Date.now()));
+        const remainingMs = Math.max(0, readyAt - Date.now());
+        const percent = Math.max(0, Math.min(100, Math.round(((totalMs - remainingMs) / totalMs) * 100)));
+        project.progressTicks = Math.max(0, Number(project.progressTicks || 0)) + 1;
+        project.progressHours = Number((((totalMs - remainingMs) / (60 * 60 * 1000))).toFixed(2));
+        if (remainingMs > 0) {
+          exclusiveProjectByCompanyId.set(company.id, project);
+          const gadgetWear = await applyGadgetWear(userId, {
+            cause: "blueprint_development",
+            qualityHint: Number(project.blueprint.successChance || 1),
+          });
+          return res.json({
+            ...project,
+            progressGain: 0,
+            contribution: createEmptyExclusiveResearchMap(),
+            research: {
+              required: createEmptyExclusiveResearchMap(),
+              invested: createEmptyExclusiveResearchMap(),
+              totalRequired: totalMs,
+              totalInvested: totalMs - remainingMs,
+              percent,
+              isComplete: false,
+            },
+            remainingMs,
+            gadgetWear: gadgetWear.report,
+          });
+        }
+
+        if (!project.upgradeResolved) {
+          project.upgradeResolved = true;
+          project.completedAt = Date.now();
+          if (Math.random() <= Number(project.blueprint.successChance || 0)) {
+            project.status = "production_ready";
+            setExclusiveCatalog(company.id, [project.blueprint, ...getExclusiveCatalog(company.id)]);
+          } else {
+            project.status = "failed";
+            project.failedReason = "Апгрейд не стабилизировался. Базовый гаджет возвращён на склад компании";
+            if (!project.targetReturned && project.targetGadget) {
+              const produced = companyGadgets.get(company.id) ?? [];
+              produced.push({
+                id: project.targetGadget.id,
+                blueprintId: project.blueprint.targetGadgetId || project.targetGadget.id,
+                companyId: company.id,
+                name: project.targetGadget.name,
+                baseName: project.blueprint.targetGadgetName || project.targetGadget.name,
+                category: project.targetGadget.category,
+                stats: { ...(project.targetGadget.stats || {}) },
+                quality: Number(project.targetGadget.quality || 1),
+                minPrice: Number(project.targetGadget.minPrice || 0),
+                maxPrice: Number(project.targetGadget.maxPrice || 0),
+                durability: Number(project.targetGadget.maxCondition || 100),
+                maxDurability: Number(project.targetGadget.maxCondition || 100),
+                condition: Number(project.targetGadget.condition || project.targetGadget.maxCondition || 100),
+                maxCondition: Number(project.targetGadget.maxCondition || 100),
+                reliability: Number(project.targetGadget.reliability ?? 1),
+                producedAt: Date.now(),
+                isExclusive: Number(project.targetGadget.exclusiveLevel || 0) > 0,
+                exclusiveLevel: Number(project.targetGadget.exclusiveLevel || 0),
+              });
+              companyGadgets.set(company.id, produced);
+              project.targetReturned = true;
+            }
+          }
+        }
+        exclusiveProjectByCompanyId.set(company.id, project);
+        const gadgetWear = await applyGadgetWear(userId, {
+          cause: "blueprint_development",
+          qualityHint: Number(project.blueprint.successChance || 1),
+        });
+        return res.json({
+          ...project,
+          progressGain: 0,
+          contribution: createEmptyExclusiveResearchMap(),
+          research: {
+            required: createEmptyExclusiveResearchMap(),
+            invested: createEmptyExclusiveResearchMap(),
+            totalRequired: totalMs,
+            totalInvested: totalMs,
+            percent: 100,
+            isComplete: true,
+          },
+          remainingMs: 0,
+          gadgetWear: gadgetWear.report,
+        });
+      }
       const researchState = getExclusiveResearchState(project);
       const members = await storage.getCompanyMembers(company.id);
       const memberIds = new Set(members.map((member) => member.userId));
@@ -3304,7 +3690,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           setExclusiveCatalog(company.id, [project.blueprint, ...getExclusiveCatalog(company.id)]);
         } else {
           project.status = "failed";
-          project.failedReason = "Команда не смогла довести прототип до стабильного релиза";
+          project.failedReason = "Не удалось довести EX-апгрейд до стабильного релиза";
         }
       }
       exclusiveProjectByCompanyId.set(company.id, project);
@@ -3370,16 +3756,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const blueprint = catalog.find((item) => item.id === blueprintId);
       if (!blueprint) return res.status(404).json({ error: "Эксклюзивный чертеж не найден" });
       if (blueprint.remainingUnits <= 0) return res.status(400).json({ error: "Лимит выпуска этого гаджета исчерпан" });
+      const upgradeProject = blueprint.targetGadgetId ? getExclusiveProject(company.id) : null;
 
-      const actualQuantity = Math.min(quantity, blueprint.remainingUnits);
+      const actualQuantity = blueprint.targetGadgetId ? 1 : Math.min(quantity, blueprint.remainingUnits);
       const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(company);
-      const gramCost = Math.max(1, Math.round(blueprint.productionCostGram * actualQuantity * departmentEffects.productionCostMultiplier));
-      if (Number(company.balance || 0) < gramCost) {
+      const gramCost = blueprint.productionCostGram > 0
+        ? Math.max(1, Math.round(blueprint.productionCostGram * actualQuantity * departmentEffects.productionCostMultiplier))
+        : 0;
+      if (gramCost > 0 && Number(company.balance || 0) < gramCost) {
         return res.status(400).json({ error: `Недостаточно GRM компании для производства (${gramCost} GRM)` });
       }
-      await storage.updateCompany(company.id, {
-        balance: Number(company.balance || 0) - gramCost,
-      });
+      if (gramCost > 0) {
+        await storage.updateCompany(company.id, {
+          balance: Number(company.balance || 0) - gramCost,
+        });
+      }
       const ceoUser = await storage.getUser(company.ownerId);
       const ceoAdvanced = ceoUser ? getAdvancedPersonalityId(ceoUser) : null;
       const quality = Number(
@@ -3402,6 +3793,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         kind: "exclusive",
         blueprintId: blueprint.id,
         blueprintName: blueprint.name,
+        baseName: blueprint.targetGadgetName || blueprint.name,
         category: blueprint.category,
         quantity: actualQuantity,
         startedAt,
@@ -3411,10 +3803,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         stats: Object.fromEntries(
           Object.entries(blueprint.baseStats).map(([key, value]) => [key, Number((Number(value) * quality).toFixed(2))]),
         ),
-        minPrice: Math.round(blueprint.productionCostGram * quality * 6),
-        maxPrice: Math.round(blueprint.productionCostGram * quality * 9),
+        minPrice: blueprint.targetGadgetId
+          ? Math.max(100, Math.round(Number(upgradeProject?.targetGadget?.minPrice || 0) * Math.max(1, quality)))
+          : Math.round(blueprint.productionCostGram * quality * 6),
+        maxPrice: blueprint.targetGadgetId
+          ? Math.max(150, Math.round(Number(upgradeProject?.targetGadget?.maxPrice || 0) * Math.max(1.1, quality)))
+          : Math.round(blueprint.productionCostGram * quality * 9),
         gramCost,
         isExclusive: true,
+        exclusiveLevel: Math.max(1, Number(blueprint.upgradeLevel || 1)),
         exclusiveBonusType: blueprint.bonusType,
         exclusiveBonusValue: blueprint.bonusValue,
         exclusiveBonusLabel: blueprint.bonusLabel,
@@ -3728,7 +4125,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       companyId: company.id,
       kind: "standard",
       blueprintId: blueprint.id,
-      blueprintName: blueprint.name,
+      blueprintName: buildProducedCompanyGadgetName(company.name, blueprint.name),
+      baseName: blueprint.name,
       category: blueprint.category,
       quantity: actualQuantity,
       startedAt,
@@ -3795,6 +4193,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     companyGadgets.set(company.id, produced);
     registerProductionSignal(String(order.category || "all"), order.quantity);
     companyProductionOrders.delete(company.id);
+    if (order.isExclusive) {
+      const activeProject = getExclusiveProject(company.id);
+      if (activeProject?.blueprint?.id === order.blueprintId) {
+        exclusiveProjectByCompanyId.delete(company.id);
+      }
+      const catalog = getExclusiveCatalog(company.id).filter((item) => item.id !== order.blueprintId);
+      setExclusiveCatalog(company.id, catalog);
+    }
 
     if (isTutorialCompany(company)) {
       const tutorialOwnerId = String(company.tutorialOwnerId || company.ownerId);
@@ -3983,8 +4389,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!buyer) return res.status(404).json({ error: "Buyer not found" });
     if (buyer.balance < listing.price) return res.status(400).json({ error: "РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ" });
     const buyerMembership = await resolvePlayerCompanyMembership(buyerId);
-    if (Date.now() - Number(listing.createdAt || 0) < 5 * 60 * 1000 && buyerMembership?.company?.id !== listing.companyId) {
-      return res.status(403).json({ error: "Первые 5 минут купить этот гаджет могут только игроки компании-разработчика" });
+    if (Date.now() - Number(listing.createdAt || 0) < 20 * 60 * 1000 && buyerMembership?.company?.id !== listing.companyId) {
+      return res.status(403).json({ error: "Первые 20 минут купить этот лот могут только игроки компании-разработчика" });
     }
 
     const company = await storage.getCompany(listing.companyId);
@@ -4041,8 +4447,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const bidder = await storage.getUser(bidderId);
     if (!bidder) return res.status(404).json({ error: "Bidder not found" });
     const bidderMembership = await resolvePlayerCompanyMembership(bidderId);
-    if (Date.now() - Number(listing.createdAt || 0) < 5 * 60 * 1000 && bidderMembership?.company?.id !== listing.companyId) {
-      return res.status(403).json({ error: "Первые 5 минут участвовать в аукционе могут только игроки компании-разработчика" });
+    if (Date.now() - Number(listing.createdAt || 0) < 20 * 60 * 1000 && bidderMembership?.company?.id !== listing.companyId) {
+      return res.status(403).json({ error: "Первые 20 минут участвовать в аукционе могут только игроки компании-разработчика" });
     }
 
     const minNext = (listing.currentBid ?? listing.startingPrice ?? 0) + (listing.minIncrement ?? 10);
@@ -4245,7 +4651,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       selected: professionId,
       profile: professionId ? getProfessionById(professionId) ?? null : null,
       needsChoice: canSelectProfession(user),
-      options: PROFESSIONS,
+      options: PLAYABLE_PROFESSIONS,
     });
   });
 
@@ -4261,7 +4667,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const professionId = String(req.body?.professionId || "").trim();
-      if (!isProfessionId(professionId)) {
+      if (!isProfessionId(professionId) || professionId === "devops") {
         return res.status(400).json({ error: "Профессия не найдена" });
       }
 

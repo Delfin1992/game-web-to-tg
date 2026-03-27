@@ -30,7 +30,7 @@ type UserHoldingRuntime = {
 };
 
 const STOCK_TICK_MS = 60_000;
-const STOCK_NEWS_DURATION_MS = 20 * 60_000;
+const STOCK_NEWS_DURATION_MS = 2 * 60 * 60_000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const stockAssetsByTicker = new Map<string, StockAssetRuntime>();

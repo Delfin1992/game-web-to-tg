@@ -1,6 +1,6 @@
 import {
-  PVP_BOOST_DEFINITIONS,
   PVP_DUEL_CONFIG,
+  getPvpDailyBoostCatalog,
   getPvpBoostDefinition,
   type DuelProjectStageKey,
   type DuelRoundResult,
@@ -20,6 +20,7 @@ import {
   type DuelSkills,
   type EngineActiveDuel,
 } from "./pvp-engine";
+import type { ProfessionId } from "../shared/professions";
 import {
   activePvpDuelById as activeDuelById,
   activePvpDuelIdByUserId as activeDuelIdByUserId,
@@ -33,8 +34,11 @@ export type PvpQueuePlayer = {
   username: string;
   level: number;
   rating: number;
+  professionId?: ProfessionId | null;
   skills: DuelSkills;
   skillSum: number;
+  pvpPowerScore: number;
+  gadget?: DuelParticipantSeed["gadget"];
   joinedAtMs: number;
   lastActiveAtMs: number;
   boosts: DuelBoostState;
@@ -90,7 +94,10 @@ function toParticipantSeed(entry: PvpQueuePlayer): DuelParticipantSeed {
     username: entry.username,
     rating: entry.rating,
     skills: { ...entry.skills },
+    professionId: entry.professionId ?? null,
     boosts: { selectedBoosts: [...entry.boosts.selectedBoosts] },
+    gadget: entry.gadget ?? null,
+    pvpPowerScore: entry.pvpPowerScore,
     isBot: Boolean(entry.isBot),
   };
 }
@@ -98,8 +105,8 @@ function toParticipantSeed(entry: PvpQueuePlayer): DuelParticipantSeed {
 function scorePair(a: PvpQueuePlayer, b: PvpQueuePlayer) {
   const diffRating = Math.abs(a.rating - b.rating);
   const diffLevel = Math.abs(a.level - b.level);
-  const diffSkill = Math.abs(a.skillSum - b.skillSum);
-  return diffRating + diffLevel * 30 + diffSkill * 0.8;
+  const diffPower = Math.abs(a.pvpPowerScore - b.pvpPowerScore);
+  return diffRating + diffLevel * PVP_DUEL_CONFIG.matchmaking.levelWeight + diffPower * PVP_DUEL_CONFIG.matchmaking.powerWeight;
 }
 
 function findBestPair(nowMs: number): [PvpQueuePlayer, PvpQueuePlayer] | null {
@@ -198,8 +205,8 @@ function buildActiveDuelView(duel: EngineActiveDuel, userId: string, nowMs: numb
     opponentTotalPower: Number(opponent.totalPower.toFixed(2)),
     myTickGain: Number(me.latestTickGain.toFixed(2)),
     opponentTickGain: Number(opponent.latestTickGain.toFixed(2)),
-    myFreezeTicks: Math.max(0, me.freezeUntilTick - duel.lastProcessedTick),
-    opponentFreezeTicks: Math.max(0, opponent.freezeUntilTick - duel.lastProcessedTick),
+    myFreezeTicks: 0,
+    opponentFreezeTicks: 0,
     latestLog: duel.latestLog,
     latestEventKind: latestEvent?.kind,
     latestEventActorName: latestEvent?.actorName,
@@ -214,6 +221,10 @@ function buildActiveDuelView(duel: EngineActiveDuel, userId: string, nowMs: numb
     recentLogs: duel.recentEvents.map((event) => `${event.actorName}: ${event.title}`),
     myBoosts: [...me.boostIds],
     opponentBoosts: [...opponent.boostIds],
+    myBoostName: me.boostIds[0] ? getPvpBoostDefinition(me.boostIds[0])?.name ?? me.boostIds[0] : null,
+    opponentBoostName: opponent.boostIds[0] ? getPvpBoostDefinition(opponent.boostIds[0])?.name ?? opponent.boostIds[0] : null,
+    myGadgetName: me.gadget?.name ?? null,
+    opponentGadgetName: opponent.gadget?.name ?? null,
     stages: stageViews,
     myStages: PVP_DUEL_CONFIG.process.stages.map((stage) => ({
       stageKey: stage.key,
@@ -232,16 +243,27 @@ function buildActiveDuelView(duel: EngineActiveDuel, userId: string, nowMs: numb
   };
 }
 
+function computeRatingDelta(selfRating: number, opponentRating: number, didWin: boolean, isDraw: boolean) {
+  if (isDraw) return PVP_DUEL_CONFIG.rating.drawDelta;
+  const expected = 1 / (1 + Math.pow(10, (opponentRating - selfRating) / 400));
+  const adjustment = PVP_DUEL_CONFIG.rating.maxAdjustment;
+  if (didWin) {
+    return Math.round(PVP_DUEL_CONFIG.rating.winDelta + (1 - expected) * adjustment);
+  }
+  return -Math.round(Math.abs(PVP_DUEL_CONFIG.rating.loseDelta) + expected * adjustment);
+}
+
 function finalizeDuelResult(duel: EngineActiveDuel): PvpDuelResult {
   const isWinnerA = duel.winnerUserId === duel.playerA.userId;
   const isWinnerB = duel.winnerUserId === duel.playerB.userId;
+  const isDraw = duel.winnerUserId === null;
   const playerARatingAfter = Math.max(
     0,
-    duel.playerA.ratingBefore + (duel.winnerUserId === null ? PVP_DUEL_CONFIG.rating.drawDelta : isWinnerA ? PVP_DUEL_CONFIG.rating.winDelta : PVP_DUEL_CONFIG.rating.loseDelta),
+    duel.playerA.ratingBefore + computeRatingDelta(duel.playerA.ratingBefore, duel.playerB.ratingBefore, isWinnerA, isDraw),
   );
   const playerBRatingAfter = Math.max(
     0,
-    duel.playerB.ratingBefore + (duel.winnerUserId === null ? PVP_DUEL_CONFIG.rating.drawDelta : isWinnerB ? PVP_DUEL_CONFIG.rating.winDelta : PVP_DUEL_CONFIG.rating.loseDelta),
+    duel.playerB.ratingBefore + computeRatingDelta(duel.playerB.ratingBefore, duel.playerA.ratingBefore, isWinnerB, isDraw),
   );
   return {
     id: duel.duelId,
@@ -273,7 +295,7 @@ function getActiveDuelForUser(userId: string) {
 }
 
 export function getPvpBoostCatalog(): PvpBoostDefinition[] {
-  return [...PVP_BOOST_DEFINITIONS];
+  return getPvpDailyBoostCatalog();
 }
 
 export function getPendingPvpBoosts(userId: string): PvpBoostId[] {
@@ -282,7 +304,7 @@ export function getPendingPvpBoosts(userId: string): PvpBoostId[] {
 
 export function purchasePvpBoost(userId: string, boostId: PvpBoostId) {
   const definition = getPvpBoostDefinition(boostId);
-  if (!definition) throw new Error("Неизвестный PvP boost");
+  if (!definition) throw new Error("Неизвестный PvP-предмет");
 
   const activeDuel = getActiveDuelForUser(userId);
   if (activeDuel && Date.now() < activeDuel.startedAtMs) {
@@ -291,8 +313,11 @@ export function purchasePvpBoost(userId: string, boostId: PvpBoostId) {
   }
 
   const owned = pendingBoostsByUserId.get(userId) ?? new Set<PvpBoostId>();
+  if (owned.size >= 1) {
+    throw new Error("На бой можно выбрать только 1 PvP-предмет");
+  }
   if (owned.has(boostId)) {
-    throw new Error("Этот boost уже куплен для следующей дуэли");
+    throw new Error("Этот предмет уже выбран для следующей дуэли");
   }
   owned.add(boostId);
   pendingBoostsByUserId.set(userId, owned);
@@ -348,7 +373,7 @@ export function consumePendingPvpResult(userId: string) {
 }
 
 export function queuePlayerForPvp(player: Omit<PvpQueuePlayer, "joinedAtMs" | "lastActiveAtMs" | "boosts">, nowMs: number = Date.now()) {
-  const selectedBoosts = getPendingPvpBoosts(player.userId);
+  const selectedBoosts = getPendingPvpBoosts(player.userId).slice(0, 1);
   const entry: PvpQueuePlayer = {
     ...player,
     joinedAtMs: nowMs,
@@ -403,7 +428,7 @@ export function findBestPvpBotTarget(botUserId: string, nowMs: number = Date.now
     .sort((a, b) => {
       const waitDiff = a.joinedAtMs - b.joinedAtMs;
       if (waitDiff !== 0) return waitDiff;
-      return scorePair(a, { ...b, joinedAtMs: a.joinedAtMs, lastActiveAtMs: a.lastActiveAtMs });
+      return scorePair(a, b);
     });
   return active[0] ?? null;
 }
@@ -416,6 +441,8 @@ export function generateBalancedBotForTarget(target: Omit<PvpQueuePlayer, "joine
       rating: target.rating,
       skills: target.skills,
       boosts: { selectedBoosts: [] },
+      gadget: target.gadget ?? null,
+      pvpPowerScore: target.pvpPowerScore,
     },
     botUserId,
     username,

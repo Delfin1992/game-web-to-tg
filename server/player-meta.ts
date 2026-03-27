@@ -21,6 +21,7 @@ type PlayerHousingState = {
 type PlayerMetaContainer = Record<string, unknown> & {
   advancedPersonality?: string;
   profession?: ProfessionId;
+  professionPromptShown?: boolean;
   trainingConsumablesUsedByLevel?: Record<string, number>;
   completedStudyCourseIds?: string[];
   housing?: PlayerHousingState;
@@ -131,8 +132,17 @@ export function getPlayerProfessionId(user: Pick<User, "tutorialState">): Profes
   return isProfessionId(container.profession) ? container.profession : null;
 }
 
+export function getProfessionPromptShown(user: Pick<User, "tutorialState">) {
+  const container = getPlayerMetaContainer(user);
+  return Boolean(container.professionPromptShown);
+}
+
 export function canSelectProfession(user: Pick<User, "level" | "tutorialState">) {
   return Number(user.level || 0) >= PROFESSION_UNLOCK_LEVEL && !getPlayerProfessionId(user);
+}
+
+export function shouldAutoPromptProfession(user: Pick<User, "level" | "tutorialState">) {
+  return canSelectProfession(user) && !getProfessionPromptShown(user);
 }
 
 export async function setPlayerProfession(userId: string, professionId: ProfessionId) {
@@ -144,6 +154,20 @@ export async function setPlayerProfession(userId: string, professionId: Professi
     tutorialState: serializeMetaContainer({
       ...container,
       profession: professionId,
+      professionPromptShown: true,
+    }),
+  });
+}
+
+export async function setProfessionPromptShown(userId: string, shown: boolean = true) {
+  const { storage } = await import("./storage");
+  const user = await storage.getUser(userId);
+  if (!user) throw new Error("Пользователь не найден");
+  const container = getPlayerMetaContainer(user);
+  return storage.updateUser(user.id, {
+    tutorialState: serializeMetaContainer({
+      ...container,
+      professionPromptShown: shown,
     }),
   });
 }

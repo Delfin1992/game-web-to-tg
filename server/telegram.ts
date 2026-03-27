@@ -39,18 +39,21 @@ import {
   type AdvancedPersonalityId,
 } from "../shared/advanced-personality";
 import {
+  PLAYABLE_PROFESSIONS,
   PROFESSIONS,
   PROFESSION_UNLOCK_LEVEL,
   getProfessionById,
   type ProfessionId,
 } from "../shared/professions";
-import { ALL_PARTS, RARITY_LEVELS, type RarityName } from "../client/src/lib/parts";
+import { getPvpDailyBoostCatalog } from "../shared/pvp-duel";
+import { ALL_PARTS, RARITY_LEVELS, type DeviceType, type RarityName } from "../client/src/lib/parts";
 import {
   applyGameStatePatch,
   buyShopItem,
   clearPlayerGameState,
   closeBankProduct,
   completeJob,
+  createGadgetConditionProfile,
   exchangeCurrencyToGram,
   exchangeGramToCurrency,
   estimateInventorySellPrice,
@@ -76,6 +79,7 @@ import {
   type BankProductType,
   type GameBankProduct,
   type GameInventoryItem,
+  type GamePvpBankBoost,
   type SkillName,
 } from "./game-engine";
 import {
@@ -136,14 +140,18 @@ import {
   getActiveHousing,
   getInventoryCapacityForUser,
   getOwnedHousingIdsForCity,
+  getProfessionPromptShown,
   getTrainingConsumablesUsedAtLevel,
   purchaseHousing,
   getPlayerProfessionId,
   grantStarterHousing,
   setActiveHousing,
   setAdvancedPersonality,
+  setProfessionPromptShown,
   setPlayerProfession,
+  shouldAutoPromptProfession,
 } from "./player-meta";
+import { canEnterPvp, getPvpAccessMessage } from "./pvp-access";
 import {
   WEEKLY_HACKATHON_CONFIG,
   type HackathonPartType,
@@ -173,6 +181,7 @@ import {
   sellStockAsset,
 } from "./stock-exchange";
 import {
+  EXCLUSIVE_UPGRADE_REQUIRED_PARTS,
   EXCLUSIVE_RESEARCH_SKILLS,
   getExclusiveResearchLabel,
   getExclusiveResearchState,
@@ -208,6 +217,7 @@ import {
   companySalaryClaimAtByCompanyId,
   companyContractSelectedPartRefsByChatId,
   companyWarehouseGadgetRefsByChatId,
+  companyWarehouseFilterByChatId,
   companyWarehousePartRefsByChatId,
   companyWarehousePartsByCompanyId,
   hackathonPartRefsByChatId,
@@ -215,10 +225,8 @@ import {
   hackathonSkillProgressByChatId,
   inventoryRefsByChatId,
   lastInlineMessageByChatId,
-  lastTelegramMenuByUserId,
   marketListingRefsByChatId,
   pendingActionByChatId,
-  playerLocationByUserId,
   playerTravelByUserId,
   pvpDuelProgressMessageByChatId,
   pvpDuelStageKeyByChatId,
@@ -274,11 +282,24 @@ import {
 import {
   sendWithAdminKeyboard as sendWithAdminKeyboardBase,
   sendWithBankKeyboard as sendWithBankKeyboardBase,
+  sendCityHubSummary as sendCityHubSummaryBase,
   sendWithCityHubKeyboard as sendWithCityHubKeyboardBase,
   sendWithCurrentHubKeyboard as sendWithCurrentHubKeyboardBase,
   sendWithExtrasKeyboard as sendWithExtrasKeyboardBase,
+  sendHomeMenu as sendHomeMenuBase,
   sendWithMainKeyboard as sendWithMainKeyboardBase,
+  restoreTelegramMenuState as restoreTelegramMenuStateBase,
 } from "./telegram/handlers/main-menu";
+import { handleProfileMetaMessage } from "./telegram/handlers/profile";
+import {
+  type EducationLevelKey,
+  getLastTelegramMenuState,
+  getPlayerHubLocation,
+  rememberTelegramMenu,
+  setPlayerHubLocation,
+  type ShopMenuTab,
+  type TelegramMenuState,
+} from "./telegram/ui-state";
 import {
   sendCompanyDepartmentsSection as sendCompanyDepartmentsSectionBase,
   sendCompanyEconomySection as sendCompanyEconomySectionBase,
@@ -318,7 +339,16 @@ import { handleRegistrationPendingAction } from "./telegram/handlers/registratio
 import { handleRepairMessage } from "./telegram/handlers/repair-messages";
 import { handleEconomyMessage } from "./telegram/handlers/economy-messages";
 import { handleInventoryMessage } from "./telegram/handlers/inventory-messages";
+import { handleCityMessage } from "./telegram/handlers/city";
 import { handleCompanyNavigationMessage } from "./telegram/handlers/company-navigation-messages";
+import { handleNavigationMessage } from "./telegram/handlers/navigation";
+import { handleAdminMessage } from "./telegram/handlers/admin";
+import { handlePvpMessage } from "./telegram/handlers/pvp";
+import { handleHackathonMessage } from "./telegram/handlers/hackathon";
+import { handleCompanyMembershipMessage } from "./telegram/handlers/company-membership";
+import { handleCompanyProcessMessage } from "./telegram/handlers/company-processes";
+import { handleCompanyManagementMessage } from "./telegram/handlers/company-management";
+import { handleCompanyDevelopmentMessage } from "./telegram/handlers/company-development";
 
 type TelegramUser = {
   id: number;
@@ -371,8 +401,8 @@ type PendingAction =
   | { type: "company_topup"; companyId: string }
   | { type: "company_set_salary_amount"; companyId: string; memberUserId: string; memberUsername: string }
   | { type: "auction_bid_amount"; listingId: string }
-  | { type: "company_exclusive_name" }
-  | { type: "company_exclusive_parts"; gadgetName: string }
+  | { type: "company_exclusive_parts"; gadgetName: string; gadgetId?: string }
+  | { type: "company_exclusive_confirm"; gadgetName: string; gadgetId: string; partRefs: string[] }
   | { type: "company_bp_produce_qty"; blueprintId: string; blueprintName: string; maxQuantity: number }
   | { type: "company_bp_produce_confirm"; blueprintId: string; blueprintName: string; quantity: number }
   | { type: "company_exclusive_produce_select" }
@@ -410,23 +440,6 @@ type RegistrationStep =
   | "register_gender";
 
 type Snapshot = NonNullable<Awaited<ReturnType<typeof getUserWithGameState>>>;
-
-type EducationLevelKey = "school" | "college" | "university";
-
-type ShopMenuTab = "all" | "parts" | "gadgets" | "sell";
-
-type TelegramMenuState =
-  | { menu: "home" }
-  | { menu: "extras" }
-  | { menu: "city" }
-  | { menu: "repair_service" }
-  | { menu: "housing" }
-  | { menu: "jobs" }
-  | { menu: "study_levels" }
-  | { menu: "study_courses"; levelKey: EducationLevelKey }
-  | { menu: "shop"; tab: ShopMenuTab }
-  | { menu: "bank" }
-  | { menu: "company"; section: CompanyMenuSection };
 
 type InventoryActionKind = "use" | "equip" | "service" | "scrap";
 
@@ -499,6 +512,7 @@ type GameView = {
   studyTime: number;
   gramBalance: number;
   activeBankProduct: GameBankProduct | null;
+  activePvpBankBoost?: GamePvpBankBoost | null;
 };
 
 type CompanyBlueprintSnapshot = {
@@ -539,6 +553,7 @@ type CompanyBlueprintSnapshot = {
     minPrice: number;
     maxPrice: number;
     isExclusive?: boolean;
+    exclusiveLevel?: number;
     exclusiveBonusLabel?: string;
   }>;
 };
@@ -649,7 +664,7 @@ type PlayerTravelState = {
   timer: NodeJS.Timeout;
   chatId: number;
 };
-type ExclusiveActionIntent = "job" | "study" | "development" | "travel" | "pvp";
+type ExclusiveActionIntent = "job" | "study" | "development" | "travel" | "pvp" | "shop" | "bank" | "company_action" | "auction";
 
 const TELEGRAM_PUBLIC_COMMANDS: Array<{ command: string; description: string }> = [
   { command: "start", description: "Открыть Mini App" },
@@ -1275,10 +1290,6 @@ function resolveCityName(input: string) {
   return null;
 }
 
-function normalizeExclusiveDraftName(value: string) {
-  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 40);
-}
-
 function isCityTemporarilyAvailable(city: string) {
   return city === TEMPORARILY_OPEN_CITY;
 }
@@ -1308,6 +1319,10 @@ function formatRate(value: number) {
   if (!Number.isFinite(value)) return "0";
   if (Math.abs(value) >= 1) return formatNumber(value);
   return Number(value.toFixed(4)).toString();
+}
+
+function isFullEnergy(value: number) {
+  return Number(value || 0) >= 0.9999;
 }
 
 function formatGramValue(value: number) {
@@ -1935,10 +1950,100 @@ function formatStats(stats: Record<string, number>) {
     .join(", ");
 }
 
+function formatGadgetPvpProfile(stats?: Record<string, number>) {
+  const safeStats = stats || {};
+  const project = Number(safeStats.design || 0) + Number(safeStats.analytics || 0);
+  const develop = Number(safeStats.coding || 0);
+  const debug = Number(safeStats.testing || 0) + Number(safeStats.attention || 0);
+  const parts = [
+    project > 0 ? `Проектирование +${formatNumber(project)}` : "",
+    develop > 0 ? `Разработка +${formatNumber(develop)}` : "",
+    debug > 0 ? `Отладка +${formatNumber(debug)}` : "",
+  ].filter(Boolean);
+  return parts.join(" | ");
+}
+
+function getShopGearQualityPreview(rarity: string) {
+  const normalized = String(rarity || "").toLowerCase();
+  if (normalized === "epic") return 1.4;
+  if (normalized === "rare") return 1.2;
+  if (normalized === "uncommon") return 1.1;
+  return 1;
+}
+
+function formatShopGearPreview(item: { rarity?: string; stats?: Record<string, number> }) {
+  const quality = getShopGearQualityPreview(String(item.rarity || "Common"));
+  const profile = createGadgetConditionProfile({
+    rarity: String(item.rarity || "Common"),
+    quality,
+    testing: Number(item.stats?.testing || 0),
+    attention: Number(item.stats?.attention || 0),
+    maxCondition: 100,
+  });
+  return formatGadgetInfoBlock({
+    stats: item.stats,
+    quality,
+    condition: profile.condition,
+    maxCondition: profile.maxCondition,
+  });
+}
+
+function formatGadgetRuntimeDetails(item: {
+  stats?: Record<string, number>;
+  quality?: number;
+  condition?: number;
+  maxCondition?: number;
+  durability?: number;
+  maxDurability?: number;
+  reliability?: number;
+  isBroken?: boolean;
+}) {
+  const pvpProfile = formatGadgetPvpProfile(item.stats);
+  const quality = Number(item.quality ?? 1);
+  const maxCondition = Math.max(1, Math.round(Number(item.maxCondition ?? item.maxDurability ?? 100) || 100));
+  const condition = Math.max(0, Math.round(Number(item.condition ?? item.durability ?? maxCondition) || maxCondition));
+  const reliability = Math.round(Number(item.reliability ?? 1) * 100);
+  const lines = [
+    pvpProfile ? `PvP-профиль: ${pvpProfile}` : "",
+    `Состояние: качество x${formatNumber(quality)} | до ремонта ${condition}/${maxCondition}`,
+    `Надёжность: ${reliability}%${item.isBroken ? " | сломан" : ""}`,
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+function formatGadgetInfoBlock(item: {
+  stats?: Record<string, number>;
+  quality?: number;
+  condition?: number;
+  maxCondition?: number;
+  durability?: number;
+  maxDurability?: number;
+  reliability?: number;
+  isBroken?: boolean;
+}) {
+  const statLine = formatGadgetStatLine(item.stats);
+  const detailsLine = formatGadgetRuntimeDetails(item);
+  return [
+    statLine ? `Характеристики: ${statLine}` : "",
+    detailsLine,
+  ].filter(Boolean).join("\n");
+}
+
+function formatRarityLabel(rarity: string) {
+  const normalized = normalizePartRarity(rarity);
+  const labels: Record<string, string> = {
+    Common: "Обычный",
+    Rare: "Редкий",
+    Epic: "Эпический",
+    Legendary: "Легендарный",
+  };
+  return labels[normalized] || normalized;
+}
+
 function formatRarityBadge(rarity: string) {
   const normalized = normalizePartRarity(rarity);
   const icon = RARITY_LEVELS[normalized]?.icon ?? "⚪";
-  return `${icon} ${normalized}`;
+  return `${icon} ${formatRarityLabel(normalized)}`;
 }
 
 function stripLeadingRarityBadgeFromName(name: string) {
@@ -1955,6 +2060,49 @@ function formatWarehousePartLine(
   const name = stripLeadingRarityBadgeFromName(String(item.name || ""));
   const qty = Math.max(1, Number(item.quantity || 1));
   return `${prefix}${name} x${qty} (${formatRarityBadge(String(item.rarity || "Common"))})`;
+}
+
+const COMPANY_WAREHOUSE_DEVICE_FILTERS: Array<{ key: DeviceType; label: string; emoji: string }> = [
+  { key: "smartphone", label: "Смартфоны", emoji: "📱" },
+  { key: "smartwatch", label: "Часы", emoji: "⌚" },
+  { key: "tablet", label: "Планшеты", emoji: "🧾" },
+  { key: "laptop", label: "Ноутбуки", emoji: "💻" },
+  { key: "asic", label: "ASIC", emoji: "⛏" },
+];
+
+function getCompanyWarehouseFilter(chatId?: number): DeviceType | null {
+  if (!Number.isFinite(chatId)) return null;
+  const raw = String(companyWarehouseFilterByChatId.get(Number(chatId)) || "").trim();
+  return COMPANY_WAREHOUSE_DEVICE_FILTERS.some((item) => item.key === raw) ? (raw as DeviceType) : null;
+}
+
+function matchesWarehouseDeviceFilter(item: { id: string; type?: string }, filterDevice: DeviceType | null) {
+  if (!filterDevice) return true;
+  const definition = ALL_PARTS[item.id];
+  return Array.isArray(definition?.compatibleWith) && definition.compatibleWith.includes(filterDevice);
+}
+
+function buildCompanyWarehouseInlineMarkup(chatId: number) {
+  const activeFilter = getCompanyWarehouseFilter(chatId);
+  const filterRows = [
+    [
+      {
+        text: activeFilter ? "📦 Все" : "📦 Все ✓",
+        callback_data: "company:warehouse_filter:all",
+      },
+    ],
+    ...COMPANY_WAREHOUSE_DEVICE_FILTERS.reduce<Array<Array<{ text: string; callback_data: string }>>>((rows, item, index) => {
+      const button = {
+        text: `${item.emoji}${activeFilter === item.key ? "✓" : ""}`,
+        callback_data: `company:warehouse_filter:${item.key}`,
+      };
+      const rowIndex = Math.floor(index / 3);
+      if (!rows[rowIndex]) rows[rowIndex] = [];
+      rows[rowIndex].push(button);
+      return rows;
+    }, []),
+  ];
+  return { inline_keyboard: filterRows };
 }
 
 function formatNotices(notices: string[]) {
@@ -1980,7 +2128,7 @@ function formatBankProduct(product: GameBankProduct | null, city: string, gramBa
   const currency = getCurrencySymbol(city);
   return [
     `🏦 ${product.type === "credit" ? "Кредит" : "Вклад"}: ${product.name}`,
-    `Сумма: ${currency}${Math.round(product.amount)}, дней: ${Math.ceil(product.daysLeft)}`,
+    `Сумма: ${currency}${Math.round(product.amount)}, осталось: ${formatDurationShort(Math.max(0, product.daysLeft) * 60_000)}`,
     `${product.type === "credit" ? "К возврату" : "К получению"}: ${currency}${Math.round(product.totalReturn)}`,
     `🪙 GRM: ${formatGramValue(gramBalance)} GRM`,
   ].join("\n");
@@ -2186,6 +2334,11 @@ async function formatPlayerProfileFrom(
   const companyLine = membership
     ? `🏢 Компания: ${membership.company.name} (${formatCompanyRole(membership.role)})`
     : "🏢 Компания: нет";
+  const professionBlock = profession
+    ? `🎓 Профессия: ${profession.emoji} ${profession.name} (/profession)`
+    : Number(user.level || 0) >= PROFESSION_UNLOCK_LEVEL
+      ? "🎓 Профессия: не выбрана"
+      : "";
   const stocksLine = holdings.length
     ? [
         `📈 Ценные бумаги: ${getCurrencySymbol(user.city)}${formatNumber(stockSnapshot.portfolioValue)}`,
@@ -2199,7 +2352,7 @@ async function formatPlayerProfileFrom(
     "━━━━━━━━━━━━━━",
     `👤 Ник: ${user.username}`,
     `🏙 Город: ${user.city}`,
-    profession ? `🎓 Профессия: ${profession.emoji} ${profession.name}` : Number(user.level || 0) >= PROFESSION_UNLOCK_LEVEL ? "🎓 Профессия: не выбрана" : "",
+    professionBlock,
     companyLine,
     "━━━━━━━━━━━━━━",
     `⭐ Уровень: ${user.level}   📈 Опыт: ${user.experience}/100`,
@@ -2252,30 +2405,70 @@ async function maybePromptAdvancedPersonality(token: string, chatId: number, use
 
 function buildProfessionSelectText() {
   return [
-    `🎓 Ты достиг ${PROFESSION_UNLOCK_LEVEL} уровня.`,
-    "Выбери профессию:",
+    `🎓 Ты достиг ${PROFESSION_UNLOCK_LEVEL} уровня и теперь можешь выбрать профессию.`,
     "",
-    ...PROFESSIONS.map((item, index) => [
-      `${index + 1}. ${item.emoji} ${item.name}`,
-      item.subtitle,
-      `Фокус: ${item.focusSkills.join(", ")}`,
-    ].join("\n")),
+    "Профессия — это твоя специализация.",
+    "Она определяет, какие навыки тебе легче развивать, в чём ты будешь сильнее в PvP и какой стиль игры тебе ближе.",
+    "Профильные навыки профессии можно прокачивать выше обычного лимита.",
+    "",
+    "Что даёт профессия:",
+    "— бонусы к профильным навыкам",
+    "— усиление в PvP",
+    "— повышенный предел развития ключевого навыка",
+    "",
+    "Без выбранной профессии PvP недоступно.",
+    "",
+    "Выбери специализацию:",
+    "",
+    ...PLAYABLE_PROFESSIONS.map((item) => `${item.emoji} ${item.name} — ${item.summary}`),
   ].join("\n\n");
 }
 
 function buildProfessionSelectInlineMarkup() {
   return buildCompanyInlineMenu(
-    PROFESSIONS.map((item) => [
+    PLAYABLE_PROFESSIONS.map((item) => [
       { text: `${item.emoji} ${item.name}`, callback_data: `profession:pick:${item.id}` },
     ]),
   );
 }
 
-async function maybePromptProfession(token: string, chatId: number, user: User) {
+function buildProfessionConfirmText(selected: ReturnType<typeof getProfessionById>) {
+  if (!selected) return "Профессия выбрана.";
+  const skillLines = Object.entries(selected.pvpBonuses.skillMultipliers)
+    .filter(([, multiplier]) => Number(multiplier || 1) > 1)
+    .map(([skill, multiplier]) => `— +${Math.round((Number(multiplier) - 1) * 100)}% к ${SKILL_LABELS[skill as SkillName]} в PvP`);
+  const roundLines = Object.entries(selected.pvpBonuses.roundMultipliers)
+    .filter(([, multiplier]) => Number(multiplier || 1) > 1)
+    .map(([round, multiplier]) => {
+      const roundLabel = round === "concept" ? "Проектирование" : round === "core" ? "Разработка" : "Отладка";
+      return `— +${Math.round((Number(multiplier) - 1) * 100)}% в раунде «${roundLabel}»`;
+    });
+  return [
+    `✅ Ты выбрал профессию ${selected.name}.`,
+    "",
+    "Твои бонусы:",
+    ...skillLines,
+    ...roundLines,
+    `— ${SKILL_LABELS[selected.skillCapBonus.skill as SkillName]} можно прокачивать выше обычного лимита`,
+    "",
+    "Теперь тебе доступно PvP.",
+  ].join("\n");
+}
+
+async function maybePromptProfession(
+  token: string,
+  chatId: number,
+  user: User,
+  options: { force?: boolean } = {},
+) {
   if (!canSelectProfession(user)) return false;
+  if (!options.force && getProfessionPromptShown(user)) return false;
   await sendMessage(token, chatId, buildProfessionSelectText(), {
     reply_markup: buildProfessionSelectInlineMarkup(),
   });
+  if (!options.force) {
+    await setProfessionPromptShown(user.id, true);
+  }
   return true;
 }
 
@@ -2319,7 +2512,7 @@ function formatJobsMenu(snapshot: Snapshot) {
       const exp = snapshot.user.personality === "workaholic" ? Math.floor(job.expReward * 1.2) : job.expReward;
       const dropChance = getJobDropChance(job.expReward, snapshot.game.jobDropPity);
       const energyCost = getJobWorkEnergyCost(job);
-      return `${index + 1}. ${job.name}\nНаграда: ${currency}${money}, XP: ${exp}, 🎁 ${dropChance}%\nТребования: ${formatStats(job.minStats)}\n⚡ Энергия работы: -${Math.round(energyCost * 100)}`;
+      return `${index + 1}. ${job.name}\nНаграда: ${currency}${money}, XP: ${exp}, 🎁 ${dropChance}%, ⚡: -${Math.round(energyCost * 100)}\nТребования: ${formatStats(job.minStats)}`;
     }),
     "",
     `Текущая энергия работы: ${formatEnergyPercent(snapshot.game.workTime)}`,
@@ -2403,7 +2596,7 @@ async function runJobSelection(
       await maybePromptAdvancedPersonality(token, chatId, result.user);
     }
     if (!result.failed && player.level < PROFESSION_UNLOCK_LEVEL && result.user.level >= PROFESSION_UNLOCK_LEVEL) {
-      await maybePromptProfession(token, chatId, result.user);
+      await maybePromptProfession(token, chatId, result.user, { force: false });
     }
     return { ok: true as const };
   } catch (error) {
@@ -2763,13 +2956,14 @@ async function formatGlobalEventsMenu(player?: User | null) {
 
 function formatPvpResultText(result: any) {
   const rounds = Array.isArray(result?.rounds) ? result.rounds : [];
-  const labelMap: Record<string, string> = { concept: "Концепт", core: "Ядро", tests: "Тесты" };
+  const labelMap: Record<string, string> = { concept: "Проектирование", core: "Разработка", tests: "Отладка" };
   const roundsText = rounds.map((round: any, idx: number) => {
     const isPlayerA = String(round.playerAUserId || "") === String(result?.userId || "");
     const myScore = isPlayerA ? Number(round.scoreA || 0) : Number(round.scoreB || 0);
     const oppScore = isPlayerA ? Number(round.scoreB || 0) : Number(round.scoreA || 0);
     const mark = round.winnerUserId === result?.userId ? "🏆" : round.winnerUserId ? "💥" : "🤝";
-    return `${idx + 1}. ${labelMap[String(round.round || "")] || String(round.round || "Этап")}: ты ${myScore.toFixed(1)} / ${Number(round.targetScore || 0).toFixed(1)} | соперник ${oppScore.toFixed(1)} ${mark}`;
+    const explanation = String(isPlayerA ? round.explanationA || "" : round.explanationB || "");
+    return `${idx + 1}. ${labelMap[String(round.round || "")] || String(round.round || "Этап")}: ты ${myScore.toFixed(1)} | соперник ${oppScore.toFixed(1)} ${mark}${explanation ? `\n   ${explanation}` : ""}`;
   });
   const resultHeadline = result?.isDraw
     ? "🤝 ИТОГ: НИЧЬЯ"
@@ -2786,6 +2980,7 @@ function formatPvpResultText(result: any) {
     "⚔️ PvP duel result",
     `Соперник: ${result?.opponentName || "—"}`,
     resultHeadline,
+    `Счёт по раундам: ${rounds.filter((round: any) => round.winnerUserId === result?.userId).length}:${rounds.filter((round: any) => round.winnerUserId && round.winnerUserId !== result?.userId).length}`,
     ratingLine,
     rewardLine,
     `⚡ Энергия дуэли: -${Math.round(Number(result?.energyCost || 0) * 100)}%`,
@@ -2842,10 +3037,19 @@ function formatParticipantPvpEventBlock(input: {
 function formatPvpStageSnapshotText(activeDuel: any, stageView: any) {
   const myPercent = Number(stageView?.myCompleted ? 100 : stageView?.myPercent || 0);
   const opponentPercent = Number(stageView?.opponentCompleted ? 100 : stageView?.opponentPercent || 0);
+  const stageHints: Record<string, string> = {
+    concept: "Сейчас решают Design + Analytics.",
+    core: "Сейчас решает Coding.",
+    tests: "Сейчас решают Testing + Attention.",
+  };
+  const stageIndex = Array.isArray(activeDuel?.stages)
+    ? Math.max(0, activeDuel.stages.findIndex((stage: any) => String(stage?.key || "") === String(stageView?.key || ""))) + 1
+    : 0;
   return [
-    "[BUILD LOG]",
+    "[DUEL LIVE]",
     `${activeDuel?.myName || "Ты"} vs ${activeDuel?.opponentName || "Соперник"}`,
-    `Фаза: ${stageView?.label || activeDuel?.currentStageLabel || "Подготовка"}`,
+    `Раунд ${stageIndex || "?"}/3 — ${stageView?.label || activeDuel?.currentStageLabel || "Подготовка"}`,
+    stageHints[String(stageView?.key || "")] || "",
     formatParticipantPvpEventBlock({
       actorLabel: "Ты",
       kind: activeDuel?.myLatestEventKind,
@@ -2872,15 +3076,14 @@ function formatPvpStageSnapshotText(activeDuel: any, stageView: any) {
 
 function buildPvpBoostInlineKeyboard(activeDuel?: any) {
   const myBoosts = new Set(Array.isArray(activeDuel?.myBoosts) ? activeDuel.myBoosts : []);
+  const catalog = getPvpDailyBoostCatalog();
+  const rows = catalog.map((boost) => {
+    const label = myBoosts.has(boost.id) ? `${boost.name} ✓` : `${boost.name} ${boost.costGram} GRM`;
+    return [{ text: label, callback_data: `pvp_boost:buy:${boost.id}` }];
+  });
   return {
     inline_keyboard: [
-      [
-        { text: myBoosts.has("overclock_cpu") ? "CPU ✓" : "CPU 50 GRAM", callback_data: "pvp_boost:buy:overclock_cpu" },
-        { text: myBoosts.has("qa_outsource") ? "Debugger ✓" : "Debugger 100 GRAM", callback_data: "pvp_boost:buy:qa_outsource" },
-      ],
-      [
-        { text: myBoosts.has("energy_drink") ? "Serum ✓" : "Serum 30 GRAM", callback_data: "pvp_boost:buy:energy_drink" },
-      ],
+      ...rows,
       [
         { text: "▶️ Старт", callback_data: "pvp_boost:start" },
       ],
@@ -2891,16 +3094,21 @@ function buildPvpBoostInlineKeyboard(activeDuel?: any) {
 function formatPvpActiveDuelText(activeDuel: any) {
   if (activeDuel?.awaitingStart) {
     const remainingSec = Math.max(0, Math.ceil(Number(activeDuel?.preparationRemainingMs || 0) / 1000));
+    const shopLines = getPvpDailyBoostCatalog().map((boost) => `• ${boost.name}: ${boost.description}`);
     return [
       "[PRE-DUEL SHOP]",
       `${activeDuel?.myName || "Ты"} vs ${activeDuel?.opponentName || "Соперник"}`,
-      "Матч найден. Перед стартом можно докупить boosts за GRAM.",
+      "Матч найден. Перед стартом можно выбрать 1 PvP-предмет.",
       `Автостарт через: ${remainingSec} сек.`,
-      `CPU: +20% к Coding`,
-      `Debugger: иммунитет к негативным событиям`,
-      `Serum: снижает расход энергии`,
+      "Раунды дуэли:",
+      "1. Проектирование — Design + Analytics",
+      "2. Разработка — Coding",
+      "3. Отладка — Testing + Attention",
       "",
-      `Текущий лог: > ${activeDuel?.latestLog || "Команды готовят окружение..."}`,
+      ...shopLines,
+      activeDuel?.myGadgetName ? `Твой гаджет: ${activeDuel.myGadgetName}` : "",
+      "",
+      `Текущий лог: > ${activeDuel?.latestLog || "Команды готовят билд..."}`,
     ].join("\n");
   }
 
@@ -2913,16 +3121,16 @@ function formatPvpActiveDuelText(activeDuel: any) {
 function formatPvpCompletedDuelText(result: any) {
   const stageMeta: Record<string, { label: string; description: string }> = {
     concept: {
-      label: "Концепт",
-      description: "Идея собрана и прототип утверждён.",
+      label: "Проектирование",
+      description: "Раунд проектирования завершён.",
     },
     core: {
-      label: "Ядро",
-      description: "Основная разработка завершена.",
+      label: "Разработка",
+      description: "Раунд разработки завершён.",
     },
     tests: {
-      label: "Тесты и релиз",
-      description: "Финальный билд проверен и отправлен в релиз.",
+      label: "Отладка",
+      description: "Раунд отладки завершён.",
     },
   };
 
@@ -2935,6 +3143,7 @@ function formatPvpCompletedDuelText(result: any) {
     return [
       `${index + 1}. ${meta.label} [${buildPvpProgressBar(100)}] готово`,
       `   Ты: ${myScore.toFixed(1)}/${Number(round?.targetScore || 0).toFixed(1)} | Соперник: ${opponentScore.toFixed(1)}`,
+      `   ${String(isPlayerA ? round?.explanationA || "" : round?.explanationB || "")}`.trim(),
     ].join("\n");
   });
 
@@ -2952,6 +3161,13 @@ function formatPvpCompletedDuelText(result: any) {
 async function formatPvpMenu(user: User) {
   try {
     const status = await callInternalApi("GET", `/api/pvp/status?userId=${encodeURIComponent(user.id)}`) as any;
+    if (status?.access && !status.access.ok) {
+      return [
+        "⚔️ PvP Arena",
+        "━━━━━━━━━━━━━━",
+        String(status.accessMessage || getPvpAccessMessage(status.access.reason || "level")),
+      ].join("\n");
+    }
     const queueLine = status?.activeDuel
       ? `идёт дуэль: ${status.activeDuel.currentStageLabel} (${Number(status.activeDuel.overallProgress || 0)}%)`
       : status?.inQueue
@@ -2964,6 +3180,7 @@ async function formatPvpMenu(user: User) {
       `Бои: ${Number(status?.matches || user.pvpMatches || 0)} | Победы: ${Number(status?.wins || user.pvpWins || 0)} | Поражения: ${Number(status?.losses || user.pvpLosses || 0)}`,
       `Лимит в день: ${Number(status?.dailyMatches || 0)}/${Number(status?.dailyLimit || 10)}`,
       `Очередь: ${queueLine}`,
+      status?.boostRotation?.title ? `Ротация PvP-магазина: ${String(status.boostRotation.title)}` : "",
       "",
       "Команды:",
       "• /pvp_find — найти соперника",
@@ -3061,7 +3278,7 @@ function startPvpQueuePolling(token: string, chatId: number, userId: string) {
     } catch {
       // silent retry
     }
-  }, 3000);
+  }, 1000);
   pvpQueuePollTimerByChatId.set(chatId, timer);
 }
 
@@ -3085,7 +3302,7 @@ function resolveHackathonSabotageType(raw: string) {
 async function formatSabotageMenu(user: User) {
   const membership = await getPlayerCompanyContext(user.id);
   if (!membership) {
-    return "Ты не состоишь в компании. Открой /company.";
+    return "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».";
   }
   const state = getWeeklyHackathonState();
   const sabotageState = getWeeklyHackathonSabotageState(membership.company.id);
@@ -3121,7 +3338,7 @@ async function formatSabotageMenu(user: User) {
 
 function formatShopMenu(snapshot: Snapshot, tab: ShopMenuTab = "all") {
   const currency = getCurrencySymbol(snapshot.user.city);
-  const items = listShopItems();
+  const items = listShopItems(snapshot.user.city);
   const trainingItems = items.filter((item) => item.type === "consumable");
   const gadgetItems = items.filter((item) => item.type === "gear");
   const consumableUseLimit = getConsumableTrainingUseLimitForLevel(snapshot.user.level);
@@ -3158,10 +3375,17 @@ function formatShopMenu(snapshot: Snapshot, tab: ShopMenuTab = "all") {
       const minLevelLine = tab === "parts" && String(item.rarity || "").toLowerCase() !== "common"
         ? `\nМин. уровень: ${String(item.rarity || "").toLowerCase() === "rare" ? 3 : 5}`
         : "";
-      return `${index + 1}. ${item.name}  /buy_${index + 1}\n${currency}${item.price} (${item.rarity}) ${afford}${minLevelLine}\n${formatStats(item.stats)}`;
+      if (tab === "gadgets") {
+        return [
+          `${index + 1}. ${item.name}`,
+          `${formatShopGearPreview({ rarity: item.rarity, stats: item.stats as Record<string, number> })}`,
+          `${currency}${item.price} (${formatRarityLabel(String(item.rarity || "Common"))}) ${afford}`,
+        ].join("\n");
+      }
+      return `${index + 1}. ${item.name}\n${currency}${item.price} (${formatRarityLabel(String(item.rarity || "Common"))}) ${afford}${minLevelLine}\n${formatStats(item.stats)}`;
     }),
     "",
-    "Покупка: отправь номер товара, /buy <номер> или нажми быстрый /buy_N рядом с позицией.",
+    "Покупка: выбери товар кнопкой ниже или просто отправь его номер.",
   ].join("\n\n");
 }
 
@@ -3270,7 +3494,7 @@ function buildInventoryMenu(snapshot: Snapshot) {
       }
       return [
         `${itemIndex}. ${item.name} x${Math.max(1, item.quantity || 1)} [${ITEM_TYPE_LABELS[item.type]}${equipped}]${durability}${actionLine ? `  ${actionLine}` : ""}`,
-        `${formatStats(item.stats)}`,
+        item.type === "gadget" ? formatGadgetInfoBlock(item) : `${formatStats(item.stats)}`,
       ].join("\n");
     }),
     "",
@@ -3359,16 +3583,26 @@ function buildRatingInlineButtons(entity: RatingEntity, sort: RatingSort) {
 }
 
 function formatBankProgramsMenu(type: BankProductType, snapshot: Snapshot) {
-  const programs = type === "credit" ? listCreditPrograms() : listDepositPrograms();
+  const programs = type === "credit" ? listCreditPrograms(snapshot.user.city) : listDepositPrograms(snapshot.user.city);
   const currency = getCurrencySymbol(snapshot.user.city);
   return [
-    type === "credit" ? "🏦 Кредитные программы" : "🏦 Депозитные программы",
+    type === "credit"
+      ? "🏦 Кредиты\n\nКредит даёт деньги сразу, чтобы быстрее купить гаджет, расходник или усилить подготовку к PvP. Потом сумму нужно вернуть с процентами."
+      : "🏦 Вклады\n\nВклад позволяет либо спокойно приумножить деньги, либо рискнуть ради большей прибыли, либо подготовить временный бонус к PvP.",
     ...programs.map((program, index) =>
-      `${index + 1}. ${program.name}\nУровень: ${program.minLevel}+ | ${program.interest}%\nСумма: ${currency}${program.minAmount}-${currency}${program.maxAmount}\n${program.description}`
+      `${index + 1}. ${program.name}\nУровень: ${program.minLevel}+ | Время: ${formatDurationShort(program.durationMinutes * 60_000)}\nСумма: ${currency}${program.minAmount}-${currency}${program.maxAmount}\n${program.description}${
+        type === "credit"
+          ? `\nВозврат: ${program.interest}% сверху`
+          : program.depositKind === "safe"
+            ? `\nДоход: +${Math.round(Number(program.interest || 0))}%`
+            : program.depositKind === "risky"
+            ? `\nШанс успеха: ${Math.round(Number(program.riskySuccessChance || 0) * 100)}% | Доход: до +${Math.round(Number(program.riskyInterest || 0))}%`
+              : `\nБонус после завершения: +${Math.round(Number(program.pvpRewardBonusPct || 0) * 100)}% к репутации PvP, +${Math.round(Number(program.pvpXpBonusPct || 0) * 100)}% XP, +${Math.round(Number(program.pvpRatingBonusFlat || 0))} рейтинга`
+      }`
     ),
     "",
-    "Выбери программу кнопкой или ответь сообщением: <номер> <сумма> <дни>",
-    "Пример ответа: 1 10000 14",
+    "Выбери программу кнопкой или ответь сообщением: <номер> <сумма>",
+    "Пример ответа: 1 800",
   ].join("\n\n");
 }
 
@@ -3543,7 +3777,7 @@ function formatCompanyDepartmentStatus(
     ? "Максимальный уровень"
     : getDepartmentBonusText(department, nextLevel);
   const check = getDepartmentUpgradeCheck(companyEconomy, department);
-  const status = check.canUpgrade ? "✅ Доступно" : `в›” ${check.reason ?? "РќРµРґРѕСЃС‚СѓРїРЅРѕ"}`;
+  const status = check.canUpgrade ? "✅ Доступно" : `⛔ ${check.reason ?? "Недоступно"}`;
   return {
     currentLevel,
     nextCost,
@@ -3736,14 +3970,14 @@ function formatTutorialAdvanceNotice(event: TutorialEventApiResult | null, city?
   if (reward.xp > 0) rewardParts.push(`+${reward.xp} XP`);
   if (reward.reputation > 0) rewardParts.push(`+${reward.reputation} репутации`);
   const rewardText = rewardParts.length ? ` Награда: ${rewardParts.join(", ")}.` : "";
-  return `🎓 Обучение: ${event.progressText}. Следующий шаг: ${event.stepContent?.title ?? "см. /tutorial"}.${rewardText} Продолжи: /tutorial`;
+  return `🎓 Обучение: ${event.progressText}. Следующий шаг: ${event.stepContent?.title ?? "см. раздел «Обучение»"}.${rewardText} Продолжай через кнопку «🎓 Обучение».`;
 }
 
 async function getTutorialContinueLine(userId: string): Promise<string | null> {
   try {
     const snapshot = await getTutorialSnapshotByUser(userId);
     if (snapshot.state.isCompleted) return null;
-    return "‼️ Обучение не завершено: продолжи /tutorial";
+    return "‼️ Обучение не завершено: продолжи через кнопку «🎓 Обучение».";
   } catch {
     return null;
   }
@@ -3773,7 +4007,24 @@ async function getCompanyExclusiveSnapshot(companyId: string) {
     active: any;
     catalog: any[];
     produced: any[];
+    upgradeCandidates?: any[];
     productionOrder?: CompanyBlueprintSnapshot["productionOrder"] | null;
+  };
+}
+
+async function previewCompanyExclusiveUpgrade(
+  companyId: string,
+  userId: string,
+  gadgetId: string,
+  seedParts: Array<{ id: string; rarity: string; type: string; name?: string }>,
+) {
+  return await callInternalApi("POST", `/api/companies/${companyId}/exclusive/preview`, {
+    userId,
+    gadgetId,
+    seedParts,
+  }) as {
+    blueprint: any;
+    companyBalanceAfterStart?: number;
   };
 }
 
@@ -4009,11 +4260,33 @@ function buildCompanyExclusiveProduceInlineMarkup(
   };
 }
 
+function buildCompanyExclusiveStartInlineMarkup(
+  snapshot: Awaited<ReturnType<typeof getCompanyExclusiveSnapshot>>,
+) {
+  const candidates = Array.isArray(snapshot.upgradeCandidates) ? snapshot.upgradeCandidates : [];
+  const rows = candidates.slice(0, 20).map((item: any) => [
+    {
+      text: `${item.name}${item.exclusiveLevel ? ` · EX+${item.exclusiveLevel}` : ""}`,
+      callback_data: `company:exclusive_pick:${item.id}`,
+    },
+  ]);
+  return { inline_keyboard: rows };
+}
+
 function buildCompanyProductionConfirmInlineMarkup(kind: "standard" | "exclusive") {
   return {
     inline_keyboard: [
       [{ text: "✅ Запустить партию", callback_data: kind === "standard" ? "company:bp_confirm_start" : "company:exclusive_confirm_start" }],
       [{ text: "⬅️ Изменить количество", callback_data: kind === "standard" ? "company:bp_confirm_back" : "company:exclusive_confirm_back" }],
+    ],
+  };
+}
+
+function buildCompanyExclusiveUpgradeConfirmInlineMarkup() {
+  return {
+    inline_keyboard: [
+      [{ text: "✅ Запустить EX-апгрейд", callback_data: "company:exclusive_upgrade_start" }],
+      [{ text: "⬅️ Изменить детали", callback_data: "company:exclusive_upgrade_back" }],
     ],
   };
 }
@@ -4078,6 +4351,8 @@ async function formatCompanyWarehouseSection(input: CompanyContext, chatId?: num
   }
   const capacity = Math.max(0, Number(input.company.warehouseCapacity) || 50);
   const warehouseParts = getCompanyWarehouseParts(input.company.id);
+  const warehouseFilter = getCompanyWarehouseFilter(chatId);
+  const filteredWarehouseParts = warehouseParts.filter((part) => matchesWarehouseDeviceFilter(part, warehouseFilter));
   const storedBlueprintIds = Array.from(getCompanyStoredBlueprintIds(input.company.id));
   const used = getCompanyWarehouseUsedSlots(input.company.id, snapshot.produced.length);
   const groupedGadgets = groupCompanyProducedGadgets(snapshot.produced ?? []);
@@ -4088,17 +4363,22 @@ async function formatCompanyWarehouseSection(input: CompanyContext, chatId?: num
     );
     companyWarehousePartRefsByChatId.set(
       Number(chatId),
-      warehouseParts.map((part, index) => `p${index + 1}`),
+      filteredWarehouseParts.map((part, index) => `p${index + 1}`),
     );
   }
-  const partLabel = warehouseParts.length
-    ? warehouseParts.map((part, index) => [
+  const filterLabel = warehouseFilter
+    ? COMPANY_WAREHOUSE_DEVICE_FILTERS.find((item) => item.key === warehouseFilter)?.label ?? warehouseFilter
+    : "Все категории";
+  const partLabel = filteredWarehouseParts.length
+    ? filteredWarehouseParts.map((part, index) => [
         formatWarehousePartLine(part, index),
         input.role === "owner" || input.role === "manager"
           ? `Аукцион: /company_auction_list p${index + 1} <цена> [часы]`
           : "",
       ].filter(Boolean).join("\n")).join("\n")
-    : "Запчастей на складе нет.";
+    : warehouseParts.length
+      ? "Для выбранного типа гаджета запчастей на складе нет."
+      : "Запчастей на складе нет.";
   const blueprintLabel = storedBlueprintIds.length
     ? storedBlueprintIds.map((id, index) => `${index + 1}. ${id}`).join("\n")
     : "Разработанных чертежей на складе нет.";
@@ -4110,11 +4390,11 @@ async function formatCompanyWarehouseSection(input: CompanyContext, chatId?: num
     `Вместимость: ${used}/${capacity}`,
     "",
     groupedGadgets.length
-      ? groupedGadgets.map(({ representative, quantity }, index) =>
+        ? groupedGadgets.map(({ representative, quantity }, index) =>
           [
             `${index + 1}. ${representative.name} x${quantity}`,
-            `Категория: ${representative.category} | Качество: x${formatNumber(representative.quality)}`,
-            formatGadgetStatLine(representative.stats) ? `Характеристики: ${formatGadgetStatLine(representative.stats)}` : "",
+            `Категория: ${representative.category}${representative.exclusiveLevel ? ` | Уровень: EX+${representative.exclusiveLevel}` : ""}`,
+            formatGadgetInfoBlock(representative),
             representative.exclusiveBonusLabel ? `Бонус: ${representative.exclusiveBonusLabel}` : "",
             `Цена: ${representative.minPrice}-${representative.maxPrice}`,
             input.role === "owner" || input.role === "manager"
@@ -4125,6 +4405,7 @@ async function formatCompanyWarehouseSection(input: CompanyContext, chatId?: num
       : "Гаджетов на складе нет.",
     "",
     "🧩 Запчасти:",
+    `Фильтр: ${filterLabel}`,
     partLabel,
     "",
     "📐 Разработанные чертежи:",
@@ -4189,8 +4470,8 @@ async function formatCompanyBureauSection(input: CompanyContext, chatId: number,
       ? `Производство: ${snapshot.productionOrder.blueprintName} x${snapshot.productionOrder.quantity} (${snapshot.productionOrder.status === "ready_to_claim" ? "готово к выдаче" : `ещё ${formatProductionOrderRemaining(snapshot.productionOrder)}`})`
       : "Производство: нет активной партии",
     exclusiveSnapshot?.active
-      ? `Эксклюзив: ${exclusiveSnapshot.active.blueprint?.name ?? "прототип"} (${exclusiveSnapshot.active.status})`
-      : "Эксклюзив: нет активного прототипа",
+      ? `Эксклюзив: ${exclusiveSnapshot.active.blueprint?.targetGadgetName ?? exclusiveSnapshot.active.blueprint?.name ?? "апгрейд"} (${exclusiveSnapshot.active.status})`
+      : "Эксклюзив: нет активного EX-апгрейда",
     snapshot.active ? `Прогресс: ${snapshot.active.progressHours}ч` : "",
     activeBlueprint?.time ? `Нужно: ${activeBlueprint.time}ч` : "",
     "",
@@ -4452,6 +4733,7 @@ async function sendCompanyContractPartsPicker(
 async function formatCompanyExclusiveSection(input: CompanyContext, playerId: string, chatId: number) {
   const snapshot = await getCompanyExclusiveSnapshot(input.company.id);
   const warehouseParts = getCompanyWarehouseParts(input.company.id);
+  const upgradeCandidates = Array.isArray(snapshot.upgradeCandidates) ? snapshot.upgradeCandidates : [];
   const refs = warehouseParts.map((item) => `${item.id}::${item.rarity}`);
   companyExclusivePartRefsByChatId.set(chatId, refs);
   const selectedRefs = (companyExclusiveSelectedPartRefsByChatId.get(chatId) ?? []).filter((ref) => refs.includes(ref));
@@ -4466,19 +4748,15 @@ async function formatCompanyExclusiveSection(input: CompanyContext, playerId: st
 
   const activeText = snapshot.active
     ? [
-        `Активный прототип: ${snapshot.active.blueprint?.name ?? "без имени"}`,
-        `Статус: ${snapshot.active.status === "in_progress" ? "идёт исследование" : snapshot.active.status === "production_ready" ? "готов к выпуску" : "провал"}`,
-        `Общая готовность: ${research.percent}%`,
-        `Участники исследования: ${Array.isArray(snapshot.active.participantUserIds) ? snapshot.active.participantUserIds.length : 1}`,
-        ...EXCLUSIVE_RESEARCH_SKILLS.map((skill) => {
-          const required = Math.max(0, Number(research.required[skill] ?? 0));
-          if (required <= 0) return "";
-          const invested = Math.min(required, Math.max(0, Number(research.invested[skill] ?? 0)));
-          return `${getExclusiveResearchLabel(skill)}: ${formatNumber(invested)}/${formatNumber(required)}`;
-        }).filter(Boolean),
+        `Активный апгрейд: ${snapshot.active.blueprint?.targetGadgetName ?? snapshot.active.blueprint?.name ?? "без имени"}`,
+        `Статус: ${snapshot.active.status === "in_progress" ? "идёт апгрейд" : snapshot.active.status === "production_ready" ? "готов к выпуску" : "провал"}`,
+        snapshot.active.readyAt
+          ? `До результата: ${formatDurationShort(Math.max(0, Number(snapshot.active.readyAt || 0) - Date.now()))}`
+          : `Общая готовность: ${research.percent}%`,
+        snapshot.active.blueprint?.upgradeLevel ? `Целевой уровень: EX+${snapshot.active.blueprint.upgradeLevel}` : "",
         `Шанс успеха: ${Math.round(Number(snapshot.active.blueprint?.successChance || 0) * 100)}%`,
         `Стоимость запуска: ${formatNumber(Number(snapshot.active.blueprint?.developmentCostGrm || 0))} GRM`,
-        `Бонус: ${snapshot.active.blueprint?.bonusLabel ?? "—"}`,
+        `Бонус апгрейда: ${snapshot.active.blueprint?.bonusLabel ?? "—"}`,
       ].join("\n")
     : "Активной эксклюзивной разработки нет.";
 
@@ -4490,7 +4768,11 @@ async function formatCompanyExclusiveSection(input: CompanyContext, playerId: st
     ? snapshot.catalog.map((item, index) =>
         `${index + 1}. ${item.name}\n${item.flavor}\nБонус: ${item.bonusLabel}\nЛимит: ${item.remainingUnits}/${item.totalUnits} | Выпуск: ${item.productionCostGram} GRM`
       ).join("\n\n")
-    : "Готовых эксклюзивных чертежей пока нет.";
+    : "Готовых EX-апгрейдов пока нет.";
+
+  const candidatesText = upgradeCandidates.length
+    ? upgradeCandidates.map((item, index) => `${index + 1}. ${item.name}${item.exclusiveLevel ? ` (EX+${item.exclusiveLevel})` : ""}`).join("\n")
+    : "На складе компании нет гаджетов для апгрейда.";
 
   const partsText = warehouseParts.length
     ? pageItems.map((item, index) => formatWarehousePartLine(item, pageStart + index)).join("\n")
@@ -4515,26 +4797,43 @@ async function formatCompanyExclusiveSection(input: CompanyContext, playerId: st
     "Лимитная линейка:",
     catalogText,
     "",
+    "Гаджеты для апгрейда:",
+    candidatesText,
+    "",
     `Баланс компании: ${formatNumber(Number(input.company.balance || 0))} GRM`,
     "",
     "Детали склада компании:",
     partsText,
     warehouseParts.length > COMPANY_EXCLUSIVE_PARTS_PAGE_SIZE ? `Страница: ${currentPage + 1}/${totalPages}` : "",
     "",
-    `Выбрано деталей: ${selectedRefs.length}/6`,
+    `Выбрано деталей: ${selectedRefs.length}/${EXCLUSIVE_UPGRADE_REQUIRED_PARTS}`,
     selectedText,
     "",
     isPickingParts
       ? "Выбор деталей: кнопками под сообщением."
       : "Кнопки ниже: Старт / Прогресс / Выпуск",
     isPickingParts
-      ? "Когда выберешь 3-6 деталей, нажми «🚀 Готово» или «⬅️ Назад»."
-      : "Для запуска разработки сначала укажи название прототипа.",
+      ? `Когда выберешь ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей, нажми «🚀 Готово» или «⬅️ Назад».`
+      : "Для запуска выбери обычный гаджет компании и затем подбери 5 деталей под его апгрейд.",
   ].join("\n");
 }
 
 function formatExclusiveBlueprintSummary(blueprint: any) {
   if (!blueprint) return "Характеристики: —";
+  if (blueprint.targetGadgetId) {
+    const statText = Object.entries(blueprint.baseStats || {})
+      .map(([key, value]) => `+${formatNumber(Number(value || 0))} ${key}`)
+      .join(", ");
+    return [
+      `Базовый гаджет: ${blueprint.targetGadgetName || "—"}`,
+      `Цель: EX+${Math.max(1, Number(blueprint.upgradeLevel || 1))}`,
+      `Нужно деталей: ${Math.max(0, Number(blueprint.requiredPartCount || EXCLUSIVE_UPGRADE_REQUIRED_PARTS))}`,
+      `Тип деталей: ${blueprint.requiredPartType || "подходящие по категории"}`,
+      `Характеристики после апгрейда: ${statText || "—"}`,
+      `Шанс успеха: ${Math.round(Number(blueprint.successChance || 0) * 100)}%`,
+      `Запуск: ${formatNumber(Number(blueprint.developmentCostGrm || 0))} GRM компании`,
+    ].join("\n");
+  }
   const statLabels: Record<string, string> = {
     performance: "Производительность",
     efficiency: "Эффективность",
@@ -4554,6 +4853,19 @@ function formatExclusiveBlueprintSummary(blueprint: any) {
 }
 
 function formatExclusiveProgressLiveText(project: any) {
+  if (project?.targetGadget || project?.blueprint?.targetGadgetId) {
+    const remainingMs = Math.max(0, Number(project?.readyAt || 0) - Date.now());
+    return [
+      "🌟 ЭКСКЛЮЗИВНЫЙ АПГРЕЙД",
+      "━━━━━━━━━━━━━━",
+      `Гаджет: ${project?.blueprint?.targetGadgetName ?? project?.targetGadget?.name ?? "без имени"}`,
+      `Целевой уровень: EX+${Math.max(1, Number(project?.blueprint?.upgradeLevel || 1))}`,
+      `Статус: ${project?.status === "in_progress" ? "идёт улучшение" : project?.status === "production_ready" ? "готов к выпуску" : "провал"}`,
+      `Шанс успеха: ${Math.round(Number(project?.blueprint?.successChance || 0) * 100)}%`,
+      `Осталось: ${remainingMs > 0 ? formatDurationShort(remainingMs) : "0 сек"}`,
+      formatExclusiveBlueprintSummary(project?.blueprint),
+    ].join("\n");
+  }
   const research = getExclusiveResearchState(project);
   const total = Math.max(1, Number(research.totalRequired || 1));
   const done = Math.max(0, Number(research.totalInvested || 0));
@@ -4616,12 +4928,6 @@ function buildCompanyExclusivePartsInlineMarkup(chatId: number) {
   return { inline_keyboard: rows };
 }
 
-function buildExclusiveJoinInlineMarkup(companyId: string) {
-  return {
-    inline_keyboard: [[{ text: "🤝 Присоединиться к разработке", callback_data: `company:exclusive_join:${companyId}` }]],
-  };
-}
-
 async function sendCompanyExclusivePartsPicker(
   token: string,
   chatId: number,
@@ -4631,9 +4937,9 @@ async function sendCompanyExclusivePartsPicker(
   messageId?: number,
 ) {
   const text = [
-    `🧩 Прототип: ${gadgetName}`,
+    `🧩 Апгрейд гаджета: ${gadgetName}`,
     "Выбирай детали кнопками ниже.",
-    "Когда наберёшь 3-6 деталей, нажми «Готово».",
+    `Когда наберёшь ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей, нажми «Готово».`,
     "",
     await formatCompanyExclusiveSection(membership, playerId, chatId),
   ].join("\n");
@@ -4660,6 +4966,7 @@ async function startCompanyExclusiveDevelopment(
   playerId: string,
   gadgetName: string,
   selectedRefs: string[],
+  gadgetId?: string,
 ) {
   let selectedSeedParts: Array<{ id: string; rarity: RarityName; type: any; name: string }> = [];
   try {
@@ -4679,7 +4986,7 @@ async function startCompanyExclusiveDevelopment(
   await sendMessage(
     token,
     chatId,
-    `🧠 Анализируем детали для "${gadgetName}"...\nСобираем будущие характеристики прототипа.`,
+    `🧠 Запускаем апгрейд "${gadgetName}"...\nПроверяем детали, шанс успеха и время улучшения.`,
     { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
   );
 
@@ -4687,13 +4994,14 @@ async function startCompanyExclusiveDevelopment(
     const project = await callInternalApi("POST", `/api/companies/${membership.company.id}/exclusive/start`, {
       userId: playerId,
       name: gadgetName,
+      gadgetId,
       partRefs: selectedRefs,
       seedParts: selectedSeedParts,
     }) as any;
     await sendMessage(
       token,
       chatId,
-      `🧠 Анализ завершён для "${gadgetName}".\nДля эксклюзивного гаджета рассчитаны тяжёлые требования по навыкам. Нажимай «Прогресс», чтобы вкладывать экспертизу CEO в исследование.\n\n${formatExclusiveProgressLiveText(project)}`,
+      `🧠 Апгрейд "${gadgetName}" запущен.\nТеперь улучшение идёт по времени. Нажимай «Прогресс», чтобы проверять статус и результат.\n\n${formatExclusiveProgressLiveText(project)}`,
       { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
     ) as { message_id?: number };
     const members = await storage.getCompanyMembers(membership.company.id);
@@ -4706,12 +5014,11 @@ async function startCompanyExclusiveDevelopment(
           token,
           telegramId,
           [
-            "🌟 В компании началась разработка эксклюзивного гаджета",
+            "🌟 В компании начался эксклюзивный апгрейд",
             `Компания: ${membership.company.name}`,
-            `Прототип: ${gadgetName}`,
-            "CEO запустил исследование. Можешь присоединиться и вложить свои навыки в разработку.",
+            `Гаджет: ${gadgetName}`,
+            "CEO запустил улучшение существующего гаджета до EX-версии.",
           ].join("\n"),
-          { reply_markup: buildExclusiveJoinInlineMarkup(membership.company.id) },
         );
       } catch {
         // ignore per-user delivery issues
@@ -4815,20 +5122,20 @@ async function startCompanyBlueprintDevelopment(
 function formatExclusiveProduceMenu(snapshot: Awaited<ReturnType<typeof getCompanyExclusiveSnapshot>>) {
   const catalog = snapshot.catalog ?? [];
   if (!catalog.length) {
-    return "🏭 ВЫПУСК ЭКСКЛЮЗИВОВ\n━━━━━━━━━━━━━━\nГотовых эксклюзивных чертежей пока нет.";
+    return "🏭 ВЫПУСК EX-АПГРЕЙДОВ\n━━━━━━━━━━━━━━\nГотовых EX-апгрейдов пока нет.";
   }
   return [
-    "🏭 ВЫПУСК ЭКСКЛЮЗИВОВ",
+    "🏭 ВЫПУСК EX-АПГРЕЙДОВ",
     "━━━━━━━━━━━━━━",
     ...catalog.map((item, index) => [
       `${index + 1}. ${item.name}`,
-      `Нужно запчастей: ${Math.max(1, Number(item.seedParts?.length || 0))}`,
+      item.targetGadgetName ? `База: ${item.targetGadgetName}` : `Нужно запчастей: ${Math.max(1, Number(item.seedParts?.length || 0))}`,
       `Нужно GRM компании: ${item.productionCostGram}`,
-      `Время производства: ~${Math.max(5, Math.floor(Number(item.seedParts?.length || 1) * 6))} сек.`,
+      `Время производства: ~${item.targetGadgetId ? "8 мин" : `${Math.max(5, Math.floor(Number(item.seedParts?.length || 1) * 6))} сек.`}`,
       `Лимит: ${item.remainingUnits}/${item.totalUnits}`,
     ].join("\n")),
     "",
-    "Выбери чертёж кнопкой ниже.",
+    "Выбери готовый EX-апгрейд кнопкой ниже.",
   ].join("\n\n");
 }
 
@@ -4868,21 +5175,20 @@ async function formatAuctionSection(userId: string, chatId: number) {
     "🏷 АУКЦИОН",
     "━━━━━━━━━━━━━━",
     ...listings.map((listing, index) => {
-      const ownEarlyAccess = Date.now() - Number(listing.createdAt || 0) < 5 * 60 * 1000;
+      const ownEarlyAccess = Date.now() - Number(listing.createdAt || 0) < 20 * 60 * 1000;
       const lockedText = ownEarlyAccess && membership?.company?.id !== listing.companyId
-        ? "Первые 5 минут: только для компании-разработчика"
+        ? "Первые 20 минут: только для компании-разработчика"
         : "";
       const title = listing.listingKind === "part"
         ? stripLeadingRarityBadgeFromName(String(listing.part?.name || listing.partName || "Запчасть"))
         : String(listing.gadget?.name || "Гаджет");
       return [
         `${index + 1}. ${title}`,
-        `Компания: ${listing.companyName}`,
+        `Компания: ${listing.companyName} | ${listing.saleType === "auction" ? "Аукцион" : "Фиксированная цена"}`,
         listing.listingKind === "part"
           ? `Лот: запчасть ${formatRarityBadge(String(listing.part?.rarity || listing.partRarity || "Common"))}`
-          : `Качество: x${formatNumber(Number(listing.gadget?.quality || 1))}`,
-        `Тип: ${listing.saleType === "auction" ? "Аукцион" : "Фиксированная цена"}`,
-        formatGadgetStatLine(listing.gadget?.stats) ? `Характеристики: ${formatGadgetStatLine(listing.gadget?.stats)}` : "",
+          : "",
+        listing.gadget ? formatGadgetInfoBlock(listing.gadget) : "",
         listing.listingKind === "part" && listing.part?.type ? `Категория: ${listing.part.type}` : "",
         listing.gadget?.exclusiveBonusLabel ? `Бонус: ${listing.gadget.exclusiveBonusLabel}` : "",
         listing.saleType === "auction"
@@ -4902,7 +5208,7 @@ async function buildAuctionInlineMarkup(userId: string, chatId: number) {
   marketListingRefsByChatId.set(chatId, listings.map((listing) => String(listing.id)));
   const membership = await getPlayerCompanyContext(userId);
   const rows = listings.flatMap((listing, index) => {
-    const ownEarlyAccess = Date.now() - Number(listing.createdAt || 0) < 5 * 60 * 1000;
+    const ownEarlyAccess = Date.now() - Number(listing.createdAt || 0) < 20 * 60 * 1000;
     const locked = ownEarlyAccess && membership?.company?.id !== listing.companyId;
     if (locked) return [[{ text: `🔒 ${index + 1}. Недоступно`, callback_data: "auction:locked" }]];
     if (listing.saleType === "auction") {
@@ -5347,6 +5653,7 @@ async function sendCompanyWorkSection(token: string, chatId: number, membership:
     chatId,
     membership,
     formatCompanyWorkSection,
+    buildCompanyWorkInlineButtons,
     buildCompanyReplyMarkup,
     sendMessage,
   });
@@ -5359,6 +5666,7 @@ async function sendCompanyWarehouseSection(token: string, chatId: number, member
     membership,
     playerId,
     formatCompanyWarehouseSection,
+    buildCompanyWarehouseInlineMarkup,
     getUserWithGameState,
     pendingActionByChatId,
     formatCompanyPartDepositList,
@@ -5798,6 +6106,7 @@ function buildWarehouseGadgetGroupKey(gadget: CompanyBlueprintSnapshot["produced
     category: gadget.category,
     quality: Number(gadget.quality || 0).toFixed(2),
     stats: gadget.stats || {},
+    exclusiveLevel: Number(gadget.exclusiveLevel || 0),
     bonus: gadget.exclusiveBonusLabel || "",
   });
 }
@@ -5817,8 +6126,20 @@ function groupCompanyProducedGadgets(produced: CompanyBlueprintSnapshot["produce
 }
 
 function formatGadgetStatLine(stats?: Record<string, number>) {
+  const statLabels: Record<string, string> = {
+    performance: "Производительность",
+    efficiency: "Эффективность",
+    design: "Дизайн",
+    coding: "Кодинг",
+    testing: "Тестирование",
+    analytics: "Аналитика",
+    attention: "Внимание",
+    drawing: "Рисование",
+    modeling: "3D-моделирование",
+    reliability: "Надёжность",
+  };
   return Object.entries(stats || {})
-    .map(([key, value]) => `${key}: ${formatNumber(Number(value || 0))}`)
+    .map(([key, value]) => `${statLabels[key] || key}: ${formatNumber(Number(value || 0))}`)
     .join(", ");
 }
 
@@ -6391,10 +6712,18 @@ function formatBankMenu(snapshot: Snapshot) {
         game.activeBankProduct.type === "credit" ? "🔴 Активный кредит" : "🟢 Активный вклад",
         `• ${game.activeBankProduct.name}`,
         `• Сумма: ${currency}${Math.round(game.activeBankProduct.amount)}`,
-        `• Осталось дней: ${Math.ceil(game.activeBankProduct.daysLeft)}`,
+        `• Осталось: ${formatDurationShort(Math.max(0, game.activeBankProduct.daysLeft) * 60_000)}`,
         `• ${game.activeBankProduct.type === "credit" ? "К возврату" : "К получению"}: ${currency}${Math.round(game.activeBankProduct.totalReturn)}`,
       ].join("\n")
     : "⚪ Активных банковских продуктов нет";
+  const pvpBoost = game.activePvpBankBoost
+    ? [
+        "⚔️ PvP-бонус от вклада",
+        `• ${game.activePvpBankBoost.sourceName}`,
+        `• Осталось: ${formatDurationShort(Math.max(0, game.activePvpBankBoost.expiresAt - Date.now()))}`,
+        `• Победа даёт: +${Math.round(game.activePvpBankBoost.rewardBonusPct * 100)}% к репутации, +${Math.round(game.activePvpBankBoost.xpBonusPct * 100)}% XP, +${Math.round(game.activePvpBankBoost.ratingBonusFlat)} рейтинга`,
+      ].join("\n")
+    : null;
 
   return [
     "🏦 БАНКОВСКИЙ ЦЕНТР",
@@ -6404,11 +6733,13 @@ function formatBankMenu(snapshot: Snapshot) {
     `💱 Курс: 1 локальная единица = ${formatRate(getLocalToGramRate(user.city))} GRM`,
     "━━━━━━━━━━━━━━",
     active,
+    ...(pvpBoost ? ["", pvpBoost] : []),
     "",
-    "🚧 Вклады и кредиты пока временно недоступны в городе.",
+    "📉 Кредиты помогают ускорить развитие, но потом долг нужно погасить.",
+    "📈 Вклады дают либо короткую прибыль, либо временный PvP-бонус.",
     "",
     "Выбери действие кнопками ниже.",
-    "Для пополнения компании: /company_topup",
+    "Для пополнения компании: кнопка управления компанией",
   ].join("\n");
 }
 
@@ -6575,6 +6906,47 @@ async function applyReferralFromStartPayload(player: User, startPayload?: string
   };
 }
 
+async function notifyReferralInviter(input: {
+  token: string;
+  inviterChatId: number;
+  inviterCity: string;
+  inviterBalance: number;
+  invitedUsername: string;
+  referralInviterReward: number;
+}) {
+  await sendMessage(
+    input.token,
+    input.inviterChatId,
+    [
+      "🎉 Новый реферал зашёл в игру по твоей ссылке!",
+      `👤 Игрок: ${input.invitedUsername}`,
+      `💰 Бонус: +${getCurrencySymbol(input.inviterCity)}${input.referralInviterReward}`,
+      `💼 Текущий баланс: ${getCurrencySymbol(input.inviterCity)}${formatNumber(input.inviterBalance)}`,
+    ].join("\n"),
+  );
+}
+
+function buildEnergyFullNotifications(game: GameView, previous?: { work: boolean; study: boolean }) {
+  const notifications: string[] = [];
+  const workFull = isFullEnergy(game.workTime);
+  const studyFull = isFullEnergy(game.studyTime);
+
+  if (previous) {
+    if (workFull && !previous.work) {
+      notifications.push("⚡ Энергия работы полностью восстановлена.");
+    }
+    if (studyFull && !previous.study) {
+      notifications.push("📚 Энергия учёбы полностью восстановлена.");
+    }
+  }
+
+  return {
+    workFull,
+    studyFull,
+    notifications,
+  };
+}
+
 function buildReferralLink(code: string) {
   if (!telegramBotUsername) return `ref_${code}`;
   return `https://t.me/${telegramBotUsername}?start=ref_${code}`;
@@ -6619,7 +6991,8 @@ function formatEducationCoursesMenu(user: User, levelKey: EducationLevelKey) {
   const level = EDUCATION_LEVELS[levelKey];
   const currency = getCurrencySymbol(user.city);
   const reduction = getEducationFailureReduction(user.city, user.reputation || 0);
-  const skillCap = getTrainingSkillCapForLevel(user.level);
+  const professionId = getPlayerProfessionId(user);
+  const baseSkillCap = getTrainingSkillCapForLevel(user.level);
   return [
     `📚 ${level.name.toUpperCase()}`,
     "━━━━━━━━━━━━━━",
@@ -6627,8 +7000,14 @@ function formatEducationCoursesMenu(user: User, levelKey: EducationLevelKey) {
       const effectiveFailure = Math.max(0, course.failureChance + 10 - reduction);
       const energyCost = getStudyEnergyCostForPlayer(levelKey, course, user);
       const courseCost = getStudyCourseCostForPlayer(course, user);
+      const boostedCap = Object.keys(course.skillBoosts || {}).reduce((best, skillKey) => {
+        return Math.max(best, getTrainingSkillCapForLevel(user.level, skillKey as SkillName, professionId));
+      }, baseSkillCap);
+      const capLine = boostedCap > baseSkillCap
+        ? `Потолок навыков от обучения на твоём уровне: ${baseSkillCap} (профильный навык профессии: ${boostedCap})`
+        : `Потолок навыков от обучения на твоём уровне: ${baseSkillCap}`;
       const completedMark = "";
-      return `${index + 1}. ${course.icon} ${course.name}${completedMark}\n${course.description}\nНавыки курса: ${formatStats(course.skillBoosts as Record<string, number>)}\n💸 ${currency}${courseCost} | Риск: ${effectiveFailure}% | ⚡ -${Math.round(energyCost * 100)} энергии учёбы\nПотолок навыков от обучения на твоём уровне: ${skillCap}`;
+      return `${index + 1}. ${course.icon} ${course.name}${completedMark}\n${course.description}\nНавыки курса: ${formatStats(course.skillBoosts as Record<string, number>)}\n💸 ${currency}${courseCost} | Риск: ${effectiveFailure}% | ⚡ -${Math.round(energyCost * 100)} энергии учёбы\n${capLine}`;
     }),
     "",
     "Выбери курс: отправь номер.",
@@ -6662,14 +7041,9 @@ async function buildBotModeMessage(snapshot: Snapshot) {
   const profileText = await formatPlayerProfile(snapshot);
   const tutorialContinueLine = await getTutorialContinueLine(snapshot.user.id);
   return [
-    "🎮 Режим игры в Telegram-боте активирован",
     tutorialContinueLine ?? "",
-    "",
     profileText,
-    "",
-    tutorialContinueLine ? "Старт обучения: /tutorial" : "",
-    "Используй кнопки меню ниже.",
-    "Подробный список команд: /help",
+    tutorialContinueLine ? "Старт обучения: кнопка «🎓 Обучение»" : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -6806,10 +7180,6 @@ function getCompanyMenuParentSection(section: CompanyMenuSection): CompanyMenuSe
   if (section === "management_hr" || section === "management_departments") return "management";
   if (section === "bureau_exclusive") return "bureau";
   return "root";
-}
-
-function rememberTelegramMenu(userId: string, state: TelegramMenuState) {
-  lastTelegramMenuByUserId.set(userId, state);
 }
 
 function resolveCityTravelMenuState(command: string): { state: TelegramMenuState; label: string } | null {
@@ -7015,14 +7385,6 @@ function getHousingTravelDurationMs(user: Pick<User, "city" | "tutorialState">, 
   return Math.max(1500, Math.round(baseMs * Math.max(0.5, Number(activeHouse?.bonuses.travelTimeMultiplier ?? 1))));
 }
 
-function getPlayerHubLocation(userId: string): PlayerHubLocation {
-  return playerLocationByUserId.get(userId) ?? "home";
-}
-
-function setPlayerHubLocation(userId: string, location: PlayerHubLocation) {
-  playerLocationByUserId.set(userId, location);
-}
-
 async function sendShopMenu(token: string, chatId: number, snapshot: Snapshot, userId: string, tab: ShopMenuTab = "all") {
   rememberTelegramMenu(userId, { menu: "shop", tab });
   if (tab === "sell") {
@@ -7039,7 +7401,7 @@ async function sendShopMenu(token: string, chatId: number, snapshot: Snapshot, u
   }
 
   if (tab === "parts" || tab === "gadgets") {
-    const items = listShopItems().filter((item) => tab === "parts" ? item.type === "consumable" : item.type === "gear");
+    const items = listShopItems(snapshot.user.city).filter((item) => tab === "parts" ? item.type === "consumable" : item.type === "gear");
     shopBuyRefsByChatId.set(chatId, items.map((item) => item.id));
     pendingActionByChatId.set(chatId, { type: "shop_buy" });
   } else {
@@ -7124,17 +7486,30 @@ async function sendCompanyRepairServiceMenu(token: string, chatId: number, membe
 }
 
 async function sendCityHubSummary(token: string, chatId: number, userId: string, prefix?: string) {
-  rememberTelegramMenu(userId, { menu: "city" });
-  const text = prefix ? `${prefix}\n\n${getCityHubSummaryText()}` : getCityHubSummaryText();
-  await sendWithCityHubKeyboard(token, chatId, text);
+  await sendCityHubSummaryBase({
+    token,
+    chatId,
+    userId,
+    prefix,
+    rememberTelegramMenu,
+    getCityHubSummaryText,
+    sendWithCityHubKeyboard,
+  });
 }
 
 async function sendHomeMenu(token: string, chatId: number, snapshot: Snapshot, userId: string, prefix?: string) {
-  rememberTelegramMenu(userId, { menu: "home" });
-  const notices = await shouldSuppressNonRegistrationMessages(userId) ? "" : formatNotices(snapshot.notices);
-  const base = await buildBotModeMessage(snapshot);
-  const text = [prefix, notices ? `${base}\n\n${notices}` : base].filter(Boolean).join("\n\n");
-  await sendWithHomeKeyboard(token, chatId, text);
+  await sendHomeMenuBase({
+    token,
+    chatId,
+    snapshot,
+    userId,
+    prefix,
+    rememberTelegramMenu,
+    shouldSuppressNonRegistrationMessages,
+    formatNotices,
+    buildBotModeMessage,
+    sendWithHomeKeyboard,
+  });
 }
 
 async function sendCompanyRootMenu(token: string, chatId: number, player: User, prefix?: string) {
@@ -7157,168 +7532,50 @@ async function sendCompanyRootMenu(token: string, chatId: number, player: User, 
 }
 
 async function restoreTelegramMenuState(token: string, chatId: number, player: User, message: TelegramMessage, prefix?: string) {
-  const state = lastTelegramMenuByUserId.get(player.id);
-  if (!state) {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    await sendHomeMenu(token, chatId, snapshot, player.id, prefix);
-    return;
-  }
-
-  if (state.menu === "extras") {
-    rememberTelegramMenu(player.id, state);
-    await sendWithExtrasKeyboard(
-      token,
-      chatId,
-      [prefix, ["🧩 Допы", "• Рейтинг", "• Квесты", "• Репутация", "• Рефералы"].join("\n")].filter(Boolean).join("\n\n"),
-    );
-    return;
-  }
-
-  if (state.menu === "home") {
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    await sendHomeMenu(token, chatId, snapshot, player.id, prefix);
-    return;
-  }
-
-  if (state.menu === "city") {
-    setPlayerHubLocation(player.id, "city");
-    await sendCityHubSummary(token, chatId, player.id, prefix);
-    return;
-  }
-
-  if (state.menu === "repair_service") {
-    setPlayerHubLocation(player.id, "city");
-    await sendRepairServiceMenu(token, chatId, player.id, prefix);
-    return;
-  }
-
-  if (state.menu === "housing") {
-    setPlayerHubLocation(player.id, "city");
-    const refreshedUser = await storage.getUser(player.id);
-    if (!refreshedUser) {
-      const snapshot = await resolveTelegramSnapshot(message.from);
-      await sendHomeMenu(token, chatId, snapshot, player.id, prefix);
-      return;
-    }
-    const house = getActiveHousing(refreshedUser) ?? getStarterHousingForCity(refreshedUser.city);
-    if (!house) {
-      await sendCityHubSummary(token, chatId, player.id, prefix ?? "Недвижимость в этом городе пока закрыта.");
-      return;
-    }
-    rememberTelegramMenu(player.id, state);
-    await sendHousingCard(token, chatId, refreshedUser, house, prefix ?? formatHousingMenuText(refreshedUser));
-    return;
-  }
-
-  if (state.menu === "jobs") {
-    setPlayerHubLocation(player.id, "city");
-    rememberTelegramMenu(player.id, state);
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    const jobsCount = listJobsByCity(snapshot.user.city, getPlayerProfessionId(snapshot.user), snapshot.user.level).length;
-    if (jobsCount <= 0) {
-      await sendCityHubSummary(token, chatId, player.id, prefix ?? "В вашем городе сейчас нет вакансий.");
-      return;
-    }
-    pendingActionByChatId.set(chatId, { type: "job_select" });
-    await sendMessage(token, chatId, [prefix, formatJobsMenu(snapshot)].filter(Boolean).join("\n\n"), {
-      reply_markup: buildJobsInlineMarkup(snapshot),
-    });
-    return;
-  }
-
-  if (state.menu === "study_levels") {
-    setPlayerHubLocation(player.id, "city");
-    rememberTelegramMenu(player.id, state);
-    pendingActionByChatId.set(chatId, { type: "study_level_select" });
-    await sendMessage(token, chatId, [prefix, formatEducationLevelsMenu(player)].filter(Boolean).join("\n\n"), {
-      reply_markup: buildEducationLevelsReplyMarkup(player.level),
-    });
-    return;
-  }
-
-  if (state.menu === "study_courses") {
-    setPlayerHubLocation(player.id, "city");
-    rememberTelegramMenu(player.id, state);
-    pendingActionByChatId.set(chatId, { type: "study_course_select", levelKey: state.levelKey });
-    await sendMessage(token, chatId, [prefix, formatEducationCoursesMenu(player, state.levelKey)].filter(Boolean).join("\n\n"), {
-      reply_markup: buildEducationCoursesReplyMarkup(state.levelKey),
-    });
-    return;
-  }
-
-  if (state.menu === "shop") {
-    setPlayerHubLocation(player.id, "city");
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    if (prefix) {
-      await sendWithCityHubKeyboard(token, chatId, prefix);
-    }
-    await sendShopMenu(token, chatId, snapshot, player.id, state.tab);
-    return;
-  }
-
-  if (state.menu === "bank") {
-    setPlayerHubLocation(player.id, "city");
-    rememberTelegramMenu(player.id, state);
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    await sendWithBankKeyboard(token, chatId, [prefix, formatBankMenu(snapshot)].filter(Boolean).join("\n\n"));
-    return;
-  }
-
-  setPlayerHubLocation(player.id, "company");
-  setCompanyMenuSection(chatId, state.section);
-  rememberTelegramMenu(player.id, state);
-  const membership = await getPlayerCompanyContext(player.id);
-  if (!membership) {
-    await sendCompanyRootMenu(token, chatId, player, prefix);
-    return;
-  }
-  if (state.section === "work") {
-    if (prefix) {
-      await sendMessage(token, chatId, prefix, { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) });
-    }
-    await sendCompanyWorkSection(token, chatId, membership);
-    return;
-  }
-  if (state.section === "warehouse") {
-    if (prefix) {
-      await sendMessage(token, chatId, prefix, { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) });
-    }
-    await sendCompanyWarehouseSection(token, chatId, membership, player.id);
-    return;
-  }
-  if (state.section === "service") {
-    if (prefix) {
-      await sendMessage(token, chatId, prefix, { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) });
-    }
-    await sendCompanyRepairServiceMenu(token, chatId, membership, player.id);
-    return;
-  }
-  if (state.section === "bureau" || state.section === "bureau_exclusive") {
-    if (prefix) {
-      await sendMessage(token, chatId, prefix, { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) });
-    }
-    await sendCompanyBureauSection(token, chatId, membership, player.id);
-    return;
-  }
-  if (state.section === "management") {
-    if (prefix) {
-      await sendMessage(token, chatId, prefix, { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) });
-    }
-    await sendCompanyManagementSection(token, chatId, membership);
-    return;
-  }
-  if (state.section === "management_hr") {
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, [prefix, "👥 HR компании"].filter(Boolean).join("\n\n"));
-    return;
-  }
-  if (state.section === "management_departments") {
-    if (prefix) {
-      await sendMessage(token, chatId, prefix, { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) });
-    }
-    await sendCompanyDepartmentsSection(token, chatId, membership);
-    return;
-  }
-  await sendCompanyRootMenu(token, chatId, player, prefix);
+  await restoreTelegramMenuStateBase({
+    token,
+    chatId,
+    player,
+    message,
+    prefix,
+    getLastTelegramMenuState,
+    resolveTelegramSnapshot,
+    sendHomeMenu,
+    rememberTelegramMenu,
+    sendWithExtrasKeyboard,
+    setPlayerHubLocation,
+    sendCityHubSummary,
+    sendRepairServiceMenu,
+    storage,
+    getActiveHousing,
+    getStarterHousingForCity,
+    formatHousingMenuText,
+    sendHousingCard,
+    pendingActionByChatId,
+    formatJobsMenu,
+    listJobsByCity,
+    getPlayerProfessionId,
+    buildJobsInlineMarkup,
+    sendMessage,
+    formatEducationLevelsMenu,
+    buildEducationLevelsReplyMarkup,
+    formatEducationCoursesMenu,
+    buildEducationCoursesReplyMarkup,
+    sendShopMenu,
+    formatBankMenu,
+    sendWithBankKeyboard,
+    setCompanyMenuSection,
+    getPlayerCompanyContext,
+    sendCompanyRootMenu,
+    buildCompanyReplyMarkup,
+    sendCompanyWorkSection,
+    sendCompanyWarehouseSection,
+    sendCompanyRepairServiceMenu,
+    sendCompanyBureauSection,
+    sendCompanyManagementSection,
+    sendCompanyDepartmentsSection,
+    sendWithCurrentHubKeyboard,
+  });
 }
 
 async function forceReturnHome(token: string, chatId: number, player: User, message: TelegramMessage, reason: string) {
@@ -7421,8 +7678,8 @@ async function handleCancelCommand(token: string, chatId: number, message: Teleg
     pendingAction?.type === "company_part_deposit"
     || pendingAction?.type === "company_part_deposit_qty"
     || pendingAction?.type === "company_contract_parts"
-    || pendingAction?.type === "company_exclusive_name"
     || pendingAction?.type === "company_exclusive_parts"
+    || pendingAction?.type === "company_exclusive_confirm"
     || pendingAction?.type === "company_exclusive_produce_select"
     || pendingAction?.type === "company_exclusive_produce_qty"
     || pendingAction?.type === "company_exclusive_produce_confirm"
@@ -7502,6 +7759,10 @@ function formatExclusiveActionLabel(action: ExclusiveActionIntent) {
   if (action === "study") return "учёба";
   if (action === "development") return "разработка гаджета";
   if (action === "pvp") return "PvP дуэль";
+  if (action === "shop") return "покупка или продажа в магазине";
+  if (action === "bank") return "банковая операция";
+  if (action === "company_action") return "действие компании";
+  if (action === "auction") return "ставка на аукционе";
   return "перемещение";
 }
 
@@ -7515,6 +7776,31 @@ function isCommandCompatibleWithExclusiveAction(command: string, current: Exclus
 
   if (current === "study") {
     return cmd === "/study";
+  }
+
+  if (current === "shop") {
+    return (
+      cmd === "/shop"
+      || cmd === "/shop_courses"
+      || cmd === "/shop_gadgets"
+      || cmd === "/inventory"
+      || cmd === "/sell"
+      || cmd === "/use"
+      || cmd === "/equip"
+      || cmd === "/service"
+      || cmd === "/scrap"
+    );
+  }
+
+  if (current === "bank") {
+    return (
+      cmd === "/bank"
+      || cmd === "/gram"
+      || cmd === "/credits"
+      || cmd === "/deposits"
+      || cmd === "/stocks"
+      || cmd === "/stocks_news"
+    );
   }
 
   if (current === "development") {
@@ -7541,6 +7827,31 @@ function isCommandCompatibleWithExclusiveAction(command: string, current: Exclus
       || cmd === "/company_exclusive_produce"
       || cmd.startsWith("/company_bp_")
     );
+  }
+
+  if (current === "company_action") {
+    return (
+      cmd === "/company"
+      || cmd === "/company_back"
+      || cmd === "/company_work"
+      || cmd === "/company_warehouse"
+      || cmd === "/company_bureau"
+      || cmd === "/company_management"
+      || cmd === "/company_part_deposit"
+      || cmd === "/company_requests"
+      || cmd === "/company_departments"
+      || cmd === "/company_salaries"
+      || cmd === "/company_topup"
+      || cmd === "/company_exclusive"
+      || cmd === "/company_exclusive_start"
+      || cmd === "/company_exclusive_progress"
+      || cmd === "/company_exclusive_produce"
+      || cmd === "/company_bp_produce"
+    );
+  }
+
+  if (current === "auction") {
+    return cmd === "/auction";
   }
 
   if (current === "pvp") {
@@ -7570,7 +7881,50 @@ function getPendingExclusiveAction(chatId: number): ExclusiveActionIntent | null
   if (!pending) return null;
   if (pending.type === "job_select") return "job";
   if (pending.type === "study_level_select" || pending.type === "study_course_select") return "study";
+  if (pending.type === "shop_buy" || pending.type === "shop_sell") return "shop";
+  if (
+    pending.type === "open_bank_product"
+    || pending.type === "exchange_to_gram"
+    || pending.type === "exchange_from_gram"
+    || pending.type === "stocks_buy_select"
+    || pending.type === "stocks_buy_qty"
+    || pending.type === "stocks_sell_select"
+    || pending.type === "stocks_sell_qty"
+  ) return "bank";
+  if (pending.type === "auction_bid_amount") return "auction";
+  if (
+    pending.type === "company_part_deposit"
+    || pending.type === "company_part_deposit_qty"
+    || pending.type === "company_contract_parts"
+    || pending.type === "company_topup"
+    || pending.type === "company_set_salary_amount"
+    || pending.type === "company_exclusive_parts"
+    || pending.type === "company_exclusive_confirm"
+    || pending.type === "company_bp_produce_qty"
+    || pending.type === "company_bp_produce_confirm"
+    || pending.type === "company_exclusive_produce_select"
+    || pending.type === "company_exclusive_produce_qty"
+    || pending.type === "company_exclusive_produce_confirm"
+  ) return "company_action";
   return null;
+}
+
+function isReplyNavigationCommand(command: string) {
+  const cmd = String(command || "").toLowerCase();
+  return [
+    "/menu",
+    "/profile",
+    "/inventory",
+    "/city_hub",
+    "/jobs",
+    "/study",
+    "/shop",
+    "/bank",
+    "/housing",
+    "/auction",
+    "/company",
+    "/extras",
+  ].includes(cmd);
 }
 
 async function getCurrentExclusiveAction(userId: string, chatId: number): Promise<ExclusiveActionIntent | null> {
@@ -7633,7 +7987,7 @@ async function ensureCompanyProcessUnlocked(
         token,
         chatId,
         userId,
-        `⛔ ${actionLabel} недоступен, пока идёт разработка редкого гаджета.\nОткрой «Разработка редких гаджетов» и дождись завершения таймера.`,
+        `⛔ ${actionLabel} недоступен, пока идёт EX-апгрейд гаджета.\nОткрой раздел эксклюзивов и дождись завершения таймера.`,
       );
       return false;
     }
@@ -7747,13 +8101,17 @@ async function ensureTutorialStarterParts(userId: string) {
 }
 
 async function sendWithHomeKeyboard(token: string, chatId: number, text: string) {
-  await sendWithMainKeyboardBase({
-    token,
-    chatId,
-    text,
-    getUserIdByTelegramId,
-    getTutorialSnapshotByUser,
-  });
+  const userId = getUserIdByTelegramId(String(chatId));
+  let replyMarkup = MAIN_MENU_REPLY_MARKUP;
+  if (userId) {
+    try {
+      const tutorialSnapshot = await getTutorialSnapshotByUser(userId);
+      replyMarkup = buildMainMenuReplyMarkup(!tutorialSnapshot.state.isCompleted);
+    } catch {
+      replyMarkup = MAIN_MENU_REPLY_MARKUP;
+    }
+  }
+  await sendMessage(token, chatId, text, { reply_markup: replyMarkup });
 }
 
 async function sendWithMainKeyboard(token: string, chatId: number, text: string) {
@@ -7771,9 +8129,17 @@ async function sendWithMainKeyboard(token: string, chatId: number, text: string)
     getPlayerHubLocation,
     getPlayerCompanyContext,
     buildCompanyReplyMarkup,
-    sendWithMainKeyboard: async (input) => sendWithHomeKeyboard(input.token, input.chatId, input.text),
+    sendWithMainKeyboard: async (input) => sendWithMainKeyboardBase({
+      token: input.token,
+      chatId: input.chatId,
+      text: input.text,
+      getUserIdByTelegramId: input.getUserIdByTelegramId,
+      getTutorialSnapshotByUser: input.getTutorialSnapshotByUser,
+      getLastTelegramMenuState: input.getLastTelegramMenuState,
+    }),
     getUserIdByTelegramId,
     getTutorialSnapshotByUser,
+    getLastTelegramMenuState,
   });
 }
 
@@ -7820,8 +8186,8 @@ function clearPendingActionRuntimeState(chatId: number, pendingAction: PendingAc
   }
 
   if (
-    pendingAction.type === "company_exclusive_name"
-    || pendingAction.type === "company_exclusive_parts"
+    pendingAction.type === "company_exclusive_parts"
+    || pendingAction.type === "company_exclusive_confirm"
     || pendingAction.type === "company_exclusive_produce_select"
     || pendingAction.type === "company_exclusive_produce_qty"
     || pendingAction.type === "company_exclusive_produce_confirm"
@@ -7839,6 +8205,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
   const normalizedCommand = normalizeCommand(text).command;
   const allowSlashCommandsInsidePending =
     pendingAction.type === "company_exclusive_parts"
+    || pendingAction.type === "company_exclusive_confirm"
     && (
       /^\/det\d+$/i.test(text.trim())
       || /^\/det_done$/i.test(text.trim())
@@ -7870,7 +8237,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     "company_topup",
     "company_bp_produce_qty",
     "company_bp_produce_confirm",
-    "company_exclusive_name",
+    "company_exclusive_confirm",
     "company_exclusive_produce_select",
     "company_exclusive_produce_qty",
     "company_exclusive_produce_confirm",
@@ -8005,7 +8372,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     if (result.ok) {
       pendingActionByChatId.delete(chatId);
     } else {
-      await sendMessage(token, chatId, `❌ ${result.message}\nВыбери вакансию кнопкой ниже или отправь номер ещё раз.`);
+      await sendMessage(token, chatId, `❌ ${result.message}\nВыбери вакансию кнопкой ниже, другую кнопку меню или отправь номер ещё раз.`);
     }
     return true;
   }
@@ -8049,7 +8416,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       await sendMessage(
         token,
         chatId,
-        "Неверный формат.\nВведи: номер сумма дни\nПример: 1 10000 14",
+        "Неверный формат.\nВведи: номер сумма\nПример: 1 800",
         { reply_markup: buildBankSelectionReplyMarkup(pendingAction.productType) },
       );
       return true;
@@ -8256,7 +8623,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const membership = await getPlayerCompanyContext(player.id);
     if (!membership || String(membership.company.id) !== pendingAction.companyId) {
       pendingActionByChatId.delete(chatId);
-      await sendWithMainKeyboard(token, chatId, "Компания не найдена. Открой /company и попробуй снова.");
+      await sendWithMainKeyboard(token, chatId, "Компания не найдена. Открой раздел «🏢 Компания» и попробуй снова.");
       return true;
     }
 
@@ -8301,7 +8668,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const membership = await getPlayerCompanyContext(player.id);
     if (!membership || membership.role !== "owner" || String(membership.company.id) !== pendingAction.companyId) {
       pendingActionByChatId.delete(chatId);
-      await sendWithMainKeyboard(token, chatId, "Компания не найдена. Открой /company и попробуй снова.");
+      await sendWithMainKeyboard(token, chatId, "Компания не найдена. Открой раздел «🏢 Компания» и попробуй снова.");
       return true;
     }
 
@@ -8356,7 +8723,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const membership = await getPlayerCompanyContext(player.id);
     if (!membership) {
       pendingActionByChatId.delete(chatId);
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
 
@@ -8400,7 +8767,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const membership = await getPlayerCompanyContext(player.id);
     if (!membership) {
       pendingActionByChatId.delete(chatId);
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
+      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
     const qtyText = text.trim().toLowerCase();
@@ -8454,25 +8821,6 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     return true;
   }
 
-  if (pendingAction.type === "company_exclusive_name") {
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      pendingActionByChatId.delete(chatId);
-      await sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
-      return true;
-    }
-    const gadgetName = normalizeExclusiveDraftName(text);
-    if (gadgetName.length < 3) {
-      await sendMessage(token, chatId, "Название должно быть не короче 3 символов. Введи название будущего гаджета ещё раз.");
-      return true;
-    }
-    companyExclusiveSelectedPartRefsByChatId.delete(chatId);
-    companyExclusivePartPageByChatId.set(chatId, 0);
-    pendingActionByChatId.set(chatId, { type: "company_exclusive_parts", gadgetName });
-    await sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, gadgetName);
-    return true;
-  }
-
   if (pendingAction.type === "company_exclusive_parts") {
     const membership = await getPlayerCompanyContext(player.id);
     if (!membership || membership.role !== "owner") {
@@ -8520,8 +8868,8 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       if (existingIndex >= 0) {
         selectedRefs.splice(existingIndex, 1);
       } else {
-        if (selectedRefs.length >= 6) {
-          await sendMessage(token, chatId, "❌ Можно выбрать максимум 6 деталей. Нажми /det_done или /det_reset.");
+      if (selectedRefs.length >= EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
+          await sendMessage(token, chatId, `❌ Нужно выбрать ровно ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей. Нажми /det_done или /det_reset.`);
           return true;
         }
         selectedRefs.push(targetRef);
@@ -8538,20 +8886,62 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       return true;
     }
     const partRefs = selectedRefs;
-    if (partRefs.length < 3 || partRefs.length > 6) {
-      await sendMessage(token, chatId, "❌ Для эксклюзивного гаджета нужно выбрать от 3 до 6 деталей. Отмечай их кнопками под сообщением.", {
+    if (partRefs.length !== EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
+      await sendMessage(token, chatId, `❌ Для эксклюзивного апгрейда нужно выбрать ровно ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей. Отмечай их кнопками под сообщением.`, {
         reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
       });
       return true;
     }
-    await startCompanyExclusiveDevelopment(
-      token,
-      chatId,
-      membership,
-      player.id,
-      pendingAction.gadgetName,
-      partRefs,
-    );
+    const pickedParts = getCompanyWarehouseParts(membership.company.id)
+      .map((item) => ({ ...item, ref: `${item.id}::${item.rarity}` }))
+      .filter((item) => partRefs.includes(item.ref))
+      .map((item) => ({
+        id: item.id,
+        rarity: String(item.rarity || "Common"),
+        type: String(item.type || ALL_PARTS[item.id]?.type || "processor"),
+        name: String(item.name || ALL_PARTS[item.id]?.name || item.id),
+      }));
+    try {
+      const preview = await previewCompanyExclusiveUpgrade(
+        membership.company.id,
+        player.id,
+        String(pendingAction.gadgetId || ""),
+        pickedParts,
+      );
+      pendingActionByChatId.set(chatId, {
+        type: "company_exclusive_confirm",
+        gadgetName: pendingAction.gadgetName,
+        gadgetId: String(pendingAction.gadgetId || ""),
+        partRefs,
+      });
+      await sendMessage(
+        token,
+        chatId,
+        [
+          `🌟 EX-апгрейд: ${pendingAction.gadgetName}`,
+          `Цель: EX+${Math.max(1, Number(preview.blueprint?.upgradeLevel || 1))}`,
+          `Шанс успеха: ${Math.round(Number(preview.blueprint?.successChance || 0) * 100)}%`,
+          `Стоимость запуска: ${formatNumber(Number(preview.blueprint?.developmentCostGrm || 0))} GRM`,
+          `Время апгрейда: ${formatDurationShort(Number(preview.blueprint?.developmentHoursRequired || 0) * 60 * 60 * 1000)}`,
+          preview.companyBalanceAfterStart !== undefined ? `Баланс компании после старта: ${formatNumber(Number(preview.companyBalanceAfterStart || 0))} GRM` : "",
+          "",
+          "Подтверди запуск или вернись к подбору деталей.",
+        ].filter(Boolean).join("\n"),
+        { reply_markup: buildCompanyExclusiveUpgradeConfirmInlineMarkup() },
+      );
+    } catch (error) {
+      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+    }
+    return true;
+  }
+
+  if (pendingAction.type === "company_exclusive_confirm") {
+    if (text.trim().startsWith("/")) return false;
+    await sendMessage(token, chatId, "Подтверди запуск EX-апгрейда кнопкой под предыдущим сообщением или вернись к деталям.", {
+      reply_markup: buildCompanyExclusiveUpgradeConfirmInlineMarkup(),
+    });
     return true;
   }
 
@@ -8581,7 +8971,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const snapshot = await getCompanyExclusiveSnapshot(membership.company.id);
     const parsedIndex = Number(text.trim());
     if (!Number.isFinite(parsedIndex)) {
-      await sendMessage(token, chatId, "Выбери чертёж кнопкой ниже или нажми «⬅️ Назад».", {
+      await sendMessage(token, chatId, "Выбери готовый EX-апгрейд кнопкой ниже или нажми «⬅️ Назад».", {
         reply_markup: buildCompanyExclusiveProduceInlineMarkup(snapshot, membership.role, chatId),
       });
       return true;
@@ -8840,9 +9230,11 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const effectiveFailure = Math.max(0, course.failureChance + 10 - failReduction);
     const baseSkills = getBaseSkillValues(game);
     const nextSkills = { ...(game?.skills || {}) } as Record<SkillName, number>;
-    const skillCap = getTrainingSkillCapForLevel(player.level);
+    const professionId = getPlayerProfessionId(player);
+    const baseSkillCap = getTrainingSkillCapForLevel(player.level);
     const canGrowAnySkill = Object.entries(course.skillBoosts).some(([key, boost]) => {
       if (!(key in nextSkills) || !(key in baseSkills)) return false;
+      const skillCap = getTrainingSkillCapForLevel(player.level, key as SkillName, professionId);
       return Number(baseSkills[key as SkillName] || 0) < skillCap && Number(boost || 0) > 0;
     });
     if (!canGrowAnySkill) {
@@ -8850,7 +9242,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       await sendMessage(
         token,
         chatId,
-        `❌ Навыки этого курса уже упираются в потолок уровня (${skillCap}). Подними уровень и попробуй снова.`,
+        `❌ Навыки этого курса уже упираются в потолок уровня (${baseSkillCap}). Подними уровень и попробуй снова.`,
         { reply_markup: STUDY_RESULT_REPLY_MARKUP },
       );
       return true;
@@ -8898,6 +9290,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       const plannedBoost = Number((baseBoost + bonusBoost).toFixed(2));
       const currentValue = Number(nextSkills[skill] || 0);
       const currentBaseValue = Number(baseSkills[skill] || 0);
+      const skillCap = getTrainingSkillCapForLevel(player.level, skill, professionId);
       const finalBoost = Number(Math.max(0, Math.min(plannedBoost, skillCap - currentBaseValue)).toFixed(2));
       if (finalBoost <= 0) continue;
       nextSkills[skill] = Number((currentValue + finalBoost).toFixed(2));
@@ -8909,7 +9302,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       await sendMessage(
         token,
         chatId,
-        `❌ После ограничения уровня курс не даст прироста. Потолок навыков сейчас: ${skillCap}.`,
+        `❌ После ограничения уровня курс не даст прироста. Потолок навыков сейчас: ${baseSkillCap}.`,
         { reply_markup: STUDY_RESULT_REPLY_MARKUP },
       );
       return true;
@@ -8919,7 +9312,10 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const tutorialAdvance = await tryApplyTutorialEvent(player.id, "first_education_started");
     updateWeeklyQuestProgress(updatedUser, "study", 1);
 
-      const continueTutorialLine = formatTutorialAdvanceNotice(tutorialAdvance, player.city) || await getTutorialContinueLine(player.id);
+    const continueTutorialLine = formatTutorialAdvanceNotice(tutorialAdvance, player.city) || await getTutorialContinueLine(player.id);
+    const resultingCap = Object.keys(appliedBoosts).reduce((best, skillKey) => {
+      return Math.max(best, getTrainingSkillCapForLevel(player.level, skillKey as SkillName, professionId));
+    }, baseSkillCap);
 
     await sendMessage(
       token,
@@ -8928,7 +9324,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
         `✅ Курс завершён: ${course.icon} ${course.name}`,
         `-${getCurrencySymbol(updatedUser.city)}${courseCost}, +${reputationGain} репутации`,
         `Навыки: ${formatStats(appliedBoosts as Record<string, number>)}`,
-        `Потолок навыков от обучения на этом уровне: ${skillCap}`,
+        `Потолок навыков от обучения на этом уровне: ${resultingCap}`,
         citySkillProc ? "🏙 Бонус города: +1 к каждому навыку курса." : "",
         luckyProc ? "🍀 Удача: +1 к каждому навыку курса." : "",
         `⚡ Потрачено энергии учёбы: ${Math.round(studyEnergyCost * 100)}`,
@@ -9021,7 +9417,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       await maybePromptAdvancedPersonality(token, chatId, updated);
     }
     if (player.level < PROFESSION_UNLOCK_LEVEL && updated.level >= PROFESSION_UNLOCK_LEVEL) {
-      await maybePromptProfession(token, chatId, updated);
+      await maybePromptProfession(token, chatId, updated, { force: false });
     }
     return true;
   }
@@ -9084,7 +9480,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       await sendMessage(
         token,
         chatId,
-        `✅ Компания создана: ${company.name}\nСписано: ${getCurrencySymbol(player.city)}${companyCreateCost}\nОстаток: ${getCurrencySymbol(player.city)}${debited.balance}`,
+        `✅ Компания создана: ${company.name}\nСписано: ${getCurrencySymbol(player.city)}${formatNumber(companyCreateCost)}\nОстаток: ${getCurrencySymbol(player.city)}${formatNumber(debited.balance)}`,
       );
       const refreshed = await getPlayerCompanyContext(player.id);
       if (refreshed) {
@@ -9125,7 +9521,7 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       if (data.startsWith("pvp_boost:buy:")) {
         const boostId = data.split(":").pop();
         await callInternalApi("POST", "/api/pvp/boosts/purchase", { userId: actor.id, boostId });
-        callbackText = "Boost куплен";
+        callbackText = "PvP-предмет выбран";
       } else {
         await callInternalApi("POST", "/api/pvp/duel/start", { userId: actor.id });
         callbackText = "Дуэль стартует";
@@ -9233,9 +9629,12 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       resolveTelegramSnapshot,
       getCurrencySymbol,
       referralNewPlayerReward: REFERRAL_NEW_PLAYER_REWARD,
+      referralInviterReward: REFERRAL_INVITER_REWARD,
+      getTelegramIdByUserId,
       getActiveHousing,
       getStarterHousingForCity,
       sendHousingCard,
+      notifyReferralInviter,
       cityOptions: CITY_OPTIONS,
       personalityOptions: PERSONALITY_OPTIONS,
       genderOptions: GENDER_OPTIONS,
@@ -9291,14 +9690,9 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       }
 
       await setPlayerProfession(player.id, selected.id);
+      pendingActionByChatId.delete(chatId);
       callbackText = "Профессия выбрана";
-      const snapshot = await getUserWithGameState(player.id);
-      const profileText = snapshot ? await formatPlayerProfile(snapshot) : "Профиль обновлён.";
-      await sendWithMainKeyboard(token, chatId, [
-        `✅ Профессия выбрана: ${selected.emoji} ${selected.name}`,
-        "",
-        profileText,
-      ].join("\n"));
+      await sendWithCurrentHubKeyboard(token, chatId, player.id, buildProfessionConfirmText(selected));
       return;
     }
 
@@ -9389,7 +9783,7 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
 
     if (data === "auction:locked") {
       callbackText = "Лот недоступен";
-      await answerCallbackQuery(token, callbackId, "Первые 5 минут лот доступен только компании-разработчику");
+      await answerCallbackQuery(token, callbackId, "Первые 20 минут лот доступен только компании-разработчику");
       shouldClearInlineButtons = false;
       return;
     }
@@ -9778,10 +10172,38 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
     const companyJoinMatch = data.match(/^company:join:(.+)$/);
     if (companyJoinMatch) {
       callbackText = "Вступление в компанию";
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: `/company_join ${companyJoinMatch[1]}`,
+      const existingMembership = await getPlayerCompanyContext(player.id);
+      if (existingMembership) {
+        await sendMessage(token, chatId, "Ты уже состоишь в компании. Сначала выйди из текущей компании.", {
+          reply_markup: buildCompanyReplyMarkup(existingMembership.role, chatId),
+        });
+        return;
+      }
+      const companies = (await storage.getAllCompanies()).filter((company: any) => !company.isTutorial);
+      const selectedCompany = companies.find((company: any) => String(company.id) === String(companyJoinMatch[1])) ?? null;
+      if (!selectedCompany) {
+        await sendMessage(token, chatId, "Компания не найдена. Открой раздел «🏢 Компания» и выбери компанию из списка.", {
+          reply_markup: buildCompanyReplyMarkup(null),
+        });
+        return;
+      }
+      const pendingRequests = await storage.getJoinRequestsByUser(player.id);
+      const existsPending = pendingRequests.some(
+        (request: any) => request.companyId === selectedCompany.id && request.status === "pending",
+      );
+      if (existsPending) {
+        await sendMessage(token, chatId, "Заявка уже отправлена и ожидает решения.", {
+          reply_markup: buildCompanyReplyMarkup(null),
+        });
+        return;
+      }
+      await storage.createJoinRequest({
+        companyId: selectedCompany.id,
+        userId: player.id,
+        username: player.username,
+      });
+      await sendMessage(token, chatId, `✅ Заявка отправлена в компанию "${selectedCompany.name}".`, {
+        reply_markup: buildCompanyReplyMarkup(null),
       });
       return;
     }
@@ -9848,49 +10270,58 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       return;
     }
 
+    const warehouseFilterMatch = data.match(/^company:warehouse_filter:(all|smartphone|smartwatch|tablet|laptop|asic)$/);
+    if (warehouseFilterMatch) {
+      callbackText = "Фильтр склада";
+      const nextFilter = warehouseFilterMatch[1];
+      if (nextFilter === "all") {
+        companyWarehouseFilterByChatId.delete(chatId);
+      } else {
+        companyWarehouseFilterByChatId.set(chatId, nextFilter);
+      }
+      await sendCompanyWarehouseSection(token, chatId, membership, player.id);
+      return;
+    }
+
     const miningPickMatch = data.match(/^company:mining_pick:(short|medium|long)$/);
     if (miningPickMatch) {
       callbackText = "Выбор смены";
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: `/company_mining_start ${miningPickMatch[1]}`,
-      });
-      return;
-    }
-
-    if (data === "company:mining_claim") {
-      callbackText = "Забор добычи";
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: "/company_mining_claim",
-      });
-      return;
-    }
-
-    if (data === "company:mining_refresh" || data === "company:mining_start") {
-      callbackText = "Добыча";
       shouldClearInlineButtons = false;
-      const status = await getCompanyMiningStatus(membership.company.id, player.id);
-      const text = formatMiningPlansMenu(status);
-      if (messageId) {
-        await callTelegramApi(token, "editMessageText", {
-          chat_id: chatId,
-          message_id: messageId,
-          text,
-          reply_markup: buildCompanyMiningInlineButtons(status),
-        });
-      } else {
-        await sendMessage(token, chatId, text, {
-          reply_markup: buildCompanyMiningInlineButtons(status),
+      if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Добыча запчастей"))) {
+        return;
+      }
+      const plan = getCompanyMiningPlan(miningPickMatch[1]);
+      try {
+        const started = await callInternalApi("POST", `/api/companies/${membership.company.id}/mining/start`, {
+          userId: player.id,
+          planId: plan.id,
+        }) as any;
+        if (started.status === "in_progress") {
+          scheduleCompanyMiningReadyNotification(token, chatId, membership, player.id, started.remainingSeconds);
+        }
+        const text = `⛏ Запущена смена: ${plan.label}\nВремя: ~${started.remainingSeconds} сек.\nОжидаемая добыча: ${plan.minRewardQty}-${plan.maxRewardQty} запчастей`;
+        if (messageId) {
+          await callTelegramApi(token, "editMessageText", {
+            chat_id: chatId,
+            message_id: messageId,
+            text,
+            reply_markup: buildCompanyMiningInlineButtons(started),
+          });
+        } else {
+          await sendMessage(token, chatId, text, {
+            reply_markup: buildCompanyMiningInlineButtons(started),
+          });
+        }
+      } catch (error) {
+        await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
         });
       }
       return;
     }
 
     if (data === "company:mining_claim") {
-      callbackText = "Получение награды";
+      callbackText = "Забор добычи";
       shouldClearInlineButtons = false;
       const currentStatus = await getCompanyMiningStatus(membership.company.id, player.id);
       if (currentStatus.status !== "ready_to_claim" || !currentStatus.rewardPreview) {
@@ -9924,10 +10355,53 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       return;
     }
 
+    if (data === "company:mining_refresh" || data === "company:mining_start") {
+      callbackText = "Добыча";
+      shouldClearInlineButtons = false;
+      const status = await getCompanyMiningStatus(membership.company.id, player.id);
+      const text = formatMiningPlansMenu(status);
+      if (messageId) {
+        await callTelegramApi(token, "editMessageText", {
+          chat_id: chatId,
+          message_id: messageId,
+          text,
+          reply_markup: buildCompanyMiningInlineButtons(status),
+        });
+      } else {
+        await sendMessage(token, chatId, text, {
+          reply_markup: buildCompanyMiningInlineButtons(status),
+        });
+      }
+      return;
+    }
+
     if (data === "company:bureau") {
       callbackText = "Раздел: Бюро";
       shouldClearInlineButtons = false;
       await sendOrEditCompanyBureauSection(token, chatId, membership, player.id, messageId);
+      return;
+    }
+
+    const exclusivePickMatch = data.match(/^company:exclusive_pick:(.+)$/);
+    if (exclusivePickMatch) {
+      callbackText = "Выбор гаджета";
+      shouldClearInlineButtons = false;
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
+        return;
+      }
+      const snapshot = await getCompanyExclusiveSnapshot(membership.company.id);
+      const target = (snapshot.upgradeCandidates ?? []).find((item: any) => String(item.id) === String(exclusivePickMatch[1]));
+      if (!target) {
+        await sendMessage(token, chatId, "Гаджет для EX-апгрейда не найден. Открой раздел заново.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      companyExclusiveSelectedPartRefsByChatId.delete(chatId);
+      companyExclusivePartPageByChatId.set(chatId, 0);
+      pendingActionByChatId.set(chatId, { type: "company_exclusive_parts", gadgetName: target.name, gadgetId: target.id });
+      await sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, target.name, messageId);
       return;
     }
 
@@ -9955,8 +10429,8 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       if (existingIndex >= 0) {
         selectedRefs.splice(existingIndex, 1);
       } else {
-        if (selectedRefs.length >= 6) {
-          await answerCallbackQuery(token, callbackId, "Максимум 6 деталей");
+        if (selectedRefs.length >= EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
+          await answerCallbackQuery(token, callbackId, `Нужно выбрать ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей`);
           return;
         }
         selectedRefs.push(targetRef);
@@ -10034,7 +10508,7 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
     }
 
     if (data === "company:exclusive_part_done") {
-      callbackText = "Старт разработки";
+      callbackText = "Предпросмотр";
       shouldClearInlineButtons = false;
       const pendingAction = pendingActionByChatId.get(chatId);
       if (!pendingAction || pendingAction.type !== "company_exclusive_parts") {
@@ -10047,8 +10521,8 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
       companyExclusivePartRefsByChatId.set(chatId, refs);
       const selectedRefs = [...(companyExclusiveSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
       companyExclusiveSelectedPartRefsByChatId.set(chatId, selectedRefs);
-      if (selectedRefs.length < 3 || selectedRefs.length > 6) {
-        await answerCallbackQuery(token, callbackId, "Нужно выбрать 3-6 деталей");
+      if (selectedRefs.length !== EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
+        await answerCallbackQuery(token, callbackId, `Нужно выбрать ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей`);
         await sendCompanyExclusivePartsPicker(
           token,
           chatId,
@@ -10059,40 +10533,89 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
         );
         return;
       }
+      const pickedParts = getCompanyWarehouseParts(membership.company.id)
+        .map((item) => ({ ...item, ref: `${item.id}::${item.rarity}` }))
+        .filter((item) => selectedRefs.includes(item.ref))
+        .map((item) => ({
+          id: item.id,
+          rarity: String(item.rarity || "Common"),
+          type: String(item.type || ALL_PARTS[item.id]?.type || "processor"),
+          name: String(item.name || ALL_PARTS[item.id]?.name || item.id),
+        }));
+      try {
+        const preview = await previewCompanyExclusiveUpgrade(
+          membership.company.id,
+          player.id,
+          String(pendingAction.gadgetId || ""),
+          pickedParts,
+        );
+        pendingActionByChatId.set(chatId, {
+          type: "company_exclusive_confirm",
+          gadgetName: pendingAction.gadgetName,
+          gadgetId: String(pendingAction.gadgetId || ""),
+          partRefs: selectedRefs,
+        });
+        await sendMessage(
+          token,
+          chatId,
+          [
+            `🌟 EX-апгрейд: ${pendingAction.gadgetName}`,
+            `Цель: EX+${Math.max(1, Number(preview.blueprint?.upgradeLevel || 1))}`,
+            `Шанс успеха: ${Math.round(Number(preview.blueprint?.successChance || 0) * 100)}%`,
+            `Стоимость запуска: ${formatNumber(Number(preview.blueprint?.developmentCostGrm || 0))} GRM`,
+            `Время апгрейда: ${formatDurationShort(Number(preview.blueprint?.developmentHoursRequired || 0) * 60 * 60 * 1000)}`,
+            preview.companyBalanceAfterStart !== undefined ? `Баланс компании после старта: ${formatNumber(Number(preview.companyBalanceAfterStart || 0))} GRM` : "",
+            "",
+            "Подтверди запуск или вернись к подбору деталей.",
+          ].filter(Boolean).join("\n"),
+          { reply_markup: buildCompanyExclusiveUpgradeConfirmInlineMarkup() },
+        );
+      } catch (error) {
+        await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+      }
+      return;
+    }
+
+    if (data === "company:exclusive_upgrade_back") {
+      callbackText = "К деталям";
+      shouldClearInlineButtons = false;
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_exclusive_confirm") {
+        await sendMessage(token, chatId, "Сначала выбери гаджет и детали для EX-апгрейда.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      pendingActionByChatId.set(chatId, {
+        type: "company_exclusive_parts",
+        gadgetName: pendingAction.gadgetName,
+        gadgetId: pendingAction.gadgetId,
+      });
+      companyExclusiveSelectedPartRefsByChatId.set(chatId, [...pendingAction.partRefs]);
+      await sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, pendingAction.gadgetName, messageId);
+      return;
+    }
+
+    if (data === "company:exclusive_upgrade_start") {
+      callbackText = "Запуск EX-апгрейда";
+      shouldClearInlineButtons = false;
+      const pendingAction = pendingActionByChatId.get(chatId);
+      if (!pendingAction || pendingAction.type !== "company_exclusive_confirm") {
+        await sendMessage(token, chatId, "Сначала выбери гаджет и детали для EX-апгрейда.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
       await startCompanyExclusiveDevelopment(
         token,
         chatId,
         membership,
         player.id,
         pendingAction.gadgetName,
-        selectedRefs,
-      );
-      return;
-    }
-
-    const exclusiveJoinMatch = data.match(/^company:exclusive_join:(.+)$/);
-    if (exclusiveJoinMatch) {
-      callbackText = "Подключение к разработке";
-      shouldClearInlineButtons = false;
-      const companyId = String(exclusiveJoinMatch[1] || "");
-      const company = await storage.getCompany(companyId);
-      if (!company) {
-        await sendMessage(token, chatId, "❌ Компания не найдена.");
-        return;
-      }
-      const member = await storage.getMemberByUserId(companyId, player.id);
-      if (!member) {
-        await sendMessage(token, chatId, "❌ Только сотрудники этой компании могут присоединиться к разработке.");
-        return;
-      }
-      const result = await callInternalApi("POST", `/api/companies/${companyId}/exclusive/join`, {
-        userId: player.id,
-      }) as any;
-      await sendMessage(
-        token,
-        chatId,
-        `✅ Ты присоединился к исследованию эксклюзивного гаджета.\nУчастников: ${Math.max(1, Number(result.participantCount || 1))}\n\n${formatExclusiveProgressLiveText(result.project)}`,
-        { reply_markup: buildCompanyReplyMarkup(member.role === "owner" ? "owner" : "member", chatId) },
+        pendingAction.partRefs,
+        pendingAction.gadgetId,
       );
       return;
     }
@@ -10774,33 +11297,97 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
     const contractDeliverMatch = data.match(/^company:contract_deliver:(\d+)$/);
     if (contractDeliverMatch) {
       callbackText = "Сдача контракта";
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: `/company_contract_deliver ${contractDeliverMatch[1]}`,
-      });
+      if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Контракты компании"))) {
+        return;
+      }
+      const contracts = await getCityContracts(membership.company.city);
+      const selected = resolveContractRef(chatId, contractDeliverMatch[1], contracts);
+      if (!selected) {
+        await sendMessage(token, chatId, "Контракт не найден. Открой раздел «Работа» кнопкой ниже.");
+        return;
+      }
+      try {
+        if (selected.kind === "parts_supply") {
+          await startCompanyContractPartSelection(token, chatId, membership, player.id, selected);
+        } else {
+          await completeCompanyContractDelivery(token, chatId, membership, selected, player.id);
+          await sendCompanyWorkSection(token, chatId, membership);
+        }
+      } catch (error) {
+        await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
+      }
       return;
     }
 
     const requestAcceptMatch = data.match(/^company:request_accept:(.+)$/);
     if (requestAcceptMatch) {
       callbackText = "Одобрение заявки";
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: `/company_accept ${requestAcceptMatch[1]}`,
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+        return;
+      }
+      const requests = await storage.getJoinRequestsByCompany(membership.company.id);
+      const request = requests.find((item: any) => item.id === requestAcceptMatch[1])
+        ?? requests.find((item: any) => item.id.startsWith(requestAcceptMatch[1]))
+        ?? null;
+      if (!request) {
+        await sendMessage(token, chatId, "Заявка не найдена. Открой раздел заявок ещё раз.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      const existingMember = await storage.getMemberByUserId(membership.company.id, request.userId);
+      if (!existingMember) {
+        const currentMembers = await storage.getCompanyMembers(membership.company.id);
+        const companyEconomy = await ensureCompanyEconomyState(membership.company, currentMembers.length);
+        if (currentMembers.length >= companyEconomy.employeeLimit) {
+          await sendMessage(
+            token,
+            chatId,
+            `❌ Лимит сотрудников достигнут (${currentMembers.length}/${companyEconomy.employeeLimit}). Улучши профильный отдел и расширь компанию.`,
+            { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+          );
+          return;
+        }
+        await storage.addCompanyMember({
+          companyId: membership.company.id,
+          userId: request.userId,
+          username: request.username,
+          role: "member",
+        });
+        const updatedMembers = await storage.getCompanyMembers(membership.company.id);
+        await ensureCompanyEconomyState(membership.company, updatedMembers.length);
+      }
+      await storage.updateJoinRequestStatus(request.id, "accepted");
+      await sendMessage(token, chatId, `✅ Заявка ${request.username} одобрена.`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
       });
+      await sendCompanyRequestsSection(token, chatId, membership);
       return;
     }
 
     const requestDeclineMatch = data.match(/^company:request_decline:(.+)$/);
     if (requestDeclineMatch) {
       callbackText = "Отклонение заявки";
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: `/company_decline ${requestDeclineMatch[1]}`,
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+        return;
+      }
+      const requests = await storage.getJoinRequestsByCompany(membership.company.id);
+      const request = requests.find((item: any) => item.id === requestDeclineMatch[1])
+        ?? requests.find((item: any) => item.id.startsWith(requestDeclineMatch[1]))
+        ?? null;
+      if (!request) {
+        await sendMessage(token, chatId, "Заявка не найдена. Открой раздел заявок ещё раз.", {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return;
+      }
+      await storage.updateJoinRequestStatus(request.id, "rejected");
+      await sendMessage(token, chatId, `✅ Заявка ${request.username} отклонена.`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
       });
+      await sendCompanyRequestsSection(token, chatId, membership);
       return;
     }
 
@@ -10809,11 +11396,28 @@ async function handleIncomingCallback(token: string, webAppUrl: string, query: T
     );
     if (departmentUpgradeMatch) {
       callbackText = "Улучшение отдела";
-      await handleIncomingMessage(token, webAppUrl, {
-        chat: { id: chatId },
-        from: query.from,
-        text: `/company_department_upgrade ${departmentUpgradeMatch[1]}`,
-      });
+      if (membership.role !== "owner") {
+        await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+        return;
+      }
+      const departmentKey = departmentUpgradeMatch[1] as CompanyDepartmentKey;
+      const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
+      const result = upgradeDepartment(companyEconomy, departmentKey);
+      if (!result.ok) {
+        await sendWithMainKeyboard(token, chatId, `❌ ${result.reason ?? "Улучшение недоступно"}`);
+        await sendCompanyDepartmentsSection(token, chatId, membership);
+        return;
+      }
+      await saveCompanyEconomyState(membership.company, result.company);
+      await sendMessage(
+        token,
+        chatId,
+        `✅ Отдел ${DEPARTMENT_LABELS[departmentKey]} улучшен до уровня ${result.company.departments[departmentKey]} (-${formatNumber(result.spentGRM ?? 0)} GRM)`,
+      );
+      const refreshed = await getPlayerCompanyContext(player.id);
+      if (refreshed) {
+        await sendCompanyDepartmentsSection(token, chatId, refreshed);
+      }
       return;
     }
 
@@ -10938,13 +11542,20 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (canSelectProfession(playerForRegistration) && !["/help", "/profession"].includes(command)) {
-    await maybePromptProfession(token, chatId, playerForRegistration);
-    return;
+  if (
+    shouldAutoPromptProfession(playerForRegistration)
+    && !["/help", "/profession", "/pvp", "/pvp_find"].includes(command)
+  ) {
+    await maybePromptProfession(token, chatId, playerForRegistration, { force: false });
   }
 
   if (await maybeStartCitySectionTravel(token, chatId, playerForRegistration, message, command)) {
     return;
+  }
+
+  const pendingExclusiveAction = getPendingExclusiveAction(chatId);
+  if (pendingExclusiveAction && isReplyNavigationCommand(command) && !isCommandCompatibleWithExclusiveAction(command, pendingExclusiveAction)) {
+    pendingActionByChatId.delete(chatId);
   }
 
   if (!["/help", "/cancel", "/start", "/starttg"].includes(command)) {
@@ -10972,11 +11583,11 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       "👤 Игрок",
       "• /profile — профиль игрока",
       "• /me | /status — быстрый профиль",
-      "• /profession — выбрать профессию с 15 уровня",
+      `• /profession — выбрать профессию с ${PROFESSION_UNLOCK_LEVEL} уровня`,
       "• /jobs — список вакансий",
       "• Вакансии запускаются из /jobs кнопками.",
       "• /study — меню обучения",
-      "• /tutorial — стартовое обучение (8 шагов)",
+      "• Обучение запускается через кнопку «🎓 Обучение»",
       "• /repair_service — городской сервис ремонта гаджетов",
       "• Аукцион теперь поддерживает покупку и ставки кнопками.",
       "",
@@ -10989,9 +11600,11 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
       "",
       "🏦 Банк и GRM",
       "• /bank — банковское меню кнопками",
-      "• /credits | /deposits — программы",
-      "• После открытия программы бот ждёт обычный ответ: номер сумма дни.",
-      "• /repay | /withdraw — закрыть продукт",
+      "• Кредиты: быстрый и стандартный, для ускорения развития.",
+      "• Вклады: надёжный, рискованный и PvP-вклад.",
+      "• Биржа и обмен GRM работают через кнопки и диалоговые сообщения.",
+      "• Открытие кредита или вклада: выбери программу кнопкой и отправь сумму.",
+      "• Закрытие кредита и вклада доступно из банкового меню.",
       "• /gram — обмен валюты и GRM",
       "• /exchange_to_gram <сумма>",
       "• /exchange_from_gram <кол-во>",
@@ -11057,195 +11670,96 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/start") {
-    const payload = args[0] ?? "";
-    const player = playerForRegistration;
-    const startRegistrationStep = resolveTelegramRegistrationStep(player, chatId);
-    if (startRegistrationStep) {
-      await beginTelegramRegistration(token, chatId, player, payload, startRegistrationStep);
-      return;
-    }
-    const referralResult = await applyReferralFromStartPayload(player, payload);
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    const profileText = await formatPlayerProfile(snapshot);
-    const referralNotice =
-      referralResult?.status === "applied"
-        ? `\n\n🎃 Реферальный бонус начислен: +${getCurrencySymbol(snapshot.user.city)}${REFERRAL_NEW_PLAYER_REWARD}`
-        : referralResult?.status === "self"
-        ? "\n\n⚠️ Нельзя активировать собственную реферальную ссылку."
-        : referralResult?.status === "already"
-        ? "\n\nℹ️ Реферальная ссылка уже была активирована ранее."
-        : referralResult?.status === "invalid"
-        ? "\n\n⚠️ Реферальный код не найден."
-        : "";
-    const intro = `${buildWelcomeMessage(message.from)}${referralNotice}\n\n${profileText}`;
-    if (canUseTelegramWebAppButton(webAppUrl)) {
-      const startAppUrl = `${webAppUrl}?tgStart=${encodeURIComponent(payload)}`;
-      await sendMessage(token, chatId, intro, {
-        reply_markup: { inline_keyboard: [[{ text: "🚀 Открыть игру (Mini App)", web_app: { url: startAppUrl } }]] },
-      });
-    } else {
-      await sendMessage(token, chatId, `${intro}\n\nвљ пёЏ Mini App РЅРµ РЅР°СЃС‚СЂРѕРµРЅ: TELEGRAM_WEBAPP_URL РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ HTTPS.`);
-    }
-
-    if (referralResult?.status === "applied") {
-      const inviterTelegramId = getTelegramIdByUserId(referralResult.inviter.id);
-      const inviterChatId = Number(inviterTelegramId);
-      if (Number.isFinite(inviterChatId) && inviterChatId !== chatId) {
-        try {
-          await sendWithMainKeyboard(
-            token,
-            inviterChatId,
-            [
-              "🎉 Новый реферал по твоей ссылке!",
-              `👤 Игрок: ${snapshot.user.username}`,
-              `💰 Бонус: +${getCurrencySymbol(referralResult.inviter.city)}${REFERRAL_INVITER_REWARD}`,
-              `💼 Текущий баланс: ${getCurrencySymbol(referralResult.inviter.city)}${referralResult.inviter.balance}`,
-            ].join("\n"),
-          );
-        } catch (error) {
-          console.warn("⚠️ Не удалось отправить уведомление рефереру:", error);
-        }
-      }
-    }
-
-    await restoreTelegramMenuState(token, chatId, player, message, "Для текстовой версии игры отправь: /starttg");
+  if (await handleNavigationMessage({
+    command,
+    args,
+    token,
+    webAppUrl,
+    chatId,
+    message,
+    player: playerForRegistration,
+    pendingActionByChatId,
+    playerTravelByUserId,
+    getTravelRemainingSeconds,
+    formatTravelTargetLabel,
+    getPlayerHubLocation,
+    ensureExclusiveActionAllowed,
+    TRAVEL_TO_CITY_MS,
+    TRAVEL_TO_COMPANY_MS,
+    setPlayerHubLocation,
+    clearPlayerTravel,
+    resolveTelegramRegistrationStep,
+    beginTelegramRegistration,
+    applyReferralFromStartPayload,
+    resolveTelegramSnapshot,
+    formatPlayerProfile,
+    buildWelcomeMessage,
+    canUseTelegramWebAppButton,
+    sendMessage,
+    getCurrencySymbol,
+    REFERRAL_NEW_PLAYER_REWARD,
+    REFERRAL_INVITER_REWARD,
+    getTelegramIdByUserId,
+    sendWithMainKeyboard,
+    restoreTelegramMenuState,
+    formatNotices,
+    buildBotModeMessage,
+    sendHomeMenu,
+    rememberTelegramMenu,
+    sendWithExtrasKeyboard,
+    ensureCityHubAccess,
+    formatAuctionSection,
+    buildAuctionInlineMarkup,
+    resolveCityName,
+    isCityTemporarilyAvailable,
+    CITY_CAPACITY_MESSAGE,
+    CITY_REPLY_MARKUP,
+    storage,
+  })) {
     return;
   }
 
-  if (command === "/starttg") {
-    const startTgRegistrationStep = resolveTelegramRegistrationStep(playerForRegistration, chatId);
-    if (startTgRegistrationStep) {
-      await beginTelegramRegistration(token, chatId, playerForRegistration, undefined, startTgRegistrationStep);
-      return;
-    }
-    pendingActionByChatId.delete(chatId);
-    await restoreTelegramMenuState(token, chatId, playerForRegistration, message);
-    return;
-  }
-
-  if (command === "/menu") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const activeTravel = playerTravelByUserId.get(player.id);
-    if (activeTravel) {
-      const secondsLeft = getTravelRemainingSeconds(player.id);
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы уже в пути в ${formatTravelTargetLabel(activeTravel.target)}. Осталось ~${secondsLeft} сек.`);
-      return;
-    }
-
-    const currentLocation = getPlayerHubLocation(player.id);
-    if (currentLocation !== "home") {
-      if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "travel"))) {
-        return;
-      }
-      const travelMs = currentLocation === "city" ? TRAVEL_TO_CITY_MS : TRAVEL_TO_COMPANY_MS;
-      const travelSec = Math.ceil(travelMs / 1000);
-      const arrivesAtMs = Date.now() + travelMs;
-      await sendWithMainKeyboard(token, chatId, `🚶 Возвращаемся в главное меню (дом). Прибытие через ${travelSec} сек.`);
-      const timer = setTimeout(async () => {
-        try {
-          const state = playerTravelByUserId.get(player.id);
-          if (!state || state.arrivesAtMs !== arrivesAtMs || state.target !== "home") return;
-          playerTravelByUserId.delete(player.id);
-          setPlayerHubLocation(player.id, "home");
-          const snapshot = await resolveTelegramSnapshot(message.from);
-          const notices = formatNotices(snapshot.notices);
-          const base = await buildBotModeMessage(snapshot);
-          await sendWithMainKeyboard(token, state.chatId, `✅ Вы вернулись домой.\n\n${notices ? `${base}\n\n${notices}` : base}`);
-        } catch (error) {
-          console.error("Travel to home (menu) completion error:", error);
-        }
-      }, travelMs);
-      playerTravelByUserId.set(player.id, { target: "home", arrivesAtMs, timer, chatId });
-      return;
-    }
-
-    clearPlayerTravel(player.id);
-    setPlayerHubLocation(player.id, "home");
-    pendingActionByChatId.delete(chatId);
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    await sendHomeMenu(token, chatId, snapshot, player.id);
-    return;
-  }
-
-  if (command === "/extras") {
-    rememberTelegramMenu(playerForRegistration.id, { menu: "extras" });
-    await sendWithExtrasKeyboard(
-      token,
-      chatId,
-      [
-        "🧩 Допы",
-        "• Рейтинг",
-        "• Квесты",
-        "• Репутация",
-        "• Рефералы",
-      ].join("\n"),
-    );
-    return;
-  }
-
-  if (command === "/city_hub") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const activeTravel = playerTravelByUserId.get(player.id);
-    if (activeTravel) {
-      const secondsLeft = getTravelRemainingSeconds(player.id);
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы уже в пути в ${formatTravelTargetLabel(activeTravel.target)}. Осталось ~${secondsLeft} сек.`);
-      return;
-    }
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "travel"))) {
-      return;
-    }
-
-    const currentLocation = getPlayerHubLocation(player.id);
-    if (currentLocation === "company") {
-      await forceReturnHome(token, chatId, player, message, "⛔ Из компании нельзя сразу перейти в город.");
-      return;
-    }
-
-    if (currentLocation === "home") {
-      const travelMs = getHousingTravelDurationMs(player, TRAVEL_TO_CITY_MS);
-      const arrivesAtMs = Date.now() + travelMs;
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы вышли из дома в город. Прибытие через ${Math.ceil(travelMs / 1000)} сек.`);
-      const timer = setTimeout(async () => {
-        try {
-          const state = playerTravelByUserId.get(player.id);
-          if (!state || state.arrivesAtMs !== arrivesAtMs || state.target !== "city") return;
-          playerTravelByUserId.delete(player.id);
-          setPlayerHubLocation(player.id, "city");
-          await sendCityHubSummary(token, state.chatId, player.id, "✅ Вы прибыли в город.");
-        } catch (error) {
-          console.error("Travel to city completion error:", error);
-        }
-      }, travelMs);
-      playerTravelByUserId.set(player.id, { target: "city", arrivesAtMs, timer, chatId });
-      return;
-    }
-
-    setPlayerHubLocation(player.id, "city");
-    await sendCityHubSummary(token, chatId, player.id);
-    return;
-  }
-
-  if (command === "/auction") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    await sendMessage(token, chatId, await formatAuctionSection(player.id, chatId), {
-      reply_markup: await buildAuctionInlineMarkup(player.id, chatId),
-    });
-    return;
-  }
-
-  if (command === "/housing") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    const refreshedUser = await grantStarterHousing(player.id);
-    const activeHouse = getActiveHousing(refreshedUser) ?? getStarterHousingForCity(refreshedUser.city);
-    rememberTelegramMenu(player.id, { menu: "housing" });
-    if (!activeHouse) {
-      await sendWithCityHubKeyboard(token, chatId, "🏘 Недвижимость в этом городе пока закрыта.");
-      return;
-    }
-    await sendHousingCard(token, chatId, refreshedUser, activeHouse, formatHousingMenuText(refreshedUser));
+  if (await handleCityMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    playerTravelByUserId,
+    getTravelRemainingSeconds,
+    formatTravelTargetLabel,
+    sendWithMainKeyboard,
+    ensureExclusiveActionAllowed,
+    getPlayerHubLocation,
+    forceReturnHome,
+    getHousingTravelDurationMs,
+    TRAVEL_TO_CITY_MS,
+    setPlayerHubLocation,
+    sendCityHubSummary,
+    ensureCityHubAccess,
+    grantStarterHousing,
+    getActiveHousing,
+    getStarterHousingForCity,
+    rememberTelegramMenu,
+    sendWithCityHubKeyboard,
+    sendHousingCard,
+    formatHousingMenuText,
+    pendingActionByChatId,
+    sendWithCurrentHubKeyboard,
+    resolveEducationLevel,
+    sendMessage,
+    formatEducationCoursesMenu,
+    buildEducationCoursesReplyMarkup,
+    formatEducationLevelsMenu,
+    buildEducationLevelsReplyMarkup,
+    resolveTelegramSnapshot,
+    listJobsByCity,
+    getPlayerProfessionId,
+    formatJobsMenu,
+    buildJobsInlineMarkup,
+    runJobSelection,
+  })) {
     return;
   }
 
@@ -11287,7 +11801,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
     const ref = args.join(" ").trim();
     if (!ref) {
-      await sendWithCityHubKeyboard(token, chatId, "Использование: /auction_buy <номер лота>");
+      await sendWithCityHubKeyboard(token, chatId, "Открой аукцион и выбери лот кнопкой покупки.");
       return;
     }
     try {
@@ -11306,7 +11820,7 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     const ref = String(args[0] || "").trim();
     const amount = Number(args[1] || 0);
     if (!ref || !Number.isFinite(amount) || amount <= 0) {
-      await sendWithCityHubKeyboard(token, chatId, "Использование: /auction_bid <номер лота> <GRM>");
+      await sendWithCityHubKeyboard(token, chatId, "Открой аукцион, выбери лот и укажи сумму ставки обычным сообщением.");
       return;
     }
     try {
@@ -11319,214 +11833,48 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/profile" || command === "/me" || command === "/status") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const activeTravel = playerTravelByUserId.get(player.id);
-    if (activeTravel) {
-      const secondsLeft = getTravelRemainingSeconds(player.id);
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы уже в пути в ${formatTravelTargetLabel(activeTravel.target)}. Осталось ~${secondsLeft} сек.`);
-      return;
-    }
-
-    const currentLocation = getPlayerHubLocation(player.id);
-    if (currentLocation !== "home") {
-      if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "travel"))) {
-        return;
-      }
-      const travelMs = currentLocation === "city" ? TRAVEL_TO_CITY_MS : TRAVEL_TO_COMPANY_MS;
-      const travelSec = Math.ceil(travelMs / 1000);
-      const arrivesAtMs = Date.now() + travelMs;
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы отправились домой. Прибытие через ${travelSec} сек.`);
-      const timer = setTimeout(async () => {
-        try {
-          const state = playerTravelByUserId.get(player.id);
-          if (!state || state.arrivesAtMs !== arrivesAtMs || state.target !== "home") return;
-          playerTravelByUserId.delete(player.id);
-          setPlayerHubLocation(player.id, "home");
-          const snapshot = await resolveTelegramSnapshot(message.from);
-          const notices = formatNotices(snapshot.notices);
-          const base = await formatPlayerProfile(snapshot);
-          await sendWithMainKeyboard(token, state.chatId, `✅ Вы вернулись домой.\n\n${notices ? `${base}\n\n${notices}` : base}`);
-        } catch (error) {
-          console.error("Travel to home completion error:", error);
-        }
-      }, travelMs);
-      playerTravelByUserId.set(player.id, { target: "home", arrivesAtMs, timer, chatId });
-      return;
-    }
-
-    clearPlayerTravel(player.id);
-    setPlayerHubLocation(player.id, "home");
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    const notices = formatNotices(snapshot.notices);
-    const base = await formatPlayerProfile(snapshot);
-    await sendWithMainKeyboard(token, chatId, notices ? `${base}\n\n${notices}` : base);
-    return;
-  }
-
-  if (command === "/profession") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const currentProfession = getProfessionById(getPlayerProfessionId(player) || "");
-    if (currentProfession) {
-      await sendWithMainKeyboard(
-        token,
-        chatId,
-        `🎓 Текущая профессия: ${currentProfession.emoji} ${currentProfession.name}\n${currentProfession.subtitle}`,
-      );
-      return;
-    }
-    if (player.level < PROFESSION_UNLOCK_LEVEL) {
-      await sendWithMainKeyboard(token, chatId, `🎓 Профессия откроется на ${PROFESSION_UNLOCK_LEVEL} уровне.`);
-      return;
-    }
-    await sendMessage(token, chatId, buildProfessionSelectText(), {
-      reply_markup: buildProfessionSelectInlineMarkup(),
-    });
-    return;
-  }
-
-  if (command === "/ref" || command === "/referral") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    rememberTelegramMenu(player.id, { menu: "extras" });
-    await sendWithExtrasKeyboard(token, chatId, await formatReferralMenu(player));
-    return;
-  }
-
-  if (command === "/reputation" || command === "/rep") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    await sendMessage(token, chatId, formatReputationMenu(player), {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🗓 Квесты", callback_data: "quest:refresh" }, { text: "🏆 Рейтинг", callback_data: "quest:rating" }],
-        ],
-      },
-    });
-    return;
-  }
-
-  if (command === "/quests" || command === "/quest") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const questView = formatWeeklyQuestMenu(player);
-    await sendMessage(token, chatId, questView.text, {
-      reply_markup: buildQuestInlineButtons(questView.canClaim),
-    });
-    return;
-  }
-
-  if (command === "/quest_claim") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    try {
-      const claimed = await claimWeeklyQuestReward(player.id);
-      const snapshot = await getUserWithGameState(player.id);
-      const questView = formatWeeklyQuestMenu(claimed.user);
-      const lines = [
-        "🎁 Награда за недельный квест получена!",
-        `+${getCurrencySymbol(claimed.user.city)}${claimed.rewardMoney}, +${claimed.rewardExp} XP, +${claimed.rewardReputation} СЂРµРїСѓС‚Р°С†РёРё`,
-      ];
-      if (snapshot) {
-        lines.push("", await formatPlayerProfile(snapshot));
-      }
-      await sendMessage(token, chatId, lines.join("\n"), {
-        reply_markup: buildQuestInlineButtons(questView.canClaim),
-      });
-    } catch (error) {
-      await sendWithMainKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/tutorial" || command === "/onboarding") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    try {
-      await sendTutorialMenu(token, chatId, player.id);
-    } catch (error) {
-      await sendWithMainKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/rating" || command === "/top") {
-    const firstArg = args[0];
-    const entity = isRatingEntityToken(firstArg) ? normalizeRatingEntity(firstArg) : "players";
-    const sortArg = isRatingEntityToken(firstArg) ? args[1] : firstArg;
-    const ratingMenu = await formatRatingMenu(entity, sortArg);
-    await sendMessage(token, chatId, ratingMenu.text, {
-      reply_markup: buildRatingInlineButtons(ratingMenu.entity, ratingMenu.sort),
-    });
-    return;
-  }
-
-  if (command === "/study") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "study"))) {
-      return;
-    }
-    const requestedLevel = args.join(" ").trim();
-    if (requestedLevel) {
-      const levelKey = resolveEducationLevel(requestedLevel, player.level);
-      if (!levelKey) {
-        await sendWithCurrentHubKeyboard(token, chatId, player.id, "❌ Этот уровень обучения недоступен.");
-        return;
-      }
-      pendingActionByChatId.set(chatId, { type: "study_course_select", levelKey });
-      rememberTelegramMenu(player.id, { menu: "study_courses", levelKey });
-      await sendMessage(token, chatId, formatEducationCoursesMenu(player, levelKey), {
-        reply_markup: buildEducationCoursesReplyMarkup(levelKey),
-      });
-      return;
-    }
-
-    pendingActionByChatId.set(chatId, { type: "study_level_select" });
-    rememberTelegramMenu(player.id, { menu: "study_levels" });
-    await sendMessage(token, chatId, formatEducationLevelsMenu(player), {
-      reply_markup: buildEducationLevelsReplyMarkup(player.level),
-    });
-    return;
-  }
-  if (command === "/jobs") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "job"))) {
-      return;
-    }
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    const jobsCount = listJobsByCity(snapshot.user.city, getPlayerProfessionId(snapshot.user), snapshot.user.level).length;
-    if (jobsCount <= 0) {
-      pendingActionByChatId.delete(chatId);
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "В вашем городе нет вакансий.");
-      return;
-    }
-    pendingActionByChatId.set(chatId, { type: "job_select" });
-    rememberTelegramMenu(player.id, { menu: "jobs" });
-    await sendMessage(token, chatId, formatJobsMenu(snapshot), { reply_markup: buildJobsInlineMarkup(snapshot) });
-    return;
-  }
-
-  if (command === "/job") {
-    const ref = args.join(" ").trim();
-    if (!ref) {
-      const player = await resolveOrCreateTelegramPlayer(message.from);
-      const snapshot = await resolveTelegramSnapshot(message.from);
-      const jobsCount = listJobsByCity(snapshot.user.city, getPlayerProfessionId(snapshot.user), snapshot.user.level).length;
-      if (jobsCount <= 0) {
-        await sendWithCurrentHubKeyboard(token, chatId, player.id, "В вашем городе нет вакансий.");
-        return;
-      }
-      pendingActionByChatId.set(chatId, { type: "job_select" });
-      rememberTelegramMenu(player.id, { menu: "jobs" });
-      await sendMessage(token, chatId, formatJobsMenu(snapshot), { reply_markup: buildJobsInlineMarkup(snapshot) });
-      return;
-    }
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCityHubAccess(token, chatId, player, message))) return;
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "job"))) {
-      return;
-    }
-    const result = await runJobSelection(token, chatId, player, ref);
-    if (!result.ok) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${result.message}\nОткрой вакансии ещё раз и выбери подходящую кнопку.`);
-    }
+  if (await handleProfileMetaMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    playerTravelByUserId,
+    getTravelRemainingSeconds,
+    formatTravelTargetLabel,
+    sendWithMainKeyboard,
+    getPlayerHubLocation,
+    ensureExclusiveActionAllowed,
+    resolveTelegramSnapshot,
+    setPlayerHubLocation,
+    clearPlayerTravel,
+    TRAVEL_TO_CITY_MS,
+    TRAVEL_TO_COMPANY_MS,
+    formatNotices,
+    formatPlayerProfile,
+    getProfessionById,
+    getPlayerProfessionId,
+    PROFESSION_UNLOCK_LEVEL,
+    buildProfessionSelectText,
+    buildProfessionSelectInlineMarkup,
+    sendMessage,
+    rememberTelegramMenu,
+    formatReferralMenu,
+    sendWithExtrasKeyboard,
+    formatReputationMenu,
+    formatWeeklyQuestMenu,
+    buildQuestInlineButtons,
+    claimWeeklyQuestReward,
+    getUserWithGameState,
+    getCurrencySymbol,
+    extractErrorMessage,
+    sendTutorialMenu,
+    isRatingEntityToken,
+    normalizeRatingEntity,
+    formatRatingMenu,
+    buildRatingInlineButtons,
+  })) {
     return;
   }
 
@@ -11658,1610 +12006,284 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/admin") {
-    if (!isAdminEnabled()) {
-      await sendWithMainKeyboard(token, chatId, "❌ Админ-режим отключён: ADMIN_PASSWORD не настроен.");
-      return;
-    }
-    const password = args.join(" ").trim();
-    if (!password) {
-      pendingActionByChatId.set(chatId, { type: "admin_auth" });
-      await sendWithMainKeyboard(token, chatId, "🔐 Введи пароль администратора.");
-      return;
-    }
-
-    if (!ADMIN_PASSWORD || password !== ADMIN_PASSWORD) {
-      await sendWithMainKeyboard(token, chatId, "❌ Неверный пароль администратора.");
-      return;
-    }
-
-    adminAuthByChatId.set(chatId, true);
-    await sendWithAdminKeyboard(
-      token,
-      chatId,
-      [
-        "🛠 Админ-режим включен.",
-        "Команды: /admin_add_money <сумма>, /admin_add_exp <сумма>, /admin_reset_player, /admin_restart, /admin_hackathon_start, /admin_hackathon_end, /admin_hackathon_reset, /admin_global_event, /admin_logout",
-      ].join("\n"),
-    );
+  if (await handleCompanyMembershipMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    getCompanyCreateCostForPlayer,
+    getPlayerCompanyContext,
+    sendMessage,
+    buildCompanyReplyMarkup,
+    pendingActionByChatId,
+    getCurrencySymbol,
+    normalizeTelegramCompanyName,
+    sendWithMainKeyboard,
+    storage,
+    companyListByChatId,
+    getTopCompanies,
+    buildCompanyRegistryInlineMarkup,
+    ensureCompanyEconomyState,
+    stopCompanyBlueprintProgressTicker,
+    companyBlueprintProgressMessageByChatId,
+    ensureCompanyHubAccess,
+    setCompanyMenuSection,
+    rememberTelegramMenu,
+    companyRequestsByChatId,
+    sendCompanyRequestsSection,
+    companyEconomyByCompanyId,
+    companySalaryByCompanyId,
+    companySalaryClaimAtByCompanyId,
+    getTelegramIdByUserId,
+  })) {
     return;
   }
 
-  if (command === "/admin_add_money") {
-    if (!adminAuthByChatId.get(chatId)) {
-      await sendWithMainKeyboard(token, chatId, "❌ Доступ запрещен. Авторизуйся: /admin <пароль>");
-      return;
-    }
-    const amountRaw = args.join(" ").trim();
-    if (!amountRaw) {
-      pendingActionByChatId.set(chatId, { type: "admin_add_money" });
-      await sendWithAdminKeyboard(token, chatId, "Введите сумму для начисления.");
-      return;
-    }
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const amount = Math.floor(Number(amountRaw));
-    if (!Number.isFinite(amount) || amount <= 0) {
-      await sendWithAdminKeyboard(token, chatId, "Введите корректную сумму > 0.");
-      return;
-    }
-    const updated = await storage.updateUser(player.id, { balance: player.balance + amount });
-    const refreshed = await getUserWithGameState(updated.id);
-    await sendWithAdminKeyboard(
-      token,
-      chatId,
-      refreshed
-        ? `✅ РќР°С‡РёСЃР»РµРЅРѕ ${getCurrencySymbol(updated.city)}${amount}\n\n${await formatPlayerProfile(refreshed)}`
-        : `✅ РќР°С‡РёСЃР»РµРЅРѕ ${getCurrencySymbol(updated.city)}${amount}`,
-    );
+  if (await handleCompanyProcessMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    ensureCompanyHubAccess,
+    setCompanyMenuSection,
+    rememberTelegramMenu,
+    getPlayerCompanyContext,
+    sendWithMainKeyboard,
+    ensureCompanyProcessUnlocked,
+    COMPANY_MINING_PLANS,
+    getCompanyMiningPlan,
+    callInternalApi,
+    scheduleCompanyMiningReadyNotification,
+    sendMessage,
+    buildCompanyMiningInlineButtons,
+    extractErrorMessage,
+    buildCompanyReplyMarkup,
+    getCompanyMiningStatus,
+    formatMiningPlansMenu,
+    ensureCompanyWarehouseCanStoreMiningReward,
+    claimCompanyMining,
+    addPartToCompanyWarehouse,
+    resolveWarehousePartRefFromChat,
+    resolveWarehouseGadgetRefFromChat,
+    resolveTelegramSnapshot,
+    formatCompanyPartDepositList,
+    pendingActionByChatId,
+    getCompanyBlueprintSnapshot,
+    getCompanyWarehouseUsedSlots,
+    applyGameStatePatch,
+    ALL_PARTS,
+    getCompanyWarehouseParts,
+    setCompanyWarehouseParts,
+    normalizePartRarity,
+    sendCompanyWarehouseSection,
+    getUserWithGameState,
+    companyPartDepositRefsByChatId,
+    resolveCompanyPartDepositRefFromChat,
+    transferCompanyPartToWarehouse,
+  })) {
     return;
   }
 
-  if (command === "/admin_add_exp") {
-    if (!adminAuthByChatId.get(chatId)) {
-      await sendWithMainKeyboard(token, chatId, "❌ Доступ запрещен. Авторизуйся: /admin <пароль>");
-      return;
-    }
-    const expRaw = args.join(" ").trim();
-    if (!expRaw) {
-      pendingActionByChatId.set(chatId, { type: "admin_add_exp" });
-      await sendWithAdminKeyboard(token, chatId, "Введите количество опыта.");
-      return;
-    }
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const gain = Math.floor(Number(expRaw));
-    if (!Number.isFinite(gain) || gain <= 0) {
-      await sendWithAdminKeyboard(token, chatId, "Введите корректное значение опыта > 0.");
-      return;
-    }
-    const next = applyExperienceGain(player, gain);
-    const updated = await storage.updateUser(player.id, {
-      level: next.level,
-      experience: next.experience,
-    });
-    const refreshed = await getUserWithGameState(updated.id);
-    await sendWithAdminKeyboard(
-      token,
-      chatId,
-      refreshed ? `✅ РќР°С‡РёСЃР»РµРЅРѕ ${gain} XP\n\n${await formatPlayerProfile(refreshed)}` : `✅ РќР°С‡РёСЃР»РµРЅРѕ ${gain} XP`,
-    );
+  if (await handleAdminMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    ADMIN_PASSWORD,
+    isAdminEnabled,
+    adminAuthByChatId,
+    pendingActionByChatId,
+    sendWithMainKeyboard,
+    sendWithAdminKeyboard,
+    resolveOrCreateTelegramPlayer,
+    storage,
+    getUserWithGameState,
+    getCurrencySymbol,
+    formatPlayerProfile,
+    applyExperienceGain,
+    getPlayerCompanyContext,
+    ensureCompanyEconomyState,
+    clearPlayerGameState,
+    unbindTelegramByUserId,
+    unbindTelegramByTelegramId,
+    companyEconomyByCompanyId,
+    companySalaryByCompanyId,
+    companySalaryClaimAtByCompanyId,
+    referralCodeByUserId,
+    referralOwnerByCode,
+    referredByUserId,
+    referralChildrenByUserId,
+    weeklyQuestStateByUserId,
+    inventoryRefsByChatId,
+    companyMemberRefsByChatId,
+    stopCompanyBlueprintProgressTicker,
+    companyBlueprintProgressMessageByChatId,
+    registrationDraftByChatId,
+    callInternalAdminApi,
+    extractErrorMessage,
+  })) {
     return;
   }
 
-  if (command === "/admin_reset_player" || command === "/admin_restart") {
-    if (!adminAuthByChatId.get(chatId)) {
-      await sendWithMainKeyboard(token, chatId, "❌ Доступ запрещен. Авторизуйся: /admin <пароль>");
-      return;
-    }
-
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const tutorialCompany = await storage.getTutorialCompanyByOwner(player.id);
-    if (tutorialCompany) {
-      await storage.deleteCompany(tutorialCompany.id);
-      companyEconomyByCompanyId.delete(String(tutorialCompany.id));
-      companySalaryByCompanyId.delete(String(tutorialCompany.id));
-      companySalaryClaimAtByCompanyId.delete(String(tutorialCompany.id));
-    }
-
-    const membership = await getPlayerCompanyContext(player.id);
-    if (membership) {
-      if (membership.role === "owner") {
-        await storage.deleteCompany(membership.company.id);
-        companyEconomyByCompanyId.delete(String(membership.company.id));
-        companySalaryByCompanyId.delete(String(membership.company.id));
-        companySalaryClaimAtByCompanyId.delete(String(membership.company.id));
-      } else {
-        await storage.removeCompanyMember(membership.company.id, player.id);
-        const updatedCompany = await storage.getCompany(membership.company.id);
-        if (updatedCompany) {
-          const members = await storage.getCompanyMembers(updatedCompany.id);
-          await ensureCompanyEconomyState(updatedCompany, members.length);
-        }
-      }
-    }
-
-    const ownReferralCode = referralCodeByUserId.get(player.id);
-    if (ownReferralCode) {
-      referralOwnerByCode.delete(ownReferralCode);
-    }
-    referralCodeByUserId.delete(player.id);
-
-    const inviterId = referredByUserId.get(player.id);
-    if (inviterId) {
-      const inviterChildren = referralChildrenByUserId.get(inviterId);
-      if (inviterChildren) {
-        inviterChildren.delete(player.id);
-        if (!inviterChildren.size) {
-          referralChildrenByUserId.delete(inviterId);
-        }
-      }
-    }
-    referredByUserId.delete(player.id);
-
-    const children = referralChildrenByUserId.get(player.id);
-    if (children) {
-      for (const childId of Array.from(children)) {
-        referredByUserId.delete(childId);
-      }
-    }
-    referralChildrenByUserId.delete(player.id);
-    weeklyQuestStateByUserId.delete(player.id);
-
-    clearPlayerGameState(player.id);
-    unbindTelegramByUserId(player.id);
-    if (message.from?.id) {
-      unbindTelegramByTelegramId(String(message.from.id));
-    }
-    inventoryRefsByChatId.delete(chatId);
-    companyMemberRefsByChatId.delete(chatId);
-    stopCompanyBlueprintProgressTicker(chatId);
-    companyBlueprintProgressMessageByChatId.delete(chatId);
-    registrationDraftByChatId.delete(chatId);
-    pendingActionByChatId.delete(chatId);
-    await storage.deleteUser(player.id);
-
-    await sendWithAdminKeyboard(
-      token,
-      chatId,
-      [
-        "✅ Полный сброс выполнен.",
-        "Аккаунт игрока удалён полностью.",
-        "Отправь /start и пройди регистрацию заново.",
-      ].join("\n"),
-    );
+  if (await handlePvpMessage({
+    command,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    canEnterPvp,
+    getPvpAccessMessage,
+    sendMessage,
+    PVP_MENU_REPLY_MARKUP,
+    formatPvpMenu,
+    buildProfessionSelectText,
+    buildProfessionSelectInlineMarkup,
+    ensureExclusiveActionAllowed,
+    callInternalApi,
+    startPvpQueuePolling,
+    stopPvpQueuePolling,
+    sendWithCurrentHubKeyboard,
+    extractErrorMessage,
+  })) {
     return;
   }
 
-  if (command === "/admin_hackathon_start" || command === "/admin_hackathon_end" || command === "/admin_hackathon_reset") {
-    if (!adminAuthByChatId.get(chatId)) {
-      await sendWithMainKeyboard(token, chatId, "❌ Доступ запрещен. Авторизуйся: /admin <пароль>");
-      return;
-    }
-
-    try {
-      const action = command === "/admin_hackathon_start"
-        ? "start"
-        : command === "/admin_hackathon_end"
-          ? "end"
-          : "reset";
-      const snapshot = await callInternalAdminApi("POST", `/api/admin/events/hackathon/${action}`);
-      const topLine = action === "start"
-        ? "✅ Weekly Hackathon запущен."
-        : action === "end"
-          ? "✅ Weekly Hackathon завершён."
-          : "✅ Weekly Hackathon сброшен.";
-      const lines = [
-        topLine,
-        `Статус: ${String(snapshot?.status ?? "unknown")}`,
-      ];
-      if (snapshot?.registeredCompanies) {
-        lines.push(`Компаний зарегистрировано: ${Number(snapshot.registeredCompanies)}`);
-      }
-      if (snapshot?.startedAt) {
-        lines.push(`Старт: ${new Date(Number(snapshot.startedAt)).toLocaleString("ru-RU")}`);
-      }
-      if (snapshot?.endsAt) {
-        lines.push(`Финиш: ${new Date(Number(snapshot.endsAt)).toLocaleString("ru-RU")}`);
-      }
-      await sendWithAdminKeyboard(token, chatId, lines.join("\n"));
-    } catch (error) {
-      await sendWithAdminKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
+  if (await handleHackathonMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    setCompanyMenuSection,
+    sendWithCurrentHubKeyboard,
+    formatHackathonMenu,
+    formatGlobalEventsMenu,
+    getPlayerCompanyContext,
+    storage,
+    WEEKLY_HACKATHON_CONFIG,
+    registerCompanyForWeeklyHackathon,
+    extractErrorMessage,
+    getUserWithGameState,
+    startHackathonSkillProgress,
+    formatHackathonGrmMenu,
+    spendGram,
+    contributeGRMToWeeklyHackathon: contributeGrmToWeeklyHackathon,
+    hackathonPartRefsByChatId,
+    ALL_PARTS,
+    mapPartTypeToHackathonType,
+    contributePartToWeeklyHackathon,
+    applyGameStatePatch,
+    resolveHackathonPartRefFromChat,
+    formatSabotageMenu,
+    hackathonSabotageTargetRefsByChatId,
+    setHackathonCompanySecurityLevel,
+    getPendingPoachOffersForUser,
+    resolveHackathonSabotageType,
+    resolveHackathonSabotageTargetRef,
+    getWeeklyHackathonState,
+    launchWeeklyHackathonSabotage,
+    resolveHackathonPoachOffer,
+  })) {
     return;
   }
 
-  if (command === "/admin_global_event") {
-    if (!adminAuthByChatId.get(chatId)) {
-      await sendWithMainKeyboard(token, chatId, "❌ Доступ запрещен. Авторизуйся: /admin <пароль>");
-      return;
-    }
-
-    try {
-      const event = await callInternalAdminApi("POST", "/api/admin/events/global/start");
-      const lines = [
-        "✅ Глобальное событие создано.",
-        `Название: ${String(event?.title ?? "Без названия")}`,
-        `Интенсивность: ${String(event?.intensity ?? "—")}`,
-        event?.description ? `Описание: ${String(event.description)}` : "",
-        event?.city ? `Город: ${String(event.city)}` : "",
-        event?.target ? `Цель: ${String(event.target)}` : "",
-      ].filter(Boolean);
-      await sendWithAdminKeyboard(token, chatId, lines.join("\n"));
-    } catch (error) {
-      await sendWithAdminKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
+  if (await handleCompanyManagementMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    ensureCompanyHubAccess,
+    setCompanyMenuSection,
+    rememberTelegramMenu,
+    getPlayerCompanyContext,
+    sendWithMainKeyboard,
+    formatCompanyStaffingSection,
+    sendMessage,
+    buildCompanyStaffingInlineMarkup,
+    resolveCompanyDepartmentKey,
+    callInternalApi,
+    extractErrorMessage,
+    formatCompanySalariesSection,
+    buildCompanySalariesInlineMarkup,
+    companyMemberRefsByChatId,
+    storage,
+    resolveCompanyMemberRef,
+    getCompanySalaryMap,
+    getCompanySalaryClaimMap,
+    ensureCompanyEconomyState,
+    saveCompanyEconomyState,
+    getUserWithGameState,
+    formatLiveProfile,
+    getCurrencySymbol,
+    formatNumber,
+    pendingActionByChatId,
+    getLocalToGRMRate,
+    formatRate,
+    parseDecimalInput,
+    applyCompanyTopUpFromPlayer,
+    sendCompanyEconomySection,
+    COMPANY_DEPARTMENT_ORDER,
+    upgradeDepartment,
+    DEPARTMENT_LABELS,
+    sendCompanyDepartmentsSection,
+    sendWithCurrentHubKeyboard,
+    runIPO,
+    sendCompanyIpoSection,
+  })) {
     return;
   }
 
-  if (command === "/admin_logout") {
-    adminAuthByChatId.delete(chatId);
-    await sendWithMainKeyboard(token, chatId, "Админ-режим выключен.");
-    return;
-  }
-
-  if (command === "/hackathon") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_event");
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, await formatHackathonMenu(player));
-    return;
-  }
-
-  if (command === "/events") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, await formatGlobalEventsMenu(player));
-    return;
-  }
-
-  if (command === "/pvp") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    await sendMessage(token, chatId, await formatPvpMenu(player), { reply_markup: PVP_MENU_REPLY_MARKUP });
-    return;
-  }
-
-  if (command === "/pvp_find") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "pvp"))) {
-      return;
-    }
-    try {
-      const join = await callInternalApi("POST", "/api/pvp/queue/join", { userId: player.id }) as any;
-      await sendMessage(
-        token,
-        chatId,
-        join?.activeDuel?.awaitingStart
-          ? "⚔️ Матч найден. Перед стартом откроется окно boosts на 15 секунд."
-          : "⚔️ Поиск соперника запущен. Когда матч найдётся, в этом чате появится короткая дуэль-разработка с живым прогрессом.",
-        { reply_markup: PVP_MENU_REPLY_MARKUP },
-      );
-      startPvpQueuePolling(token, chatId, player.id);
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/pvp_leave") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    try {
-      await callInternalApi("POST", "/api/pvp/queue/leave", { userId: player.id });
-      stopPvpQueuePolling(chatId);
-      await sendMessage(token, chatId, "✅ Ты вышел из PvP очереди.", { reply_markup: PVP_MENU_REPLY_MARKUP });
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/pvp_history") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    try {
-      const rows = await callInternalApi("GET", `/api/pvp/history?userId=${encodeURIComponent(player.id)}&limit=5`) as any[];
-      const lines = [
-        "🧾 PvP история (последние 5):",
-        ...(rows.length
-          ? rows.map((row, idx) => {
-            const isA = String(row.playerAId) === player.id;
-            const opponent = isA ? row.playerBName : row.playerAName;
-            const before = isA ? Number(row.playerARatingBefore || 0) : Number(row.playerBRatingBefore || 0);
-            const after = isA ? Number(row.playerARatingAfter || 0) : Number(row.playerBRatingAfter || 0);
-            const resultText = String(row.winnerUserId || "") === player.id ? "Победа" : "Поражение";
-            return `${idx + 1}. ${resultText} vs ${opponent}\n   Рейтинг: ${before} → ${after}`;
-          })
-          : ["История пока пуста."]),
-      ];
-      await sendMessage(token, chatId, lines.join("\n"), { reply_markup: PVP_MENU_REPLY_MARKUP });
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/hackathon_join") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_event");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    if (membership.role !== "owner") {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Регистрировать компанию в хакатоне может только CEO.");
-      return;
-    }
-    try {
-      const company = await storage.getCompany(membership.company.id);
-      if (!company) throw new Error("Компания не найдена");
-      if (Number(company.balance || 0) < WEEKLY_HACKATHON_CONFIG.registrationCostGrm) {
-        throw new Error(`Недостаточно GRM на балансе компании. Нужно ${WEEKLY_HACKATHON_CONFIG.registrationCostGrm}`);
-      }
-      await storage.updateCompany(company.id, {
-        balance: Number(company.balance || 0) - WEEKLY_HACKATHON_CONFIG.registrationCostGrm,
-      });
-      const rndLevel = Math.max(0, Math.floor(Number(company.ork || 0) / 100));
-      registerCompanyForWeeklyHackathon({
-        companyId: company.id,
-        companyName: company.name,
-        city: company.city,
-        companyLevel: company.level,
-        rndLevel,
-      });
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "✅ Компания зарегистрирована в Weekly Hackathon.");
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/hackathon_skill") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_event");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    try {
-      const snapshot = await getUserWithGameState(player.id);
-      if (!snapshot) throw new Error("Профиль игрока не найден");
-      const game = snapshot.game as GameView;
-      const workTime = Number(game.workTime || 0);
-      if (workTime < WEEKLY_HACKATHON_CONFIG.skillEnergyCost) {
-        throw new Error(`Недостаточно энергии. Нужно ${Math.round(WEEKLY_HACKATHON_CONFIG.skillEnergyCost * 100)}%.`);
-      }
-      await startHackathonSkillProgress(token, chatId, player, membership, game);
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/hackathon_grm_menu") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_event");
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, formatHackathonGrmMenu());
-    return;
-  }
-
-  if (command === "/hackathon_grm") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_event");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    const amount = Math.floor(Number(args[0] || 0));
-    if (!WEEKLY_HACKATHON_CONFIG.grmPackages.includes(amount)) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /hackathon_grm <100|500|1000>");
-      return;
-    }
-    try {
-      await spendGram(player.id, amount, `Weekly Hackathon вклад ${amount} GRM`);
-      const result = contributeGrmToWeeklyHackathon({
-        userId: player.id,
-        companyId: membership.company.id,
-        amount,
-      });
-      await sendWithCurrentHubKeyboard(
-        token,
-        chatId,
-        player.id,
-        `✅ GRM-вклад: ${amount}\n+${result.contribution.toFixed(2)} очков\nСчёт компании: ${result.score.toFixed(2)}`,
-      );
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/hackathon_part") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_event");
-    const snapshot = await getUserWithGameState(player.id);
-    if (!snapshot) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Профиль игрока не найден.");
-      return;
-    }
-    const parts = ((snapshot.game as GameView).inventory || []).filter((item) => item.type === "part");
-    if (!parts.length) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "В инвентаре нет деталей для хакатона.");
-      return;
-    }
-    hackathonPartRefsByChatId.set(chatId, parts.map((item) => item.id));
-    const text = [
-      "🏁 Вклад деталей в Weekly Hackathon",
-      ...parts.slice(0, 10).map((item, idx) => `${idx + 1}. ${item.name} x${Math.max(1, item.quantity || 1)}  /hpart${idx + 1}`),
-      "",
-      "Нажми /hpartN или /hackathon_part_apply <номер>",
-    ].join("\n");
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, text);
-    return;
-  }
-
-  if (command === "/hackathon_part_apply") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_event");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    const rawRef = String(args[0] || "");
-    if (!rawRef) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /hackathon_part_apply <номер>");
-      return;
-    }
-    const resolvedRef = resolveHackathonPartRefFromChat(chatId, rawRef);
-    try {
-      const snapshot = await getUserWithGameState(player.id);
-      if (!snapshot) throw new Error("Профиль игрока не найден");
-      const inventory = [...((snapshot.game as GameView).inventory || [])];
-      const index = inventory.findIndex((item) => item.type === "part" && item.id === resolvedRef);
-      if (index < 0) throw new Error("Деталь не найдена. Открой /hackathon_part");
-      const partItem = inventory[index];
-      const partDef = ALL_PARTS[partItem.id];
-      if (!partDef) throw new Error("Справочник детали не найден");
-      const mappedType = mapPartTypeToHackathonType(partDef.type);
-      if (!mappedType) throw new Error("Эта деталь не участвует в хакатоне");
-      const result = contributePartToWeeklyHackathon({
-        userId: player.id,
-        companyId: membership.company.id,
-        partType: mappedType,
-        rarity: partItem.rarity,
-        quantity: 1,
-      });
-
-      const qty = Math.max(1, Math.floor(Number(partItem.quantity || 1)));
-      if (qty <= 1) {
-        inventory.splice(index, 1);
-      } else {
-        inventory[index] = { ...partItem, quantity: qty - 1 };
-      }
-      applyGameStatePatch(player.id, { inventory });
-      await sendWithCurrentHubKeyboard(
-        token,
-        chatId,
-        player.id,
-        `✅ Деталь вложена: ${partItem.name}\n+${result.contribution.toFixed(2)} очков\nСчёт компании: ${result.score.toFixed(2)}`,
-      );
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/sabotage") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_sabotage");
-    const payload = await formatSabotageMenu(player);
-    if (typeof payload === "string") {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, payload);
-      return;
-    }
-    hackathonSabotageTargetRefsByChatId.set(chatId, payload.refs);
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, payload.text);
-    return;
-  }
-
-  if (command === "/sabotage_security") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_sabotage");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    if (membership.role !== "owner") {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Изменять security level может только CEO.");
-      return;
-    }
-    const level = Math.floor(Number(args[0] || 0));
-    if (![1, 2, 3].includes(level)) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /sabotage_security <1|2|3>");
-      return;
-    }
-    try {
-      const updated = setHackathonCompanySecurityLevel(membership.company.id, level);
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `✅ Security level обновлён: ${updated}`);
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/sabotage_security_menu") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_sabotage");
-    await sendWithCurrentHubKeyboard(
-      token,
-      chatId,
-      player.id,
-      "🛡 SECURITY ХАКАТОНА\n━━━━━━━━━━━━━━\nВыбери уровень защиты командой:\n/sabotage_security 1\n/sabotage_security 2\n/sabotage_security 3",
-    );
-    return;
-  }
-
-  if (command === "/poach_menu") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "hackathon_sabotage");
-    const offers = getPendingPoachOffersForUser(player.id);
-    await sendWithCurrentHubKeyboard(
-      token,
-      chatId,
-      player.id,
-      offers.length
-        ? [
-            "📨 TALENT POACHING",
-            "━━━━━━━━━━━━━━",
-            ...offers.map((offer) => `${offer.id}: /poach_accept ${offer.id} | /poach_decline ${offer.id}`),
-          ].join("\n")
-        : "📨 Активных talent-poaching офферов нет.",
-    );
-    return;
-  }
-
-  if (command === "/sabotage_attack") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    const sabotageType = resolveHackathonSabotageType(String(args[0] || ""));
-    const targetRef = String(args[1] || "");
-    const targetUserId = args[2] ? String(args[2]) : undefined;
-    if (!sabotageType || !targetRef) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /sabotage_attack <type> <targetCompanyId|номер> [targetUserId]");
-      return;
-    }
-    const targetCompanyId = resolveHackathonSabotageTargetRef(chatId, targetRef);
-    try {
-      if (!["owner", "cto", "security_lead"].includes(String(membership.role || "").toLowerCase())) {
-        throw new Error("Только CEO / CTO / Security Lead могут запускать саботаж");
-      }
-      const state = getWeeklyHackathonState();
-      if (state.status !== "active") throw new Error("Саботаж доступен только при активном хакатоне");
-      const attackerCompany = await storage.getCompany(membership.company.id);
-      const targetCompany = await storage.getCompany(targetCompanyId);
-      if (!attackerCompany || !targetCompany) throw new Error("Компания не найдена");
-      const typeConfig = WEEKLY_HACKATHON_CONFIG.sabotage.types[sabotageType];
-      const cost = Number(typeConfig.costGrm || 0);
-      if (Number(attackerCompany.balance || 0) < cost) throw new Error(`Недостаточно GRM у компании. Нужно ${cost}`);
-      await storage.updateCompany(attackerCompany.id, {
-        balance: Number(attackerCompany.balance || 0) - cost,
-      });
-
-      const result = launchWeeklyHackathonSabotage({
-        initiatorUserId: player.id,
-        initiatorRole: membership.role,
-        attackerCompanyId: attackerCompany.id,
-        targetCompanyId: targetCompany.id,
-        sabotageType,
-        targetUserId,
-      });
-      await storage.createHackathonSabotageLog({
-        id: result.logId,
-        eventId: result.eventId,
-        attackerCompanyId: result.attackerCompanyId,
-        attackerCompanyName: result.attackerCompanyName,
-        targetCompanyId: result.targetCompanyId,
-        targetCompanyName: result.targetCompanyName,
-        initiatorUserId: result.initiatorUserId,
-        targetUserId: result.targetUserId,
-        sabotageType: result.sabotageType,
-        status: result.status,
-        success: typeof result.success === "boolean" ? result.success : null,
-        detected: result.detected,
-        scoreDeltaAttacker: result.scoreDeltaAttacker,
-        scoreDeltaTarget: result.scoreDeltaTarget,
-        details: JSON.stringify(result.details || {}),
-        createdAt: Math.floor(Date.now() / 1000),
-        resolvedAt: result.status === "resolved" ? Math.floor(Date.now() / 1000) : null,
-      });
-
-      await sendWithCurrentHubKeyboard(
-        token,
-        chatId,
-        player.id,
-        [
-          "✅ Саботаж выполнен",
-          `Тип: ${result.sabotageType}`,
-          `Цель: ${result.targetCompanyName}`,
-          `Статус: ${result.status}`,
-          `Успех: ${result.success === null ? "ожидает ответа" : result.success ? "да" : "нет"}`,
-          `Δ attacker: ${result.scoreDeltaAttacker}`,
-          `Δ target: ${result.scoreDeltaTarget}`,
-          `Раскрыт: ${result.detected ? "да" : "нет"}`,
-        ].join("\n"),
-      );
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/poach_accept" || command === "/poach_decline") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const offerId = String(args[0] || "");
-    if (!offerId) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `Использование: ${command} <offerId>`);
-      return;
-    }
-    try {
-      const accepted = command === "/poach_accept";
-      const result = resolveHackathonPoachOffer({
-        offerId,
-        userId: player.id,
-        accept: accepted,
-      });
-      await storage.updateHackathonSabotageLog(offerId, {
-        status: accepted ? "accepted" : "declined",
-        success: accepted,
-        scoreDeltaTarget: result.targetScoreDelta,
-        resolvedAt: Math.floor(Date.now() / 1000),
-      });
-      await sendWithCurrentHubKeyboard(
-        token,
-        chatId,
-        player.id,
-        accepted
-          ? `✅ Предложение принято. Компания-цель получила ${result.targetScoreDelta} score.`
-          : "✅ Предложение отклонено.",
-      );
-    } catch (error) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/company_mining_start") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "work");
-    rememberTelegramMenu(player.id, { menu: "company", section: "work" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Добыча запчастей"))) {
-      return;
-    }
-
-    const rawRef = String(args[0] || "").trim();
-    const byIndex = Math.max(0, Number(rawRef) - 1);
-    const plan = COMPANY_MINING_PLANS[byIndex] ?? getCompanyMiningPlan(rawRef);
-    try {
-      const started = await callInternalApi("POST", `/api/companies/${membership.company.id}/mining/start`, {
-        userId: player.id,
-        planId: plan.id,
-      }) as CompanyMiningStatusView;
-      if (started.status === "in_progress") {
-        scheduleCompanyMiningReadyNotification(token, chatId, membership, player.id, started.remainingSeconds);
-      }
-      await sendMessage(token, chatId, `⛏ Запущена смена: ${plan.label}\nВремя: ~${started.remainingSeconds} сек.\nОжидаемая добыча: ${plan.minRewardQty}-${plan.maxRewardQty} запчастей`, {
-        reply_markup: buildCompanyMiningInlineButtons(started),
-      });
-    } catch (error) {
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-    }
-    return;
-  }
-
-  if (command === "/company_mining_claim") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "work");
-    rememberTelegramMenu(player.id, { menu: "company", section: "work" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Забор добычи"))) {
-      return;
-    }
-
-    try {
-      const currentStatus = await getCompanyMiningStatus(membership.company.id, player.id);
-      if (currentStatus.status !== "ready_to_claim" || !currentStatus.rewardPreview) {
-        await sendMessage(token, chatId, formatMiningPlansMenu(currentStatus), {
-          reply_markup: buildCompanyMiningInlineButtons(currentStatus),
-        });
-        return;
-      }
-      const warehouseCheck = await ensureCompanyWarehouseCanStoreMiningReward(
-        membership.company,
-        currentStatus.rewardPreview.quantity,
-      );
-      if (!warehouseCheck.ok) {
-        await sendMessage(token, chatId, `⚠️ На складе нет места. Свободно слотов: ${warehouseCheck.free}.`, {
-          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-        });
-        return;
-      }
-      const claimed = await claimCompanyMining(membership.company.id, player.id);
-      addPartToCompanyWarehouse(membership.company.id, claimed.reward);
-      await sendMessage(
-        token,
-        chatId,
-        `✅ Добыча завершена: ${claimed.reward.partName} x${claimed.reward.quantity}\nРедкость: ${claimed.reward.rarity}\nДеталь перемещена на склад компании.`,
-        { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
-      );
-    } catch (error) {
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-    }
-    return;
-  }
-
-  if (command === "/company_auction_list") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    if (!["owner", "manager"].includes(String(membership.role || "").toLowerCase())) {
-      await sendMessage(token, chatId, "Только руководящий состав может выставлять лоты компании на аукцион.");
-      return;
-    }
-    const ref = String(args[0] || "").trim();
-    const price = Number(args[1] || 0);
-    const durationHours = Math.max(2, Math.min(12, Number(args[2] || 2)));
-    if (!ref || !Number.isFinite(price) || price <= 0) {
-      await sendMessage(token, chatId, "Использование: /company_auction_list <номер гаджета|pномер запчасти> <цена> [часы]");
-      return;
-    }
-    try {
-      const partRef = resolveWarehousePartRefFromChat(chatId, ref);
-      const gadgetId = partRef ? undefined : resolveWarehouseGadgetRefFromChat(chatId, ref);
-      await callInternalApi("POST", `/api/companies/${membership.company.id}/market/list`, {
-        userId: player.id,
-        gadgetId,
-        partRef,
-        price,
-        mode: "auction",
-        durationHours,
-      });
-      await sendMessage(token, chatId, "✅ Лот выставлен на аукцион.", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-    } catch (error) {
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-    }
-    return;
-  }
-
-  if (command === "/company_part_deposit") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "warehouse");
-    rememberTelegramMenu(player.id, { menu: "company", section: "warehouse" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    const argsText = args.join(" ").trim();
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    const game = snapshot.game as GameView;
-    if (!argsText) {
-      pendingActionByChatId.set(chatId, { type: "company_part_deposit" });
-      await sendMessage(token, chatId, formatCompanyPartDepositList(game, chatId, true), {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-
-    const [refRaw, qtyRaw] = argsText.split(/\s+/);
-    const partRef = resolveCompanyPartDepositRefFromChat(chatId, refRaw);
-    const inventory = [...(game.inventory ?? [])];
-    const partItem = inventory.find((item) => item.type === "part" && item.id === partRef);
-    if (!partItem) {
-      await sendMessage(token, chatId, "❌ На склад компании можно добавлять только запчасти. Открой /company_part_deposit и выбери деталь из списка.");
-      return;
-    }
-
-    const availableQty = Math.max(1, Number(partItem.quantity) || 1);
-    const requestedQty = qtyRaw && qtyRaw.toLowerCase() !== "all"
-      ? Math.floor(Number(qtyRaw))
-      : availableQty;
-    if (!Number.isFinite(requestedQty) || requestedQty <= 0) {
-      await sendMessage(token, chatId, "❌ Неверное количество. Пример: /company_part_deposit 1 3");
-      return;
-    }
-    const moveQty = Math.min(availableQty, requestedQty);
-
-    const companySnapshot = await getCompanyBlueprintSnapshot(membership.company.id);
-    const capacity = Math.max(0, Number(membership.company.warehouseCapacity) || 50);
-    const used = getCompanyWarehouseUsedSlots(membership.company.id, companySnapshot.produced.length);
-    const free = Math.max(0, capacity - used);
-    if (moveQty > free) {
-      await sendMessage(token, chatId, `❌ Склад заполнен, добавить невозможно. Свободно слотов: ${free}.`);
-      return;
-    }
-
-    const nextInventory = inventory.flatMap((item) => {
-      if (item.type !== "part" || item.id !== partItem.id) return [item];
-      const left = availableQty - moveQty;
-      if (left <= 0) return [];
-      return [{ ...item, quantity: left }];
-    });
-    applyGameStatePatch(player.id, { inventory: nextInventory });
-
-    const partDef = ALL_PARTS[partItem.id];
-    const nextWarehouseParts = [...getCompanyWarehouseParts(membership.company.id)];
-    const existingIndex = nextWarehouseParts.findIndex((item) => item.id === partItem.id);
-    if (existingIndex >= 0) {
-      nextWarehouseParts[existingIndex] = {
-        ...nextWarehouseParts[existingIndex],
-        quantity: Math.max(0, Number(nextWarehouseParts[existingIndex].quantity) || 0) + moveQty,
-      };
-    } else {
-      nextWarehouseParts.push({
-        id: partItem.id,
-        name: partItem.name,
-        type: partDef?.type ?? "unknown",
-        rarity: normalizePartRarity(String(partItem.rarity || partDef?.rarity || "Common")),
-        quantity: moveQty,
-      });
-    }
-    setCompanyWarehouseParts(membership.company.id, nextWarehouseParts);
-    pendingActionByChatId.delete(chatId);
-
-    await sendMessage(token, chatId, `✅ На склад компании перенесено: ${partItem.name} x${moveQty}.`, {
-      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-    });
-    await sendCompanyWarehouseSection(token, chatId, membership, player.id);
-    return;
-  }
-
-  if (command === "/cpd") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    const refRaw = String(args[0] || "").trim();
-    if (!refRaw) {
-      await sendMessage(token, chatId, "Использование: /cpd1 (или /cpd2, /cpd3...)");
-      return;
-    }
-
-    const snapshot = await getUserWithGameState(player.id);
-    const game = (snapshot?.game as GameView | undefined);
-    const parts = [...(game?.inventory ?? [])].filter((item) => item.type === "part");
-    companyPartDepositRefsByChatId.set(chatId, parts.map((item) => item.id));
-    const partRef = resolveCompanyPartDepositRefFromChat(chatId, refRaw);
-    const partItem = parts.find((item) => item.id === partRef);
-    if (!partItem) {
-      await sendMessage(token, chatId, "❌ Запчасть не найдена. Открой список: /company_part_deposit");
-      return;
-    }
-
-    const availableQty = Math.max(1, Number(partItem.quantity) || 1);
-    if (availableQty <= 1) {
-      const result = await transferCompanyPartToWarehouse(player.id, membership, partItem.id, "1");
-      if (!result.ok) {
-        await sendMessage(token, chatId, `❌ ${result.error}`);
-        return;
-      }
-      await sendMessage(token, chatId, `✅ На склад компании перенесено: ${result.partName} x${result.moveQty}.`, {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      await sendCompanyWarehouseSection(token, chatId, membership, player.id);
-      return;
-    }
-
-    pendingActionByChatId.set(chatId, { type: "company_part_deposit_qty", partRef: partItem.id });
-    await sendMessage(
-      token,
-      chatId,
-      `🧮 Выбрано: ${partItem.name}\nВ наличии: ${availableQty}\n\nВведи количество для переноса (1-${availableQty}) или all.`,
-      { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
-    );
-    return;
-  }
-
-  if (command === "/company_staffing") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "management_hr");
-    rememberTelegramMenu(player.id, { menu: "company", section: "management_hr" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
-      return;
-    }
-    await sendMessage(token, chatId, await formatCompanyStaffingSection(membership, chatId), {
-      reply_markup: buildCompanyStaffingInlineMarkup(chatId, membership.role),
-    });
-    return;
-  }
-
-  if (command === "/company_assign_department") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "management_hr");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
-      return;
-    }
-    const memberRef = String(args[0] || "").trim();
-    const departmentKey = resolveCompanyDepartmentKey(String(args[1] || ""));
-    if (!memberRef || !departmentKey) {
-      await sendMessage(token, chatId, await formatCompanyStaffingSection(membership, chatId), {
-        reply_markup: buildCompanyStaffingInlineMarkup(chatId, membership.role),
-      });
-      return;
-    }
-    const memberRefs = companyMemberRefsByChatId.get(chatId) ?? [];
-    const memberIndex = Math.max(0, Number(memberRef) - 1);
-    const targetUserId = memberRefs[memberIndex] ?? memberRef;
-    try {
-      await callInternalApi("POST", `/api/companies/${membership.company.id}/staffing/assign`, {
-        actorUserId: player.id,
-        targetUserId,
-        department: departmentKey,
-      });
-      await sendMessage(token, chatId, "✅ Сотрудник назначен в отдел.");
-    } catch (error) {
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-    await sendMessage(token, chatId, await formatCompanyStaffingSection(membership, chatId), {
-      reply_markup: buildCompanyStaffingInlineMarkup(chatId, membership.role),
-    });
-    return;
-  }
-
-  if (command === "/company_set_salary") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "management");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-
-    const argsText = args.join(" ").trim();
-    if (!argsText) {
-      await sendMessage(token, chatId, await formatCompanySalariesSection(membership, chatId), {
-        reply_markup: buildCompanySalariesInlineMarkup(membership, chatId),
-      });
-      return;
-    }
-
-    const [memberRef, amountRaw] = argsText.split(/\s+/);
-    const amount = Math.floor(Number(amountRaw));
-    if (!memberRef || !Number.isFinite(amount) || amount < 0) {
-      await sendMessage(token, chatId, "Неверная сумма зарплаты. Выбери сотрудника кнопкой и введи число от 0 до 5000.", {
-        reply_markup: buildCompanySalariesInlineMarkup(membership, chatId),
-      });
-      return;
-    }
-    if (amount > 5000) {
-      await sendMessage(token, chatId, "Слишком большая зарплата. Максимум: 5000 GRM.", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-
-    const members = await storage.getCompanyMembers(membership.company.id);
-    const target = resolveCompanyMemberRef(chatId, memberRef, members.map((member) => ({
-      userId: member.userId,
-      username: member.username,
-    })));
-    if (!target) {
-      await sendMessage(token, chatId, "Сотрудник не найден. Открой /company_salaries и используй номер.", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-
-    const targetMember = members.find((member) => member.userId === target.userId);
-    if (!targetMember) {
-      await sendMessage(token, chatId, "Сотрудник не найден.", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-
-    setCompanyMemberSalary(String(membership.company.id), targetMember.userId, amount);
-    await sendMessage(
-      token,
-      chatId,
-      `✅ Зарплата назначена: ${targetMember.username} — ${amount} GRM.\nСотрудник получит её командой /company_salary_claim.`,
-      { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
-    );
-    await sendMessage(token, chatId, await formatCompanySalariesSection(membership, chatId), {
-      reply_markup: buildCompanySalariesInlineMarkup(membership, chatId),
-    });
-    return;
-  }
-
-  if (command === "/company_salary_claim" || command === "/salary") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "management");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    const latestCompany = await storage.getCompany(membership.company.id);
-    if (!latestCompany) {
-      await sendWithMainKeyboard(token, chatId, "Компания не найдена.");
-      return;
-    }
-    const members = await storage.getCompanyMembers(latestCompany.id);
-    const ownMember = members.find((member) => member.userId === player.id);
-    if (!ownMember) {
-      await sendWithMainKeyboard(token, chatId, "Ты больше не состоишь в компании.");
-      return;
-    }
-
-    const salary = getCompanyMemberSalary(String(latestCompany.id), player.id, ownMember.role);
-    if (salary <= 0) {
-      await sendWithMainKeyboard(token, chatId, "Твоя зарплата в компании ещё не назначена.");
-      return;
-    }
-
-    const claimMap = getCompanySalaryClaimMap(String(latestCompany.id));
-    const now = Date.now();
-    const lastClaimAt = Number(claimMap.get(player.id) ?? 0);
-    const nextClaimAt = lastClaimAt + COMPANY_SALARY_CLAIM_COOLDOWN_MS;
-    if (lastClaimAt > 0 && nextClaimAt > now) {
-      const waitMs = nextClaimAt - now;
-      await sendWithMainKeyboard(token, chatId, `РЎР»РµРґСѓСЋС‰Р°СЏ РІС‹РїР»Р°С‚Р° Р±СѓРґРµС‚ РґРѕСЃС‚СѓРїРЅР° С‡РµСЂРµР· ${formatDurationShort(waitMs)}.`);
-      return;
-    }
-
-    const companyEconomy = await ensureCompanyEconomyState(latestCompany, members.length);
-    if (companyEconomy.capitalGRM < salary) {
-      await sendWithMainKeyboard(
-        token,
-        chatId,
-        `В кассе компании недостаточно GRM для выплаты. Нужно ${salary} GRM, доступно ${formatNumber(companyEconomy.capitalGRM)} GRM.`,
-      );
-      return;
-    }
-
-    const updatedEconomy = await saveCompanyEconomyState(latestCompany, {
-      ...companyEconomy,
-      capitalGRM: companyEconomy.capitalGRM - salary,
-      profitGRM: companyEconomy.profitGRM - salary,
-    });
-    const updatedUser = await storage.updateUser(player.id, {
-      balance: player.balance + salary,
-    });
-    claimMap.set(player.id, now);
-
-    const snapshot = await getUserWithGameState(updatedUser.id);
-    const profile = snapshot
-      ? await formatLiveProfile(snapshot.user, snapshot.game as GameView)
-      : `Р‘Р°Р»Р°РЅСЃ: ${getCurrencySymbol(updatedUser.city)}${updatedUser.balance}`;
-
-    await sendWithMainKeyboard(
-      token,
-      chatId,
-      [
-        `✅ Р—Р°СЂРїР»Р°С‚Р° РІС‹РїР»Р°С‡РµРЅР°: +${getCurrencySymbol(updatedUser.city)}${salary}`,
-        `💼 Капитал компании: ${formatNumber(updatedEconomy.capitalGRM)} GRM`,
-        "",
-        profile,
-      ].join("\n"),
-    );
-    return;
-  }
-
-  if (command === "/company_topup") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "management");
-    rememberTelegramMenu(player.id, { menu: "company", section: "management" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-
-    const amountRaw = args.join(" ").trim();
-    if (!amountRaw) {
-      pendingActionByChatId.set(chatId, { type: "company_topup", companyId: String(membership.company.id) });
-      const rate = getLocalToGRMRate(player.city);
-      await sendWithMainKeyboard(
-        token,
-        chatId,
-        [
-          "💱 Пополнение компании в GRM",
-          `Твой курс: 1 локальная единица = ${formatRate(rate)} GRM`,
-          `Баланс игрока: ${getCurrencySymbol(player.city)}${player.balance}`,
-          "Введи сумму в локальной валюте (например: 1000).",
-        ].join("\n"),
-      );
-      return;
-    }
-
-    const amountLocal = parseDecimalInput(amountRaw);
-    if (amountLocal === null) {
-      await sendWithMainKeyboard(token, chatId, "Неверный формат. Введи сумму в локальной валюте, например: 1000.");
-      return;
-    }
-
-    const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
-    const topUp = await applyCompanyTopUpFromPlayer(player, membership.company, companyEconomy, amountLocal);
-    if (!topUp.ok) {
-      await sendWithMainKeyboard(token, chatId, `❌ ${topUp.reason ?? "Пополнение недоступно"}`);
-      return;
-    }
-
-    await sendMessage(
-      token,
-      chatId,
-      [
-        `✅ Компания пополнена: -${getCurrencySymbol(player.city)}${formatNumber(topUp.spentLocal)}, +${formatNumber(topUp.receivedGRM)} GRM`,
-        `Личный баланс: ${getCurrencySymbol(player.city)}${topUp.playerBalanceAfter}`,
-      ].join("\n"),
-    );
-    const refreshed = await getPlayerCompanyContext(player.id);
-    if (refreshed) {
-      await sendCompanyEconomySection(token, chatId, refreshed);
-    }
-    return;
-  }
-
-  if (command === "/company_department_upgrade") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-
-    const rawValue = args.join(" ").trim();
-    const departmentRaw = /^\d+$/.test(rawValue)
-      ? COMPANY_DEPARTMENT_ORDER[Math.max(0, Number(rawValue) - 1)] ?? null
-      : resolveCompanyDepartmentKey(rawValue);
-    if (!departmentRaw) {
-      await sendCompanyDepartmentsSection(token, chatId, membership);
-      return;
-    }
-
-    const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
-    const result = upgradeDepartment(companyEconomy, departmentRaw);
-    if (!result.ok) {
-      await sendWithMainKeyboard(token, chatId, `❌ ${result.reason ?? "Улучшение недоступно"}`);
-      await sendCompanyDepartmentsSection(token, chatId, membership);
-      return;
-    }
-
-    await saveCompanyEconomyState(membership.company, result.company);
-    await sendMessage(
-      token,
-      chatId,
-      `✅ Отдел ${DEPARTMENT_LABELS[departmentRaw]} улучшен до уровня ${result.company.departments[departmentRaw]} (-${formatNumber(result.spentGRM ?? 0)} GRM)`,
-    );
-    const refreshed = await getPlayerCompanyContext(player.id);
-    if (refreshed) {
-      await sendCompanyDepartmentsSection(token, chatId, refreshed);
-    }
-    return;
-  }
-
-  if (command === "/company_ipo_stub") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "management");
-    await sendWithCurrentHubKeyboard(token, chatId, player.id, "🚀 IPO находится в разработке.");
-    return;
-  }
-
-  if (command === "/company_ipo_run") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-
-    const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
-    const ipoResult = runIPO(companyEconomy);
-    if (!ipoResult.ok) {
-      await sendWithMainKeyboard(token, chatId, `❌ ${ipoResult.reason ?? "IPO РїРѕРєР° РЅРµРґРѕСЃС‚СѓРїРЅРѕ"}`);
-      await sendCompanyIpoSection(token, chatId, membership);
-      return;
-    }
-
-    await saveCompanyEconomyState(membership.company, ipoResult.company);
-    await sendMessage(token, chatId, "✅ IPO успешно проведено. Компания получила публичный статус.");
-    const refreshed = await getPlayerCompanyContext(player.id);
-    if (refreshed) {
-      await sendCompanyIpoSection(token, chatId, refreshed);
-    }
-    return;
-  }
-
-  if (command === "/company_contract_accept" || command === "/company_contract_deliver") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Контракты компании"))) {
-      return;
-    }
-
-    const ref = args.join(" ").trim();
-    if (!ref) {
-      await sendMessage(token, chatId, `РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: ${command} <РЅРѕРјРµСЂ РєРѕРЅС‚СЂР°РєС‚Р°>`);
-      return;
-    }
-
-    const contracts = await getCityContracts(membership.company.city);
-    const selected = resolveContractRef(chatId, ref, contracts);
-    if (!selected) {
-      await sendMessage(token, chatId, "Контракт не найден. Открой раздел «Работа» кнопкой ниже.");
-      return;
-    }
-
-    const action = command === "/company_contract_accept" ? "accept" : "deliver";
-    try {
-      if (action === "deliver" && selected.kind === "parts_supply") {
-        await startCompanyContractPartSelection(token, chatId, membership, player.id, selected);
-        return;
-      } else {
-        if (action === "deliver") {
-          await completeCompanyContractDelivery(token, chatId, membership, selected, player.id);
-        } else {
-          await callInternalApi("POST", `/api/city-contracts/${selected.id}/${action}`, {
-            userId: player.id,
-            companyId: membership.company.id,
-          });
-          await sendMessage(token, chatId, "✅ Контракт принят.");
-        }
-      }
-    } catch (error) {
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-
-    await sendCompanyWorkSection(token, chatId, membership);
-    return;
-  }
-
-  if (command === "/company_bp_start") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "development"))) {
-      return;
-    }
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-    if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Разработка базового чертежа"))) {
-      return;
-    }
-
-    const ref = args.join(" ").trim();
-    if (!ref) {
-      await sendOrEditCompanyBureauSection(token, chatId, membership, player.id);
-      return;
-    }
-    await startCompanyBlueprintDevelopment(token, chatId, membership, player, ref);
-    return;
-  }
-
-  if (command === "/company_exclusive") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "bureau_exclusive");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    await sendMessage(token, chatId, await formatCompanyExclusiveSection(membership, player.id, chatId), {
-      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-    });
-    return;
-  }
-
-  if (command === "/company_exclusive_start") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "bureau_exclusive");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "development"))) {
-      return;
-    }
-    const raw = args.join(" ").trim();
-    if (raw) {
-      const gadgetName = normalizeExclusiveDraftName(raw.split("|")[0] || raw);
-      companyExclusiveSelectedPartRefsByChatId.delete(chatId);
-      companyExclusivePartPageByChatId.set(chatId, 0);
-      pendingActionByChatId.set(chatId, { type: "company_exclusive_parts", gadgetName });
-      await sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, gadgetName);
-      return;
-    }
-    pendingActionByChatId.set(chatId, { type: "company_exclusive_name" });
-    await sendMessage(token, chatId, "🪄 Введи название будущего редкого гаджета.", {
-      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-    });
-    return;
-  }
-
-  if (command === "/company_exclusive_progress") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "bureau_exclusive");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Открой /company.");
-      return;
-    }
-    try {
-      const snapshot = await getCompanyExclusiveSnapshot(membership.company.id);
-      if (!snapshot.active) {
-        await sendMessage(token, chatId, "Активной редкой разработки сейчас нет.", {
-          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-        });
-        return;
-      }
-      if (snapshot.active.status === "in_progress") {
-        const progressed = await callInternalApi("POST", `/api/companies/${membership.company.id}/exclusive/progress`, {
-          userId: player.id,
-        }) as any;
-        const prefix = progressed.status === "production_ready"
-          ? "✅ Исследование завершено. Чертёж готов к выпуску."
-          : progressed.status === "failed"
-          ? `❌ Исследование провалено: ${progressed.failedReason || "нестабильный прототип"}`
-          : "📈 Навыки CEO вложены в исследование эксклюзивного гаджета.";
-        await sendMessage(token, chatId, `${prefix}\n\n${formatExclusiveProgressLiveText(progressed)}`, {
-          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-        });
-        if (progressed.status === "production_ready") {
-          const users = await storage.getUsers();
-          const announcement = [
-            "🌟 НОВЫЙ ЭКСКЛЮЗИВНЫЙ ГАДЖЕТ",
-            "━━━━━━━━━━━━━━",
-            `Компания ${membership.company.name} разработала эксклюзивный гаджет "${progressed.blueprint?.name ?? "прототип"}".`,
-            progressed.blueprint ? formatExclusiveBlueprintSummary(progressed.blueprint) : "",
-          ].filter(Boolean).join("\n");
-          for (const user of users) {
-            const telegramId = Number(getTelegramIdByUserId(user.id) || 0);
-            if (!telegramId) continue;
-            try {
-              await sendMessage(token, telegramId, announcement);
-            } catch {
-              // ignore per-user delivery issues
-            }
-          }
-        }
-        if (progressed.status !== "in_progress") {
-          await sendMessage(token, chatId, await formatCompanyExclusiveSection(membership, player.id, chatId), {
-            reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-          });
-        }
-        return;
-      }
-      await sendMessage(token, chatId, formatExclusiveProgressLiveText(snapshot.active), {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-    } catch (error) {
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
-    return;
-  }
-
-  if (command === "/company_exclusive_produce") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "bureau_exclusive");
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-    const snapshot = await getCompanyExclusiveSnapshot(membership.company.id);
-    if (snapshot.productionOrder?.isExclusive) {
-      if (snapshot.productionOrder.status === "ready_to_claim") {
-        try {
-          const claimed = await callInternalApi("POST", `/api/companies/${membership.company.id}/production/claim`, {
-            userId: player.id,
-          }) as any;
-          await sendMessage(
-            token,
-            chatId,
-            [
-              `✅ Партия выдана: ${snapshot.productionOrder.blueprintName} x${claimed.produced?.length || snapshot.productionOrder.quantity}`,
-              claimed.bonusApplied?.financeGrm ? `Финансы: +${claimed.bonusApplied.financeGrm} GRM` : "",
-              claimed.bonusApplied?.xp ? `XP: +${claimed.bonusApplied.xp}` : "",
-              claimed.bonusApplied?.skill ? `Навык ${claimed.bonusApplied.skill}: +${claimed.bonusApplied.amount}` : "",
-              claimed.gadgetWear?.summary ? String(claimed.gadgetWear.summary) : "",
-            ].filter(Boolean).join("\n"),
-            { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
-          );
-        } catch (error) {
-          await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
-            reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-          });
-        }
-        return;
-      }
-
-      await sendMessage(
-        token,
-        chatId,
-        `🏭 Уже идет выпуск: ${snapshot.productionOrder.blueprintName} x${snapshot.productionOrder.quantity}\nОсталось: ${formatProductionOrderRemaining(snapshot.productionOrder)}`,
-        { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
-      );
-      return;
-    }
-    const ref = String(args[0] || "").trim();
-    if (!ref) {
-      pendingActionByChatId.set(chatId, { type: "company_exclusive_produce_select" });
-      await sendMessage(token, chatId, formatExclusiveProduceMenu(snapshot), {
-        reply_markup: buildCompanyExclusiveProduceInlineMarkup(snapshot, membership.role, chatId),
-      });
-      return;
-    }
-    const quantity = args[1] ? Math.max(1, Math.min(5, Number(args[1] || 1))) : null;
-    const index = Math.max(0, Number(ref) - 1);
-    const target = snapshot.catalog?.[index];
-    if (!target) {
-      await sendMessage(token, chatId, "Чертёж не найден. Открой «Выпуск» ещё раз.", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-    if (quantity === null) {
-      pendingActionByChatId.set(chatId, {
-        type: "company_exclusive_produce_qty",
-        blueprintId: target.id,
-        blueprintName: target.name,
-      });
-      await sendMessage(token, chatId, `🏭 ${target.name}\nВведи количество для выпуска (1-${Math.max(1, target.remainingUnits)}).`, {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-    pendingActionByChatId.set(chatId, {
-      type: "company_exclusive_produce_qty",
-      blueprintId: target.id,
-      blueprintName: target.name,
-    });
-    if (await tryHandlePendingAction(token, chatId, String(quantity), { ...message, text: String(quantity) })) return;
-    return;
-  }
-
-  if (command === "/company_bp_progress") {
-    await sendWithMainKeyboard(token, chatId, "⛔ Ускорение разработки (+24ч) отключено.");
-    return;
-  }
-
-  if (command === "/company_bp_produce") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    setCompanyMenuSection(chatId, "bureau");
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "development"))) {
-      return;
-    }
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-    if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Производство гаджетов"))) {
-      return;
-    }
-
-    try {
-      const blueprintSnapshot = await getCompanyBlueprintSnapshot(membership.company.id);
-      const productionOrder = blueprintSnapshot.productionOrder;
-      if (productionOrder) {
-        if (productionOrder.status === "ready_to_claim") {
-          const claimed = await callInternalApi("POST", `/api/companies/${membership.company.id}/production/claim`, {
-            userId: player.id,
-          }) as any;
-          await sendMessage(
-            token,
-            chatId,
-            [
-              `✅ Партия выдана: ${productionOrder.blueprintName} x${claimed.produced?.length || productionOrder.quantity}`,
-              productionOrder.isExclusive && claimed.bonusApplied?.financeGrm ? `Финансы: +${claimed.bonusApplied.financeGrm} GRM` : "",
-              productionOrder.isExclusive && claimed.bonusApplied?.xp ? `XP: +${claimed.bonusApplied.xp}` : "",
-              productionOrder.isExclusive && claimed.bonusApplied?.skill ? `Навык ${claimed.bonusApplied.skill}: +${claimed.bonusApplied.amount}` : "",
-              claimed.gadgetWear?.summary ? String(claimed.gadgetWear.summary) : "",
-            ].filter(Boolean).join("\n"),
-          );
-          await sendCompanyWarehouseSection(token, chatId, membership, player.id);
-          return;
-        }
-
-        await sendMessage(
-          token,
-          chatId,
-          `🏭 Уже идет производство: ${productionOrder.blueprintName} x${productionOrder.quantity}\nОсталось: ${formatProductionOrderRemaining(productionOrder)}`,
-          { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
-        );
-        return;
-      }
-      const active = blueprintSnapshot.active;
-      if (!active || active.status !== "production_ready") {
-        await sendMessage(token, chatId, "❌ Чертеж еще не готов к производству. Дождитесь завершения разработки.");
-        return;
-      }
-      if (active.blueprintId) {
-        storeCompanyBlueprint(membership.company.id, active.blueprintId);
-      }
-
-      const blueprint = blueprintSnapshot.available.find((item) => item.id === active.blueprintId);
-      if (!blueprint) {
-        await sendMessage(token, chatId, "❌ Активный чертеж не найден.");
-        return;
-      }
-
-      const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
-      const departmentEffects = getDepartmentEffects(companyEconomy.departments);
-
-      const warehouseParts = [...getCompanyWarehouseParts(membership.company.id)];
-      const requiredParts = blueprint.production?.parts ?? {};
-      const maxByParts = Object.entries(requiredParts).reduce((limit, [partType, qtyRaw]) => {
-        const perUnit = Math.max(1, Number(qtyRaw || 0));
-        const available = warehouseParts
-          .filter((item) => item.type === partType)
-          .reduce((sum, item) => sum + Math.max(1, Number(item.quantity || 1)), 0);
-        return Math.min(limit, Math.floor(available / perUnit));
-      }, 10);
-
-      const maxQuantity = Math.max(1, Math.min(10, Number.isFinite(maxByParts) ? maxByParts : 1));
-      pendingActionByChatId.set(chatId, {
-        type: "company_bp_produce_qty",
-        blueprintId: blueprint.id,
-        blueprintName: blueprint.name,
-        maxQuantity,
-      });
-      await sendMessage(
-        token,
-        chatId,
-        [
-          `🏭 ${blueprint.name}`,
-          `Доступно для партии: до ${maxQuantity} шт.`,
-          `Себестоимость за 1 шт: ${formatNumber(Math.max(1, Math.round(Number(blueprint.production?.costGram || 0) * departmentEffects.productionCostMultiplier)))} GRM`,
-          "Введи количество для запуска производства.",
-        ].join("\n"),
-        { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
-      );
-      return;
-    } catch (error) {
-      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`);
-    }
+  if (await handleCompanyDevelopmentMessage({
+    command,
+    args,
+    token,
+    chatId,
+    message,
+    resolveOrCreateTelegramPlayer,
+    getPlayerCompanyContext,
+    sendWithMainKeyboard,
+    ensureCompanyProcessUnlocked,
+    sendMessage,
+    getCityContracts,
+    resolveContractRef,
+    startCompanyContractPartSelection,
+    completeCompanyContractDelivery,
+    callInternalApi,
+    extractErrorMessage,
+    sendCompanyWorkSection,
+    ensureExclusiveActionAllowed,
+    sendOrEditCompanyBureauSection,
+    startCompanyBlueprintDevelopment,
+    setCompanyMenuSection,
+    formatCompanyExclusiveSection,
+    buildCompanyReplyMarkup,
+    buildCompanyExclusiveStartInlineMarkup,
+    companyExclusiveSelectedPartRefsByChatId,
+    companyExclusivePartPageByChatId,
+    pendingActionByChatId,
+    sendCompanyExclusivePartsPicker,
+    getCompanyExclusiveSnapshot,
+    formatExclusiveProgressLiveText,
+    storage,
+    getTelegramIdByUserId,
+    formatExclusiveBlueprintSummary,
+    formatProductionOrderRemaining,
+    formatExclusiveProduceMenu,
+    buildCompanyExclusiveProduceInlineMarkup,
+    tryHandlePendingAction,
+    getCompanyBlueprintSnapshot,
+    ensureCompanyEconomyState,
+    getDepartmentEffects,
+    getCompanyWarehouseParts,
+  })) {
     return;
   }
 
@@ -13317,255 +12339,13 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/company_create") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const companyCreateCost = getCompanyCreateCostForPlayer(player.city);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (membership) {
-      await sendMessage(token, chatId, "Ты уже состоишь в компании. Используй /company.", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-
-    const companyName = args.join(" ").trim();
-    if (!companyName) {
-      pendingActionByChatId.set(chatId, { type: "company_create" });
-      await sendMessage(
-        token,
-        chatId,
-        `Введи название новой компании (3-40 символов).\nПосле этого бот попросит один эмоджи.\nСтоимость: ${getCurrencySymbol(player.city)}${companyCreateCost}`,
-        { reply_markup: buildCompanyReplyMarkup(null) },
-      );
-      return;
-    }
-
-    const normalizedCompanyName = normalizeTelegramCompanyName(companyName);
-    if (normalizedCompanyName.length < 3 || normalizedCompanyName.length > 40) {
-      await sendWithMainKeyboard(token, chatId, "Название компании должно быть длиной от 3 до 40 символов.");
-      return;
-    }
-
-    if (player.balance < companyCreateCost) {
-      await sendWithMainKeyboard(
-        token,
-        chatId,
-        `Недостаточно средств для создания компании. Нужно ${getCurrencySymbol(player.city)}${companyCreateCost}.`,
-      );
-      return;
-    }
-
-    pendingActionByChatId.set(chatId, { type: "company_create", companyName: normalizedCompanyName });
-    await sendMessage(
-      token,
-      chatId,
-      "Теперь отправь один эмоджи для компании. Пример: 🚀 или 🏢",
-      { reply_markup: buildCompanyReplyMarkup(null) },
-    );
-    return;
-  }
-
-  if (command === "/company_join") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (membership) {
-      await sendMessage(token, chatId, "Ты уже состоишь в компании. Сначала выйди из текущей: /company_leave", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-
-    const ref = args.join(" ").trim();
-    if (!ref) {
-      const companies = (await storage.getAllCompanies()).filter((company) => !company.isTutorial);
-      companyListByChatId.set(chatId, getTopCompanies(companies).map((company) => company.id));
-      await sendMessage(token, chatId, "Выбери компанию для вступления:", {
-        reply_markup: buildCompanyRegistryInlineMarkup(companies),
-      });
-      return;
-    }
-
-    const companies = (await storage.getAllCompanies()).filter((company) => !company.isTutorial);
-    let selectedCompany = null as any;
-
-    if (/^\\d+$/.test(ref)) {
-      const list = companyListByChatId.get(chatId) ?? [];
-      const index = Number(ref) - 1;
-      const companyId = index >= 0 && index < list.length ? list[index] : "";
-      selectedCompany = companies.find((company) => company.id === companyId) ?? null;
-    } else {
-      selectedCompany = companies.find((company) => company.id === ref)
-        ?? companies.find((company) => company.id.startsWith(ref))
-        ?? companies.find((company) => company.name.toLowerCase() === ref.toLowerCase())
-        ?? null;
-    }
-
-    if (!selectedCompany) {
-      await sendMessage(token, chatId, "Компания не найдена. Открой /company и выбери номер.", {
-        reply_markup: buildCompanyReplyMarkup(null),
-      });
-      return;
-    }
-
-    const pendingRequests = await storage.getJoinRequestsByUser(player.id);
-    const existsPending = pendingRequests.some(
-      (request) => request.companyId === selectedCompany.id && request.status === "pending",
-    );
-    if (existsPending) {
-      await sendMessage(token, chatId, "Заявка уже отправлена и ожидает решения.", {
-        reply_markup: buildCompanyReplyMarkup(null),
-      });
-      return;
-    }
-
-    await storage.createJoinRequest({
-      companyId: selectedCompany.id,
-      userId: player.id,
-      username: player.username,
-    });
-    await sendMessage(token, chatId, `✅ Заявка отправлена в компанию "${selectedCompany.name}".`, {
-      reply_markup: buildCompanyReplyMarkup(null),
-    });
-    return;
-  }
-
-  if (command === "/company_leave") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership) {
-      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании.");
-      return;
-    }
-
-    if (membership.role === "owner") {
-      await sendMessage(token, chatId, "CEO не может выйти из своей компании. Используй /company_delete.", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-
-    await storage.removeCompanyMember(membership.company.id, player.id);
-    const updatedCompany = await storage.getCompany(membership.company.id);
-    if (updatedCompany) {
-      const members = await storage.getCompanyMembers(updatedCompany.id);
-      await ensureCompanyEconomyState(updatedCompany, members.length);
-    }
-    stopCompanyBlueprintProgressTicker(chatId);
-    companyBlueprintProgressMessageByChatId.delete(chatId);
-    await sendMessage(token, chatId, `✅ Ты вышел из компании "${membership.company.name}".`, {
-      reply_markup: buildCompanyReplyMarkup(null),
-    });
-    return;
-  }
-
-  if (command === "/company_accept" || command === "/company_decline") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return;
-    setCompanyMenuSection(chatId, "management_hr");
-    rememberTelegramMenu(player.id, { menu: "company", section: "management_hr" });
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-
-    const ref = args.join(" ").trim();
-    if (!ref) {
-      await sendMessage(token, chatId, `Использование: ${command} <номер>. Список: /company_requests`, {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-
-    const requests = await storage.getJoinRequestsByCompany(membership.company.id);
-    let request = null as any;
-
-    if (/^\\d+$/.test(ref)) {
-      const ids = companyRequestsByChatId.get(chatId) ?? [];
-      const index = Number(ref) - 1;
-      const requestId = index >= 0 && index < ids.length ? ids[index] : "";
-      request = requests.find((item) => item.id === requestId) ?? null;
-    } else {
-      request = requests.find((item) => item.id === ref)
-        ?? requests.find((item) => item.id.startsWith(ref))
-        ?? null;
-    }
-
-    if (!request) {
-      await sendMessage(token, chatId, "Заявка не найдена. Открой /company_requests.", {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      return;
-    }
-
-    const nextStatus = command === "/company_accept" ? "accepted" : "rejected";
-    await storage.updateJoinRequestStatus(request.id, nextStatus);
-
-    if (nextStatus === "accepted") {
-      const existingMember = await storage.getMemberByUserId(membership.company.id, request.userId);
-      if (!existingMember) {
-        const currentMembers = await storage.getCompanyMembers(membership.company.id);
-        const companyEconomy = await ensureCompanyEconomyState(membership.company, currentMembers.length);
-        if (currentMembers.length >= companyEconomy.employeeLimit) {
-          await sendMessage(
-            token,
-            chatId,
-            `❌ Лимит сотрудников достигнут (${currentMembers.length}/${companyEconomy.employeeLimit}). Улучши профильный отдел и расширь компанию.`,
-            { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
-          );
-          return;
-        }
-
-        await storage.addCompanyMember({
-          companyId: membership.company.id,
-          userId: request.userId,
-          username: request.username,
-          role: "member",
-        });
-
-        const updatedMembers = await storage.getCompanyMembers(membership.company.id);
-        await ensureCompanyEconomyState(membership.company, updatedMembers.length);
-      }
-      await sendMessage(token, chatId, `✅ Заявка ${request.username} одобрена.`, {
-        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-      });
-      await sendCompanyRequestsSection(token, chatId, membership);
-      return;
-    }
-
-    await sendMessage(token, chatId, `✅ Заявка ${request.username} отклонена.`, {
-      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
-    });
-    await sendCompanyRequestsSection(token, chatId, membership);
-    return;
-  }
-
-  if (command === "/company_delete") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const membership = await getPlayerCompanyContext(player.id);
-    if (!membership || membership.role !== "owner") {
-      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
-      return;
-    }
-
-    await storage.deleteCompany(membership.company.id);
-    companyEconomyByCompanyId.delete(String(membership.company.id));
-    companySalaryByCompanyId.delete(String(membership.company.id));
-    companySalaryClaimAtByCompanyId.delete(String(membership.company.id));
-    stopCompanyBlueprintProgressTicker(chatId);
-    companyBlueprintProgressMessageByChatId.delete(chatId);
-    await sendMessage(token, chatId, `🗑 Компания "${membership.company.name}" удалена.`, {
-      reply_markup: buildCompanyReplyMarkup(null),
-    });
-    return;
-  }
-
   if (command === "/credits") {
     const snapshot = await resolveTelegramSnapshot(message.from);
     if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
     rememberTelegramMenu(snapshot.user.id, { menu: "bank" });
     pendingActionByChatId.delete(chatId);
-    await sendWithBankKeyboard(token, chatId, "🚧 Кредиты пока временно недоступны в городе.\n\nОстаются доступны: обмен GRM, биржа и банковый обзор.");
+    await sendMessage(token, chatId, formatBankProgramsMenu("credit", snapshot), { reply_markup: buildBankSelectionReplyMarkup("credit") });
+    pendingActionByChatId.set(chatId, { type: "open_bank_product", productType: "credit" });
     return;
   }
 
@@ -13574,14 +12354,15 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     if (!(await ensureCityHubAccess(token, chatId, snapshot.user, message))) return;
     rememberTelegramMenu(snapshot.user.id, { menu: "bank" });
     pendingActionByChatId.delete(chatId);
-    await sendWithBankKeyboard(token, chatId, "🚧 Вклады пока временно недоступны в городе.\n\nОстаются доступны: обмен GRM, биржа и банковый обзор.");
+    await sendMessage(token, chatId, formatBankProgramsMenu("deposit", snapshot), { reply_markup: buildBankSelectionReplyMarkup("deposit") });
+    pendingActionByChatId.set(chatId, { type: "open_bank_product", productType: "deposit" });
     return;
   }
 
   if (command === "/credit" || command === "/deposit") {
     const parsed = parseBankOpenInput(args.join(" "));
     if (!parsed) {
-      await sendWithBankKeyboard(token, chatId, `РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: ${command} <РЅРѕРјРµСЂ РїСЂРѕРіСЂР°РјРјС‹> <СЃСѓРјРјР°> <РґРЅРё>\nРџСЂРёРјРµСЂ: ${command} 1 10000 14`);
+      await sendWithBankKeyboard(token, chatId, `Использование: ${command} <номер программы> <сумма>\nПример: ${command} 1 800`);
       return;
     }
     const player = await resolveOrCreateTelegramPlayer(message.from);
@@ -13610,35 +12391,6 @@ async function handleIncomingMessage(token: string, webAppUrl: string, message: 
     return;
   }
 
-  if (command === "/city") {
-    const player = await resolveOrCreateTelegramPlayer(message.from);
-    const nextCity = args.join(" ").trim();
-    if (!nextCity) {
-      pendingActionByChatId.set(chatId, { type: "change_city" });
-      await sendMessage(token, chatId, `Выбери город:\n1) Сан-Франциско\n\n${CITY_CAPACITY_MESSAGE}`, { reply_markup: CITY_REPLY_MARKUP });
-      return;
-    }
-    const resolvedCity = resolveCityName(nextCity);
-    if (!resolvedCity) {
-      pendingActionByChatId.set(chatId, { type: "change_city" });
-      await sendMessage(token, chatId, "Не понял город. Выбери из списка:\n1) Сан-Франциско", { reply_markup: CITY_REPLY_MARKUP });
-      return;
-    }
-    if (!isCityTemporarilyAvailable(resolvedCity)) {
-      pendingActionByChatId.set(chatId, { type: "change_city" });
-      await sendMessage(token, chatId, CITY_CAPACITY_MESSAGE, { reply_markup: CITY_REPLY_MARKUP });
-      return;
-    }
-    await storage.updateUser(player.id, { city: resolvedCity });
-    pendingActionByChatId.delete(chatId);
-    const snapshot = await resolveTelegramSnapshot(message.from);
-    const profileText = await formatPlayerProfile(snapshot);
-    const base = `🏙 Город обновлён: ${snapshot.user.city}\n\n${profileText}`;
-    const notices = formatNotices(snapshot.notices);
-    await sendWithMainKeyboard(token, chatId, notices ? `${base}\n\n${notices}` : base);
-    return;
-  }
-
   await sendWithMainKeyboard(token, chatId, "Неизвестная команда. Напиши /help");
 }
 
@@ -13661,6 +12413,8 @@ export function startTelegramBot(httpServer: Server) {
   let offset = 0;
   let hackathonAnnouncementTimer: NodeJS.Timeout | null = null;
   let repairSweepTimer: NodeJS.Timeout | null = null;
+  let playerNoticeSweepTimer: NodeJS.Timeout | null = null;
+  const energyFullStateByUserId = new Map<string, { work: boolean; study: boolean }>();
 
   const poll = async () => {
     if (stopped) return;
@@ -13704,6 +12458,10 @@ export function startTelegramBot(httpServer: Server) {
     if (repairSweepTimer) {
       clearInterval(repairSweepTimer);
       repairSweepTimer = null;
+    }
+    if (playerNoticeSweepTimer) {
+      clearInterval(playerNoticeSweepTimer);
+      playerNoticeSweepTimer = null;
     }
     for (const timer of Array.from(pvpQueuePollTimerByChatId.values())) {
       clearInterval(timer);
@@ -13772,7 +12530,7 @@ export function startTelegramBot(httpServer: Server) {
       `${moodEmoji} Биржа: ${announcement.title}`,
       announcement.description,
       "",
-      "Открой /stocks, чтобы купить или продать бумаги.",
+      "Открой «🏦 Банк» -> «📊 Биржа», чтобы купить или продать бумаги.",
     ].join("\n");
     for (const user of users) {
       if (!isCompletedRegistration(user)) continue;
@@ -13781,6 +12539,38 @@ export function startTelegramBot(httpServer: Server) {
       const chatId = Number(telegramId);
       if (!Number.isFinite(chatId)) continue;
       await sendMessage(token, chatId, text);
+    }
+  };
+
+  const broadcastPlayerRuntimeNotifications = async () => {
+    const users = await storage.getUsers();
+    for (const user of users) {
+      if (!isCompletedRegistration(user)) continue;
+      const telegramId = getTelegramIdByUserId(user.id);
+      if (!telegramId) continue;
+      const chatId = Number(telegramId);
+      if (!Number.isFinite(chatId)) continue;
+
+      try {
+        const snapshot = await getUserWithGameState(user.id);
+        if (!snapshot) continue;
+        const game = snapshot.game as GameView;
+        const previous = energyFullStateByUserId.get(user.id);
+        const energyState = buildEnergyFullNotifications(game, previous);
+        energyFullStateByUserId.set(user.id, { work: energyState.workFull, study: energyState.studyFull });
+
+        const blocks: string[] = [];
+        if (snapshot.notices.length) {
+          blocks.push(formatNotices(snapshot.notices));
+        }
+        if (energyState.notifications.length) {
+          blocks.push(energyState.notifications.join("\n"));
+        }
+        if (!blocks.length) continue;
+        await sendMessage(token, chatId, blocks.join("\n\n"));
+      } catch (error) {
+        console.warn("⚠️ Не удалось отправить системное уведомление игроку:", error);
+      }
     }
   };
 
@@ -13819,6 +12609,9 @@ export function startTelegramBot(httpServer: Server) {
     }, 15000);
     repairSweepTimer = setInterval(() => {
       void processRepairOrderSweep(token);
+    }, 30000);
+    playerNoticeSweepTimer = setInterval(() => {
+      void broadcastPlayerRuntimeNotifications();
     }, 30000);
   };
 

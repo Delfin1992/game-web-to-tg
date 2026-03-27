@@ -1,6 +1,12 @@
 import { randomUUID } from "crypto";
 import {
+  getProfessionPvpRoundMultiplier,
+  getProfessionPvpSkillMultiplier,
+  type ProfessionId,
+} from "../shared/professions";
+import {
   PVP_DUEL_CONFIG,
+  getPvpBoostDefinition,
   type DuelProjectStageKey,
   type DuelRoundResult,
   type PvpBattleEventLog,
@@ -21,12 +27,22 @@ export type DuelBoostState = {
   selectedBoosts: PvpBoostId[];
 };
 
+export type DuelGadgetProfile = {
+  id: string;
+  name: string;
+  stats: Partial<DuelSkills>;
+  powerScore: number;
+};
+
 export type DuelParticipantSeed = {
   userId: string;
   username: string;
   rating: number;
   skills: DuelSkills;
+  professionId?: ProfessionId | null;
   boosts?: DuelBoostState;
+  gadget?: DuelGadgetProfile | null;
+  pvpPowerScore?: number;
   isBot?: boolean;
 };
 
@@ -35,16 +51,15 @@ type ParticipantRuntime = {
   username: string;
   ratingBefore: number;
   skills: DuelSkills;
+  professionId: ProfessionId | null;
   totalPower: number;
+  pvpPowerScore: number;
   stageProgress: Record<DuelProjectStageKey, number>;
   stageCompletedTick: Partial<Record<DuelProjectStageKey, number>>;
   currentStageIndex: number;
-  freezeUntilTick: number;
-  tickMultiplierUntilTick: number;
-  tickMultiplierValue: number;
   latestTickGain: number;
   boostIds: PvpBoostId[];
-  negativeImmunity: boolean;
+  gadget: DuelGadgetProfile | null;
 };
 
 export type EngineActiveDuel = {
@@ -69,30 +84,33 @@ export type EngineActiveDuel = {
   energyCostB: number;
 };
 
-type TickParticipantState = {
-  gain: number;
-  overflow: number;
-  eventLog?: PvpBattleEventLog;
+type RoundComputation = {
+  stageKey: DuelProjectStageKey;
+  targetScore: number;
+  scoreA: number;
+  scoreB: number;
+  baseSkillsA: number;
+  baseSkillsB: number;
+  gadgetBonusA: number;
+  gadgetBonusB: number;
+  itemBonusA: number;
+  itemBonusB: number;
+  professionBonusA: number;
+  professionBonusB: number;
+  randomFactorA: number;
+  randomFactorB: number;
+  explanationA: string;
+  explanationB: string;
 };
-
-const POSITIVE_EVENTS = [
-  "Нашёл полезный сниппет",
-  "IDE подсказала верное решение",
-  "Поймал идеальный фокус",
-  "Логика внезапно сошлась",
-] as const;
-
-const NEGATIVE_EVENTS = [
-  "Merge conflict",
-  "Плавающий баг",
-  "Сломался hot reload",
-  "Тест внезапно упал",
-] as const;
 
 const duelProcessingLocks = new Set<string>();
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function round2(value: number) {
+  return Number(value.toFixed(2));
 }
 
 function hashSeed(input: string) {
@@ -119,358 +137,339 @@ function rngFor(duel: EngineActiveDuel, salt: string) {
   return createSeededRandom(hashSeed(`${duel.seed}:${salt}`));
 }
 
-function getPrimarySkillValue(skills: DuelSkills, stageKey: DuelProjectStageKey) {
-  if (stageKey === "concept") return Number(skills.analytics || 0);
-  if (stageKey === "core") return Number(skills.coding || 0);
-  return Number(skills.testing || 0);
+function getCurrentStageKey(participant: ParticipantRuntime): DuelProjectStageKey | null {
+  return PVP_DUEL_CONFIG.process.stages[participant.currentStageIndex]?.key ?? null;
 }
 
-function computeTotalDuelPower(skills: DuelSkills) {
-  const primary = Number(skills.analytics || 0) + Number(skills.coding || 0) + Number(skills.testing || 0);
-  const secondary = Number(skills.attention || 0) * 0.65
-    + Number(skills.design || 0) * 0.35
-    + Number(skills.drawing || 0) * 0.15
-    + Number(skills.modeling || 0) * 0.35;
-  return Number((primary + secondary).toFixed(2));
-}
-
-function getSecondaryModifier(skills: DuelSkills, stageKey: DuelProjectStageKey) {
-  if (stageKey === "concept") {
-    return 1 + Number(skills.design || 0) * 0.02 + Number(skills.attention || 0) * 0.01;
-  }
-  if (stageKey === "core") {
-    return 1 + Number(skills.modeling || 0) * 0.015 + Number(skills.attention || 0) * 0.01;
-  }
-  return 1 + Number(skills.attention || 0) * 0.02 + Number(skills.design || 0) * 0.005;
-}
-
-function formatStageLabel(stageKey: DuelProjectStageKey) {
+function getRoundLabel(stageKey: DuelProjectStageKey) {
   return PVP_DUEL_CONFIG.process.stages.find((stage) => stage.key === stageKey)?.label ?? stageKey;
 }
 
+function getRoundSkillKeys(stageKey: DuelProjectStageKey): Array<keyof DuelSkills> {
+  if (stageKey === "concept") return ["design", "analytics"];
+  if (stageKey === "core") return ["coding"];
+  return ["testing", "attention"];
+}
+
+function getBaseRoundSkills(skills: DuelSkills, stageKey: DuelProjectStageKey) {
+  if (stageKey === "concept") {
+    return Number(skills.design || 0) + Number(skills.analytics || 0);
+  }
+  if (stageKey === "core") {
+    return Number(skills.coding || 0);
+  }
+  return Number(skills.testing || 0) + Number(skills.attention || 0);
+}
+
+function getWeightedProfessionSkillBonus(
+  professionId: ProfessionId | null,
+  skills: DuelSkills,
+  stageKey: DuelProjectStageKey,
+) {
+  const keys = getRoundSkillKeys(stageKey);
+  return round2(keys.reduce((sum, skillKey) => {
+    const skillValue = Number(skills[skillKey] || 0);
+    const multiplier = getProfessionPvpSkillMultiplier(professionId, skillKey);
+    return sum + Math.max(0, skillValue * (multiplier - 1));
+  }, 0));
+}
+
+function getProfessionRoundBonus(
+  professionId: ProfessionId | null,
+  baseSkills: number,
+  stageKey: DuelProjectStageKey,
+) {
+  const roundMultiplier = getProfessionPvpRoundMultiplier(professionId, stageKey);
+  return round2(Math.max(0, baseSkills * (roundMultiplier - 1)));
+}
+
+function getGadgetRoundBonus(gadget: DuelGadgetProfile | null, stageKey: DuelProjectStageKey) {
+  if (!gadget) return 0;
+  const stats = gadget.stats || {};
+  let weighted = 0;
+  if (stageKey === "concept") {
+    weighted = Number(stats.design || 0) + Number(stats.analytics || 0) * 0.9 + Number(stats.attention || 0) * 0.3;
+  } else if (stageKey === "core") {
+    weighted = Number(stats.coding || 0) + Number(stats.analytics || 0) * 0.2 + Number(stats.modeling || 0) * 0.25;
+  } else {
+    weighted = Number(stats.testing || 0) + Number(stats.attention || 0) * 0.9 + Number(stats.coding || 0) * 0.15;
+  }
+  const universal = Number(gadget.powerScore || 0) * PVP_DUEL_CONFIG.scoring.gadgetUniversalMultiplier;
+  return round2(weighted * PVP_DUEL_CONFIG.scoring.gadgetImpactMultiplier + universal);
+}
+
+function getItemRoundMultiplier(
+  boostId: PvpBoostId | undefined,
+  stageKey: DuelProjectStageKey,
+  participant: ParticipantRuntime,
+) {
+  if (!boostId) return 1;
+  if (boostId === "energy_drink") return 1.05;
+  if (boostId === "focus_sprint") return stageKey === "core" ? 1.1 : 1;
+  if (boostId === "debug_tool") return stageKey === "tests" ? 1.1 : 1;
+  if (boostId === "risk_module") {
+    if (stageKey === "core") return 1.15;
+    if (stageKey === "concept") return 0.9;
+    return 1;
+  }
+  if (boostId === "tactical_boost") {
+    const values = {
+      concept: getBaseRoundSkills(participant.skills, "concept"),
+      core: getBaseRoundSkills(participant.skills, "core"),
+      tests: getBaseRoundSkills(participant.skills, "tests"),
+    } as const;
+    const weakest = (Object.entries(values).sort((a, b) => a[1] - b[1])[0]?.[0] ?? "concept") as DuelProjectStageKey;
+    return stageKey === weakest ? 1.12 : 1;
+  }
+  return 1;
+}
+
+function getItemRoundBonus(
+  boostId: PvpBoostId | undefined,
+  stageKey: DuelProjectStageKey,
+  subtotal: number,
+  participant: ParticipantRuntime,
+) {
+  const multiplier = getItemRoundMultiplier(boostId, stageKey, participant);
+  return round2(Math.max(0, subtotal * (multiplier - 1)));
+}
+
+function getRandomFactor(
+  duel: EngineActiveDuel,
+  participant: ParticipantRuntime,
+  stageKey: DuelProjectStageKey,
+) {
+  const rng = rngFor(duel, `${participant.userId}:${stageKey}:random`);
+  const randomMultiplier =
+    PVP_DUEL_CONFIG.scoring.randomMinMultiplier
+    + rng() * (PVP_DUEL_CONFIG.scoring.randomMaxMultiplier - PVP_DUEL_CONFIG.scoring.randomMinMultiplier);
+  return round2(randomMultiplier);
+}
+
+function computeTotalDuelPower(skills: DuelSkills, gadget?: DuelGadgetProfile | null, levelWeight = 0) {
+  const base =
+    Number(skills.analytics || 0)
+    + Number(skills.design || 0)
+    + Number(skills.coding || 0)
+    + Number(skills.testing || 0)
+    + Number(skills.attention || 0)
+    + Number(skills.modeling || 0) * 0.4
+    + Number(skills.drawing || 0) * 0.35;
+  const gadgetPower = Number(gadget?.powerScore || 0) * 0.65;
+  return round2(base + gadgetPower + levelWeight);
+}
+
 function createParticipant(seed: DuelParticipantSeed): ParticipantRuntime {
-  const boostIds = Array.from(new Set(seed.boosts?.selectedBoosts ?? []));
+  const boostIds = Array.from(new Set(seed.boosts?.selectedBoosts ?? [])).slice(0, 1);
   return {
     userId: seed.userId,
     username: seed.username,
     ratingBefore: seed.rating,
     skills: { ...seed.skills },
-    totalPower: computeTotalDuelPower(seed.skills),
+    professionId: seed.professionId ?? null,
+    totalPower: computeTotalDuelPower(seed.skills, seed.gadget, 0),
+    pvpPowerScore: Number(seed.pvpPowerScore || 0),
     stageProgress: { concept: 0, core: 0, tests: 0 },
     stageCompletedTick: {},
     currentStageIndex: 0,
-    freezeUntilTick: 0,
-    tickMultiplierUntilTick: 0,
-    tickMultiplierValue: 1,
     latestTickGain: 0,
     boostIds,
-    negativeImmunity: boostIds.includes("qa_outsource"),
+    gadget: seed.gadget ?? null,
   };
 }
 
-function getEnergyCostForParticipant(participant: ParticipantRuntime) {
-  const base = PVP_DUEL_CONFIG.process.baseEnergyCost;
-  return participant.boostIds.includes("energy_drink")
-    ? Number((base * PVP_DUEL_CONFIG.process.energyDrinkMultiplier).toFixed(4))
-    : Number(base.toFixed(4));
+function getEnergyCostForParticipant() {
+  return Number(PVP_DUEL_CONFIG.process.baseEnergyCost.toFixed(4));
 }
 
-function getCurrentStageKey(participant: ParticipantRuntime): DuelProjectStageKey | null {
-  return PVP_DUEL_CONFIG.process.stages[participant.currentStageIndex]?.key ?? null;
-}
-
-function isParticipantFinished(participant: ParticipantRuntime) {
-  return participant.currentStageIndex >= PVP_DUEL_CONFIG.process.stages.length;
-}
-
-function hasCompletedAllStages(duel: EngineActiveDuel, participant: ParticipantRuntime) {
-  return PVP_DUEL_CONFIG.process.stages.every((stage) => (
-    Number(participant.stageProgress[stage.key] || 0) >= Number(duel.stageTargets[stage.key] || 0)
-      && participant.stageCompletedTick[stage.key] !== undefined
-  ));
-}
-
-function isAwaitingStart(duel: EngineActiveDuel, nowMs: number) {
-  return nowMs < duel.startedAtMs && !duel.finishedAtMs;
-}
-
-function calculateStageTarget(duel: EngineActiveDuel, stageKey: DuelProjectStageKey) {
-  const playerSkill = getPrimarySkillValue(duel.playerA.skills, stageKey);
-  const opponentSkill = getPrimarySkillValue(duel.playerB.skills, stageKey);
-  return Math.round(
-    clamp(
-      (playerSkill + opponentSkill) * 7,
-      PVP_DUEL_CONFIG.process.stageTarget.min,
-      PVP_DUEL_CONFIG.process.stageTarget.max,
-    ),
-  );
-}
-
-function maybeCreateEvent(
-  duel: EngineActiveDuel,
-  actor: ParticipantRuntime,
+function buildExplanation(
   stageKey: DuelProjectStageKey,
-  tick: number,
-  gain: number,
+  gadgetBonus: number,
+  itemBonus: number,
+  professionBonus: number,
+  randomMultiplier: number,
+  gadgetName?: string | null,
+  boostId?: PvpBoostId,
 ) {
-  const rng = rngFor(duel, `${tick}:${actor.userId}:${stageKey}:event`);
-  const attention = Number(actor.skills.attention || 0);
-  const eventChance = 0.15 + (duel.closeMatch ? 0.03 : 0);
-  if (rng() > eventChance) {
-    return { gainDelta: 0, event: undefined as PvpBattleEventLog | undefined };
+  const parts: string[] = [];
+  if (gadgetBonus > 0.01) {
+    parts.push(`гаджет ${gadgetName || "усилил раунд"} (+${gadgetBonus.toFixed(1)})`);
   }
-
-  const positiveBias = actor.negativeImmunity ? 0.8 : 0.5 + clamp(attention * 0.01, 0, 0.12);
-  const isPositive = rng() <= positiveBias;
-
-  if (isPositive) {
-    const title = POSITIVE_EVENTS[Math.floor(rng() * POSITIVE_EVENTS.length)] ?? POSITIVE_EVENTS[0];
-    if (rng() < 0.55) {
-      const instant = Number((gain * (1 + rng())).toFixed(2));
-      return {
-        gainDelta: instant,
-        event: {
-          tick,
-          actorUserId: actor.userId,
-          actorName: actor.username,
-          stageKey,
-          kind: "positive" as const,
-          title,
-          details: `Рывок +${instant.toFixed(1)} прогресса`,
-          effectType: "instant_progress" as const,
-          progressDelta: instant,
-        },
-      };
-    }
-    const multiplier = Number((1.35 + rng() * 0.45).toFixed(2));
-    actor.tickMultiplierValue = multiplier;
-    actor.tickMultiplierUntilTick = tick + 1;
-    return {
-      gainDelta: 0,
-      event: {
-        tick,
-        actorUserId: actor.userId,
-        actorName: actor.username,
-        stageKey,
-        kind: "positive" as const,
-        title,
-        details: `Следующий тик идёт с множителем x${multiplier}`,
-        effectType: "tick_multiplier" as const,
-        progressDelta: 0,
-        durationTicks: 1,
-      },
-    };
+  if (itemBonus > 0.01) {
+    const itemName = getPvpBoostDefinition(boostId)?.name || "PvP-предмет";
+    parts.push(`${itemName} дал бонус (+${itemBonus.toFixed(1)})`);
   }
-
-  const title = NEGATIVE_EVENTS[Math.floor(rng() * NEGATIVE_EVENTS.length)] ?? NEGATIVE_EVENTS[0];
-  if (actor.negativeImmunity) {
-    return {
-      gainDelta: 0,
-      event: {
-        tick,
-        actorUserId: actor.userId,
-        actorName: actor.username,
-        stageKey,
-        kind: "positive" as const,
-        title: "Debugger погасил проблему",
-        details: `Событие "${title}" было нейтрализовано`,
-        effectType: "freeze" as const,
-        progressDelta: 0,
-      },
-    };
+  if (professionBonus > 0.01) {
+    parts.push(`специализация помогла (+${professionBonus.toFixed(1)})`);
   }
-
-  if (rng() < 0.5) {
-    const freezeTicks = attention >= 8 ? 1 : 2;
-    actor.freezeUntilTick = tick + freezeTicks;
-    return {
-      gainDelta: 0,
-      event: {
-        tick,
-        actorUserId: actor.userId,
-        actorName: actor.username,
-        stageKey,
-        kind: "negative" as const,
-        title,
-        details: `Прогресс заморожен на ${freezeTicks} тика`,
-        effectType: "freeze" as const,
-        progressDelta: 0,
-        durationTicks: freezeTicks,
-      },
-    };
+  const randomPct = Math.round((randomMultiplier - 1) * 100);
+  if (randomPct > 0) {
+    parts.push(`удачный темп (+${randomPct}%)`);
+  } else if (randomPct < 0) {
+    parts.push(`темп просел (${randomPct}%)`);
   }
+  if (!parts.length) {
+    return `${getRoundLabel(stageKey)} прошёл без заметных модификаторов.`;
+  }
+  return parts.join(", ");
+}
 
-  const rollback = -Number((gain * (0.8 + rng() * 0.8) * (attention >= 8 ? 0.7 : 1)).toFixed(2));
+function computeRound(
+  duel: EngineActiveDuel,
+  stageKey: DuelProjectStageKey,
+): RoundComputation {
+  const baseSkillsA = round2(getBaseRoundSkills(duel.playerA.skills, stageKey));
+  const baseSkillsB = round2(getBaseRoundSkills(duel.playerB.skills, stageKey));
+  const gadgetBonusA = getGadgetRoundBonus(duel.playerA.gadget, stageKey);
+  const gadgetBonusB = getGadgetRoundBonus(duel.playerB.gadget, stageKey);
+  const professionBonusA = round2(
+    getWeightedProfessionSkillBonus(duel.playerA.professionId, duel.playerA.skills, stageKey)
+    + getProfessionRoundBonus(duel.playerA.professionId, baseSkillsA, stageKey),
+  );
+  const professionBonusB = round2(
+    getWeightedProfessionSkillBonus(duel.playerB.professionId, duel.playerB.skills, stageKey)
+    + getProfessionRoundBonus(duel.playerB.professionId, baseSkillsB, stageKey),
+  );
+  const subtotalA = round2(baseSkillsA + gadgetBonusA + professionBonusA);
+  const subtotalB = round2(baseSkillsB + gadgetBonusB + professionBonusB);
+  const itemBonusA = getItemRoundBonus(duel.playerA.boostIds[0], stageKey, subtotalA, duel.playerA);
+  const itemBonusB = getItemRoundBonus(duel.playerB.boostIds[0], stageKey, subtotalB, duel.playerB);
+  const randomFactorA = getRandomFactor(duel, duel.playerA, stageKey);
+  const randomFactorB = getRandomFactor(duel, duel.playerB, stageKey);
+  const scoreA = round2((subtotalA + itemBonusA) * randomFactorA);
+  const scoreB = round2((subtotalB + itemBonusB) * randomFactorB);
+  const targetScore = round2(Math.max(1, scoreA, scoreB));
   return {
-    gainDelta: rollback,
-    event: {
-      tick,
-      actorUserId: actor.userId,
-      actorName: actor.username,
-      stageKey,
-      kind: "negative" as const,
-      title,
-      details: `Откат ${rollback.toFixed(1)} прогресса`,
-      effectType: "rollback" as const,
-      progressDelta: rollback,
-    },
-  };
-}
-
-function computeTickGain(
-  duel: EngineActiveDuel,
-  actor: ParticipantRuntime,
-  opponent: ParticipantRuntime,
-  tick: number,
-  stageKey: DuelProjectStageKey,
-) {
-  const primary = getPrimarySkillValue(actor.skills, stageKey);
-  const rng = rngFor(duel, `${tick}:${actor.userId}:${stageKey}:gain`);
-  const variance = 0.92 + rng() * 0.16;
-  const secondary = getSecondaryModifier(actor.skills, stageKey);
-  const closeMatchSwing = duel.closeMatch ? 0.92 + rng() * 0.2 : 0.96 + rng() * 0.08;
-  const catchup = actor.currentStageIndex === opponent.currentStageIndex
-    && actor.stageProgress[stageKey] < opponent.stageProgress[stageKey]
-    ? 1.05
-    : 1;
-  const boost = stageKey === "core" && actor.boostIds.includes("overclock_cpu") ? 1.2 : 1;
-  const temporaryMultiplier = tick <= actor.tickMultiplierUntilTick ? actor.tickMultiplierValue : 1;
-  return Number((Math.max(1.25, primary) * secondary * variance * closeMatchSwing * catchup * boost * temporaryMultiplier).toFixed(2));
-}
-
-function pushEvent(duel: EngineActiveDuel, event?: PvpBattleEventLog) {
-  if (!event) return;
-  duel.recentEvents.push(event);
-  if (duel.recentEvents.length > 6) {
-    duel.recentEvents.splice(0, duel.recentEvents.length - 6);
-  }
-  duel.latestLog = `${event.actorName}: ${event.title}. ${event.details}`;
-}
-
-function applyParticipantTick(
-  duel: EngineActiveDuel,
-  actor: ParticipantRuntime,
-  opponent: ParticipantRuntime,
-  tick: number,
-): TickParticipantState {
-  const stageKey = getCurrentStageKey(actor);
-  if (!stageKey) {
-    actor.latestTickGain = 0;
-    return { gain: 0, overflow: 0 };
-  }
-  if (tick <= actor.freezeUntilTick) {
-    actor.latestTickGain = 0;
-    return { gain: 0, overflow: 0 };
-  }
-
-  const baseGain = computeTickGain(duel, actor, opponent, tick, stageKey);
-  const event = maybeCreateEvent(duel, actor, stageKey, tick, baseGain);
-  const gain = Number((baseGain + event.gainDelta).toFixed(2));
-  const target = duel.stageTargets[stageKey];
-  const next = Math.max(0, Number((actor.stageProgress[stageKey] + gain).toFixed(2)));
-  actor.stageProgress[stageKey] = next;
-  actor.latestTickGain = gain;
-
-  let overflow = 0;
-  if (next >= target) {
-    overflow = Number((next - target).toFixed(2));
-    actor.stageProgress[stageKey] = Number(target.toFixed(2));
-    actor.stageCompletedTick[stageKey] = tick;
-    actor.currentStageIndex += 1;
-  }
-
-  return { gain, overflow, eventLog: event.event };
-}
-
-function logTickState(duel: EngineActiveDuel, tick: number) {
-  const stageA = getCurrentStageKey(duel.playerA);
-  const stageB = getCurrentStageKey(duel.playerB);
-  const formatProgress = (participant: ParticipantRuntime, stageKey: DuelProjectStageKey | null) => {
-    if (!stageKey) return "done";
-    return `${Number(participant.stageProgress[stageKey] || 0).toFixed(1)}/${Number(duel.stageTargets[stageKey] || 0).toFixed(1)}`;
-  };
-  console.info(
-    `[pvp tick] duel=${duel.duelId} tick=${tick} `
-      + `A(${duel.playerA.username}) stage=${stageA ?? "finished"} progress=${formatProgress(duel.playerA, stageA)} gain=${duel.playerA.latestTickGain.toFixed(2)} freezeUntil=${duel.playerA.freezeUntilTick} `
-      + `B(${duel.playerB.username}) stage=${stageB ?? "finished"} progress=${formatProgress(duel.playerB, stageB)} gain=${duel.playerB.latestTickGain.toFixed(2)} freezeUntil=${duel.playerB.freezeUntilTick} `
-      + `log="${duel.latestLog}"`,
-  );
-}
-
-function finalizeStageRound(duel: EngineActiveDuel, stageKey: DuelProjectStageKey, tick: number, overflowA: number, overflowB: number) {
-  if (duel.rounds.some((round) => round.round === stageKey)) return;
-  const scoreA = duel.playerA.stageProgress[stageKey];
-  const scoreB = duel.playerB.stageProgress[stageKey];
-  let winnerUserId: string | null = null;
-  if (scoreA > scoreB) winnerUserId = duel.playerA.userId;
-  if (scoreB > scoreA) winnerUserId = duel.playerB.userId;
-  duel.rounds.push({
-    round: stageKey,
-    playerAUserId: duel.playerA.userId,
-    playerBUserId: duel.playerB.userId,
+    stageKey,
+    targetScore,
     scoreA,
     scoreB,
-    winnerUserId,
-    targetScore: duel.stageTargets[stageKey],
-    overflowA,
-    overflowB,
-    ticksSpent: tick,
+    baseSkillsA,
+    baseSkillsB,
+    gadgetBonusA,
+    gadgetBonusB,
+    itemBonusA,
+    itemBonusB,
+    professionBonusA,
+    professionBonusB,
+    randomFactorA,
+    randomFactorB,
+    explanationA: buildExplanation(
+      stageKey,
+      gadgetBonusA,
+      itemBonusA,
+      professionBonusA,
+      randomFactorA,
+      duel.playerA.gadget?.name,
+      duel.playerA.boostIds[0],
+    ),
+    explanationB: buildExplanation(
+      stageKey,
+      gadgetBonusB,
+      itemBonusB,
+      professionBonusB,
+      randomFactorB,
+      duel.playerB.gadget?.name,
+      duel.playerB.boostIds[0],
+    ),
+  };
+}
+
+function computeRounds(duel: EngineActiveDuel): DuelRoundResult[] {
+  return PVP_DUEL_CONFIG.process.stages.map((stage) => {
+    const computed = computeRound(duel, stage.key);
+    const winnerUserId =
+      computed.scoreA === computed.scoreB
+        ? null
+        : computed.scoreA > computed.scoreB
+          ? duel.playerA.userId
+          : duel.playerB.userId;
+    return {
+      round: stage.key,
+      playerAUserId: duel.playerA.userId,
+      playerBUserId: duel.playerB.userId,
+      scoreA: computed.scoreA,
+      scoreB: computed.scoreB,
+      winnerUserId,
+      targetScore: computed.targetScore,
+      baseSkillsA: computed.baseSkillsA,
+      baseSkillsB: computed.baseSkillsB,
+      gadgetBonusA: computed.gadgetBonusA,
+      gadgetBonusB: computed.gadgetBonusB,
+      itemBonusA: computed.itemBonusA,
+      itemBonusB: computed.itemBonusB,
+      professionBonusA: computed.professionBonusA,
+      professionBonusB: computed.professionBonusB,
+      randomFactorA: computed.randomFactorA,
+      randomFactorB: computed.randomFactorB,
+      explanationA: computed.explanationA,
+      explanationB: computed.explanationB,
+    };
   });
 }
 
-function ensureCompletedStageRounds(duel: EngineActiveDuel, tick: number, overflowA: number, overflowB: number) {
-  for (const stage of PVP_DUEL_CONFIG.process.stages) {
-    if (duel.rounds.some((round) => round.round === stage.key)) continue;
-    const progressA = Number(duel.playerA.stageProgress[stage.key] || 0);
-    const progressB = Number(duel.playerB.stageProgress[stage.key] || 0);
-    const target = Number(duel.stageTargets[stage.key] || 0);
-    const playerACompleted = duel.playerA.stageCompletedTick[stage.key] !== undefined;
-    const playerBCompleted = duel.playerB.stageCompletedTick[stage.key] !== undefined;
-    if ((playerACompleted || playerBCompleted) && (progressA >= target || progressB >= target)) {
-      finalizeStageRound(duel, stage.key, tick, overflowA, overflowB);
-    }
-  }
+function resolveWinner(duel: EngineActiveDuel) {
+  const winsA = duel.rounds.filter((round) => round.winnerUserId === duel.playerA.userId).length;
+  const winsB = duel.rounds.filter((round) => round.winnerUserId === duel.playerB.userId).length;
+  if (winsA > winsB) return duel.playerA.userId;
+  if (winsB > winsA) return duel.playerB.userId;
+  const totalA = duel.rounds.reduce((sum, round) => sum + Number(round.scoreA || 0), 0);
+  const totalB = duel.rounds.reduce((sum, round) => sum + Number(round.scoreB || 0), 0);
+  if (totalA > totalB) return duel.playerA.userId;
+  if (totalB > totalA) return duel.playerB.userId;
+  return null;
 }
 
-function resolveWinner(duel: EngineActiveDuel, tick: number, overflowA: number, overflowB: number) {
-  const playerAFinished = isParticipantFinished(duel.playerA) && hasCompletedAllStages(duel, duel.playerA);
-  const playerBFinished = isParticipantFinished(duel.playerB) && hasCompletedAllStages(duel, duel.playerB);
-  if (!playerAFinished && !playerBFinished) return;
-
-  duel.finishedAtMs = duel.startedAtMs + tick * PVP_DUEL_CONFIG.process.tickIntervalMs;
-
-  if (playerAFinished && !playerBFinished) {
-    duel.winnerUserId = duel.playerA.userId;
-    return;
-  }
-  if (playerBFinished && !playerAFinished) {
-    duel.winnerUserId = duel.playerB.userId;
-    return;
-  }
-  if (overflowA !== overflowB) {
-    duel.winnerUserId = overflowA > overflowB ? duel.playerA.userId : duel.playerB.userId;
-    return;
-  }
-
-  duel.winnerUserId = null;
+function buildRoundEvent(
+  duel: EngineActiveDuel,
+  round: DuelRoundResult,
+  stageKey: DuelProjectStageKey,
+  tick: number,
+) {
+  const isPlayerAWinner = round.winnerUserId === duel.playerA.userId;
+  const isDraw = round.winnerUserId === null;
+  const actor = isDraw ? duel.playerA : isPlayerAWinner ? duel.playerA : duel.playerB;
+  const kind: PvpBattleEventLog["kind"] = isDraw ? "negative" : "positive";
+  const title = isDraw
+    ? `${getRoundLabel(stageKey)}: ничья`
+    : `${getRoundLabel(stageKey)}: ${actor.username} забирает раунд`;
+  const details =
+    isDraw
+      ? `${duel.playerA.username} ${round.scoreA.toFixed(1)} vs ${duel.playerB.username} ${round.scoreB.toFixed(1)}`
+      : `${duel.playerA.username} ${round.scoreA.toFixed(1)} vs ${duel.playerB.username} ${round.scoreB.toFixed(1)}`;
+  return {
+    tick,
+    actorUserId: actor.userId,
+    actorName: actor.username,
+    stageKey,
+    kind,
+    title,
+    details,
+    effectType: "instant_progress" as const,
+    progressDelta: round2(Math.abs(round.scoreA - round.scoreB)),
+  };
 }
 
-function recalculateDuelAfterBoosts(duel: EngineActiveDuel) {
-  duel.playerA.negativeImmunity = duel.playerA.boostIds.includes("qa_outsource");
-  duel.playerB.negativeImmunity = duel.playerB.boostIds.includes("qa_outsource");
-  duel.energyCostA = getEnergyCostForParticipant(duel.playerA);
-  duel.energyCostB = getEnergyCostForParticipant(duel.playerB);
+function getPreparationLog(duel: EngineActiveDuel) {
+  return `Матч найден. Можно выбрать 1 PvP-предмет перед стартом. Активный гаджет: ${duel.playerA.gadget?.name || "нет"} vs ${duel.playerB.gadget?.name || "нет"}.`;
 }
 
 export function applyDuelBoost(duel: EngineActiveDuel, userId: string, boostId: PvpBoostId) {
   const participant = duel.playerA.userId === userId ? duel.playerA : duel.playerB.userId === userId ? duel.playerB : null;
   if (!participant) throw new Error("Участник дуэли не найден");
   if (participant.boostIds.includes(boostId)) {
-    throw new Error("Этот boost уже куплен для текущей дуэли");
+    throw new Error("Этот PvP-предмет уже выбран для текущей дуэли");
+  }
+  if (participant.boostIds.length >= 1) {
+    throw new Error("На бой можно взять только 1 PvP-предмет");
   }
   participant.boostIds.push(boostId);
-  recalculateDuelAfterBoosts(duel);
-  duel.latestLog = `${participant.username} активировал boost ${boostId}`;
+  duel.rounds = computeRounds(duel);
+  for (const stage of PVP_DUEL_CONFIG.process.stages) {
+    const round = duel.rounds.find((item) => item.round === stage.key);
+    duel.stageTargets[stage.key] = round ? round.targetScore : 1;
+  }
+  duel.latestLog = `${participant.username} выбрал предмет ${getPvpBoostDefinition(boostId)?.name || boostId}`;
 }
 
 export function startPreparedDuel(duel: EngineActiveDuel, nowMs: number = Date.now()) {
@@ -478,7 +477,7 @@ export function startPreparedDuel(duel: EngineActiveDuel, nowMs: number = Date.n
   duel.startedAtMs = nowMs;
   duel.updatedAtMs = nowMs;
   duel.expectedEndAtMs = nowMs + (PVP_DUEL_CONFIG.process.expectedDurationTicks.max * PVP_DUEL_CONFIG.process.tickIntervalMs);
-  duel.latestLog = "Подготовка завершена. Команды вошли в dev race.";
+  duel.latestLog = "Дуэль началась. Раунды будут открываться по очереди.";
   return duel;
 }
 
@@ -500,22 +499,24 @@ export function startDuel(playerASeed: DuelParticipantSeed, playerBSeed: DuelPar
     expectedEndAtMs: startedAtMs + (PVP_DUEL_CONFIG.process.expectedDurationTicks.max * PVP_DUEL_CONFIG.process.tickIntervalMs),
     seed,
     closeMatch: powerDiff <= PVP_DUEL_CONFIG.process.closeMatchThreshold,
-    stageTargets: { concept: 0, core: 0, tests: 0 },
+    stageTargets: { concept: 1, core: 1, tests: 1 },
     rounds: [],
     recentEvents: [],
-    latestLog: "Преддуэльный бриф открыт. Можно докупить boosts перед стартом.",
+    latestLog: "",
     playerA,
     playerB,
     winnerUserId: null,
     finishedAtMs: null,
-    energyCostA: getEnergyCostForParticipant(playerA),
-    energyCostB: getEnergyCostForParticipant(playerB),
+    energyCostA: getEnergyCostForParticipant(),
+    energyCostB: getEnergyCostForParticipant(),
   };
 
+  duel.rounds = computeRounds(duel);
   for (const stage of PVP_DUEL_CONFIG.process.stages) {
-    duel.stageTargets[stage.key] = calculateStageTarget(duel, stage.key);
+    const round = duel.rounds.find((item) => item.round === stage.key);
+    duel.stageTargets[stage.key] = round ? round.targetScore : 1;
   }
-
+  duel.latestLog = getPreparationLog(duel);
   return duel;
 }
 
@@ -524,46 +525,50 @@ export function processDuelTicks(duel: EngineActiveDuel, nowMs: number = Date.no
   if (duelProcessingLocks.has(duel.duelId)) return duel;
   duelProcessingLocks.add(duel.duelId);
   try {
-  if (isAwaitingStart(duel, nowMs)) {
-    duel.updatedAtMs = nowMs;
+    if (nowMs < duel.startedAtMs) {
+      duel.updatedAtMs = nowMs;
+      return duel;
+    }
+
+    const targetTick = Math.max(0, Math.floor((nowMs - duel.startedAtMs) / PVP_DUEL_CONFIG.process.tickIntervalMs) + 1);
+    while (duel.lastProcessedTick < targetTick) {
+      const tick = duel.lastProcessedTick + 1;
+      const round = duel.rounds[tick - 1];
+      if (!round) {
+        duel.finishedAtMs = duel.startedAtMs + (duel.rounds.length * PVP_DUEL_CONFIG.process.tickIntervalMs);
+        duel.winnerUserId = resolveWinner(duel);
+        break;
+      }
+
+      const stageKey = round.round;
+      duel.playerA.stageProgress[stageKey] = round.scoreA;
+      duel.playerB.stageProgress[stageKey] = round.scoreB;
+      duel.playerA.stageCompletedTick[stageKey] = tick;
+      duel.playerB.stageCompletedTick[stageKey] = tick;
+      duel.playerA.latestTickGain = round.scoreA;
+      duel.playerB.latestTickGain = round.scoreB;
+      duel.playerA.currentStageIndex = Math.min(PVP_DUEL_CONFIG.process.stages.length - 1, tick);
+      duel.playerB.currentStageIndex = Math.min(PVP_DUEL_CONFIG.process.stages.length - 1, tick);
+      const event = buildRoundEvent(duel, round, stageKey, tick);
+      duel.recentEvents.push(event);
+      if (duel.recentEvents.length > 6) {
+        duel.recentEvents.splice(0, duel.recentEvents.length - 6);
+      }
+      duel.latestLog = `${getRoundLabel(stageKey)}: ${event.details}`;
+      duel.lastProcessedTick = tick;
+      duel.updatedAtMs = duel.startedAtMs + tick * PVP_DUEL_CONFIG.process.tickIntervalMs;
+    }
+
+    if (!duel.finishedAtMs && duel.lastProcessedTick >= duel.rounds.length) {
+      duel.finishedAtMs = duel.startedAtMs + (duel.rounds.length * PVP_DUEL_CONFIG.process.tickIntervalMs);
+      duel.updatedAtMs = duel.finishedAtMs;
+      duel.winnerUserId = resolveWinner(duel);
+    }
+
+    if (!duel.finishedAtMs) {
+      duel.expectedEndAtMs = duel.startedAtMs + (duel.rounds.length * PVP_DUEL_CONFIG.process.tickIntervalMs);
+    }
     return duel;
-  }
-  if (duel.startedAtMs > duel.preparationEndsAtMs) {
-    duel.preparationEndsAtMs = duel.startedAtMs;
-  }
-
-  const targetTick = Math.max(0, Math.floor((nowMs - duel.startedAtMs) / PVP_DUEL_CONFIG.process.tickIntervalMs));
-  while (duel.lastProcessedTick < targetTick) {
-    const tick = duel.lastProcessedTick + 1;
-    const stageBeforeA = getCurrentStageKey(duel.playerA);
-    const stageBeforeB = getCurrentStageKey(duel.playerB);
-    const aState = applyParticipantTick(duel, duel.playerA, duel.playerB, tick);
-    const bState = applyParticipantTick(duel, duel.playerB, duel.playerA, tick);
-
-    pushEvent(duel, aState.eventLog);
-    pushEvent(duel, bState.eventLog);
-
-    if (stageBeforeA && duel.playerA.stageCompletedTick[stageBeforeA] === tick) {
-      finalizeStageRound(duel, stageBeforeA, tick, aState.overflow, bState.overflow);
-      duel.latestLog = `${duel.playerA.username} завершил этап ${formatStageLabel(stageBeforeA)}`;
-    }
-    if (stageBeforeB && stageBeforeB !== stageBeforeA && duel.playerB.stageCompletedTick[stageBeforeB] === tick) {
-      finalizeStageRound(duel, stageBeforeB, tick, aState.overflow, bState.overflow);
-      duel.latestLog = `${duel.playerB.username} завершил этап ${formatStageLabel(stageBeforeB)}`;
-    }
-
-    ensureCompletedStageRounds(duel, tick, aState.overflow, bState.overflow);
-    resolveWinner(duel, tick, aState.overflow, bState.overflow);
-    duel.lastProcessedTick = tick;
-    duel.updatedAtMs = duel.startedAtMs + tick * PVP_DUEL_CONFIG.process.tickIntervalMs;
-    logTickState(duel, tick);
-    if (duel.finishedAtMs) break;
-  }
-
-  if (!duel.finishedAtMs) {
-    duel.expectedEndAtMs = duel.updatedAtMs + (PVP_DUEL_CONFIG.process.expectedDurationTicks.max - Math.min(duel.lastProcessedTick, PVP_DUEL_CONFIG.process.expectedDurationTicks.max)) * PVP_DUEL_CONFIG.process.tickIntervalMs;
-  }
-  return duel;
   } finally {
     duelProcessingLocks.delete(duel.duelId);
   }
@@ -571,8 +576,8 @@ export function processDuelTicks(duel: EngineActiveDuel, nowMs: number = Date.no
 
 export function generateBalancedPvpBot(player: DuelParticipantSeed, botUserId: string, username: string): DuelParticipantSeed {
   const rng = createSeededRandom(hashSeed(`${player.userId}:${player.rating}:${player.username}:bot`));
-  const scale = (value: number) => Number((Math.max(0.5, value) * (0.95 + rng() * 0.1)).toFixed(2));
-  let botSkills: DuelSkills = {
+  const scale = (value: number) => round2(Math.max(0.5, value) * (0.93 + rng() * 0.14));
+  const botSkills: DuelSkills = {
     analytics: scale(player.skills.analytics),
     coding: scale(player.skills.coding),
     testing: scale(player.skills.testing),
@@ -581,33 +586,14 @@ export function generateBalancedPvpBot(player: DuelParticipantSeed, botUserId: s
     drawing: scale(player.skills.drawing),
     modeling: scale(player.skills.modeling),
   };
-  const playerPower = Math.max(1, computeTotalDuelPower(player.skills));
-  const botPower = Math.max(1, computeTotalDuelPower(botSkills));
-  const minAllowedPower = playerPower * 0.95;
-  const maxAllowedPower = playerPower * 1.05;
-  if (botPower < minAllowedPower || botPower > maxAllowedPower) {
-    const correction = clamp(
-      (botPower < minAllowedPower ? minAllowedPower : maxAllowedPower) / Math.max(1, botPower),
-      0.9,
-      1.1,
-    );
-    botSkills = {
-      analytics: Number((botSkills.analytics * correction).toFixed(2)),
-      coding: Number((botSkills.coding * correction).toFixed(2)),
-      testing: Number((botSkills.testing * correction).toFixed(2)),
-      attention: Number((botSkills.attention * correction).toFixed(2)),
-      design: Number((botSkills.design * correction).toFixed(2)),
-      drawing: Number((botSkills.drawing * correction).toFixed(2)),
-      modeling: Number((botSkills.modeling * correction).toFixed(2)),
-    };
-  }
-
   return {
     userId: botUserId,
     username,
     rating: Math.max(900, Math.round(player.rating * (0.98 + rng() * 0.04))),
     skills: botSkills,
     boosts: { selectedBoosts: [] },
+    gadget: null,
+    pvpPowerScore: computeTotalDuelPower(botSkills, null, 0),
     isBot: true,
   };
 }

@@ -28,7 +28,8 @@ function normalizeDuelSkills(skills: Record<string, number> | undefined) {
   const modeling = Math.max(0, Number(skills?.modeling || 0));
   const testing = Math.max(0, Number(skills?.testing || 0));
   const attention = Math.max(0, Number(skills?.attention || 0));
-  return { analytics, design, drawing, coding, modeling, testing, attention, skillSum: analytics + design + drawing + coding + modeling + testing + attention };
+  const skillSum = analytics + design + drawing + coding + modeling + testing + attention;
+  return { analytics, design, drawing, coding, modeling, testing, attention, skillSum };
 }
 
 async function ensureTestBotUser(index: number) {
@@ -72,6 +73,8 @@ async function tickSinglePvpTestBot(index: number, reservedTargets: Set<string>)
     rating: target.rating,
     skills: target.skills,
     skillSum: target.skillSum,
+    pvpPowerScore: target.pvpPowerScore,
+    gadget: target.gadget ?? null,
     isBot: false,
   }, user.id, user.username);
 
@@ -94,6 +97,7 @@ async function tickSinglePvpTestBot(index: number, reservedTargets: Set<string>)
   applyGameStatePatch(user.id, { skills });
 
   const duelSkills = normalizeDuelSkills(skills);
+  const pvpPowerScore = duelSkills.skillSum + nextLevel * 2;
   queuePlayerForPvp({
     userId: user.id,
     username: user.username,
@@ -109,6 +113,8 @@ async function tickSinglePvpTestBot(index: number, reservedTargets: Set<string>)
       attention: duelSkills.attention,
     },
     skillSum: duelSkills.skillSum,
+    pvpPowerScore,
+    gadget: null,
     isBot: true,
   });
   updatePvpHeartbeat(user.id);

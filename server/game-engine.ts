@@ -4,6 +4,8 @@ import { RARITY_LEVELS, getPartPrice, rollRandomPartDrop } from "../client/src/l
 import { resolveCity } from "../shared/registration";
 import {
   BALANCE_CONFIG,
+  type BankCreditProgramBalance,
+  type BankDepositProgramBalance,
   applyBankFeeRate,
   getCityProfile,
   getEducationSkillMultiplier,
@@ -17,6 +19,7 @@ import {
 } from "../shared/balance-config";
 import {
   PROFESSION_SPECIAL_JOBS,
+  getProfessionSkillCap,
   getProfessionSkillGrowthMultiplier,
   type ProfessionId,
 } from "../shared/professions";
@@ -62,6 +65,8 @@ export interface GameInventoryItem {
   rarity: string;
   quantity: number;
   type: InventoryItemType;
+  baseName?: string;
+  category?: string;
   isEquipped?: boolean;
   durability?: number;
   maxDurability?: number;
@@ -69,6 +74,8 @@ export interface GameInventoryItem {
   maxCondition?: number;
   isBroken?: boolean;
   reliability?: number;
+  quality?: number;
+  exclusiveLevel?: number;
   repairStatus?: "none" | "queued" | "accepted" | "in_progress" | "completed";
   repairOrderId?: string;
   repairLocked?: boolean;
@@ -81,6 +88,23 @@ export interface GameBankProduct {
   totalDays: number;
   totalReturn: number;
   name: string;
+  programId?: string;
+  depositKind?: "safe" | "risky" | "pvp";
+  overduePenaltyRate?: number;
+  graceMinutes?: number;
+  isOverdue?: boolean;
+  rewardBonusPct?: number;
+  ratingBonusFlat?: number;
+  xpBonusPct?: number;
+  boostDurationMinutes?: number;
+}
+
+export interface GamePvpBankBoost {
+  sourceName: string;
+  rewardBonusPct: number;
+  ratingBonusFlat: number;
+  xpBonusPct: number;
+  expiresAt: number;
 }
 
 export interface GameState {
@@ -91,6 +115,7 @@ export interface GameState {
   gramBalance: number;
   jobDropPity: number;
   activeBankProduct: GameBankProduct | null;
+  activePvpBankBoost: GamePvpBankBoost | null;
   lastTickAt: number;
 }
 
@@ -127,12 +152,23 @@ export interface ShopItem {
 }
 
 export interface BankProgram {
+  id: string;
   name: string;
   minLevel: number;
   minAmount: number;
   maxAmount: number;
-  interest: number;
   description: string;
+  durationMinutes: number;
+  interest?: number;
+  depositKind?: "safe" | "risky" | "pvp";
+  overduePenaltyRate?: number;
+  graceMinutes?: number;
+  riskyInterest?: number;
+  riskySuccessChance?: number;
+  pvpRewardBonusPct?: number;
+  pvpRatingBonusFlat?: number;
+  pvpXpBonusPct?: number;
+  pvpBoostDurationMinutes?: number;
 }
 
 type BankEarlyAction = "repay" | "withdraw";
@@ -187,6 +223,7 @@ const EMPTY_GAME_STATE: Omit<GameState, "lastTickAt"> = {
   gramBalance: 0,
   jobDropPity: 0,
   activeBankProduct: null,
+  activePvpBankBoost: null,
 };
 
 const ENERGY_REGEN_PER_SECOND = getEnergyRegenPerSecond();
@@ -479,67 +516,50 @@ function getConsumableMinLevel(item: ShopItem) {
   return 1;
 }
 
-export function getTrainingSkillCapForLevel(level: number) {
-  return getSkillTrainingCapForLevel(level);
+export function getTrainingSkillCapForLevel(
+  level: number,
+  skill?: SkillName | null,
+  professionId?: ProfessionId | null,
+) {
+  const baseCap = getSkillTrainingCapForLevel(level);
+  if (!skill) return baseCap;
+  return getProfessionSkillCap(baseCap, professionId ?? null, skill);
 }
 
 export function getConsumableTrainingUseLimitForLevel(level: number) {
   return getConsumableTrainingLimitForLevel(level);
 }
 
-const CREDIT_PROGRAMS: BankProgram[] = [
-  {
-    name: "РЎС‚Р°РЅРґР°СЂС‚РЅС‹Р№ РєСЂРµРґРёС‚",
-    minLevel: 1,
-    minAmount: 10000,
-    maxAmount: 100000,
-    interest: 15,
-    description: "Р‘Р°Р·РѕРІС‹Р№ РєСЂРµРґРёС‚ СЃ РјРёРЅРёРјР°Р»СЊРЅС‹РјРё С‚СЂРµР±РѕРІР°РЅРёСЏРјРё",
-  },
-  {
-    name: "РџСЂРµРјРёСѓРј РєСЂРµРґРёС‚",
-    minLevel: 10,
-    minAmount: 50000,
-    maxAmount: 500000,
-    interest: 12,
-    description: "РљСЂРµРґРёС‚ СЃ СѓР»СѓС‡С€РµРЅРЅС‹РјРё СѓСЃР»РѕРІРёСЏРјРё",
-  },
-  {
-    name: "VIP РєСЂРµРґРёС‚",
-    minLevel: 25,
-    minAmount: 200000,
-    maxAmount: 2000000,
-    interest: 10,
-    description: "Р­РєСЃРєР»СЋР·РёРІРЅС‹Р№ РєСЂРµРґРёС‚ РґР»СЏ РѕРїС‹С‚РЅС‹С… РёРіСЂРѕРєРѕРІ",
-  },
-];
+const CREDIT_PROGRAMS: BankProgram[] = BALANCE_CONFIG.bank.creditPrograms.map((program: BankCreditProgramBalance) => ({
+  id: program.id,
+  name: program.name,
+  minLevel: program.minLevel,
+  minAmount: program.minAmount,
+  maxAmount: program.maxAmount,
+  interest: program.interest,
+  durationMinutes: program.durationMinutes,
+  overduePenaltyRate: program.overduePenaltyRate,
+  graceMinutes: program.graceMinutes,
+  description: program.description,
+}));
 
-const DEPOSIT_PROGRAMS: BankProgram[] = [
-  {
-    name: "РЎР±РµСЂРµРіР°С‚РµР»СЊРЅС‹Р№ РІРєР»Р°Рґ",
-    minLevel: 1,
-    minAmount: 1000,
-    maxAmount: 100000,
-    interest: 10,
-    description: "РќР°РґРµР¶РЅС‹Р№ РІРєР»Р°Рґ СЃ РіР°СЂР°РЅС‚РёСЂРѕРІР°РЅРЅС‹Рј РґРѕС…РѕРґРѕРј",
-  },
-  {
-    name: "РќР°РєРѕРїРёС‚РµР»СЊРЅС‹Р№ РІРєР»Р°Рґ",
-    minLevel: 10,
-    minAmount: 50000,
-    maxAmount: 500000,
-    interest: 12,
-    description: "Р’РєР»Р°Рґ СЃ РїРѕРІС‹С€РµРЅРЅРѕР№ РїСЂРѕС†РµРЅС‚РЅРѕР№ СЃС‚Р°РІРєРѕР№",
-  },
-  {
-    name: "РџСЂРµРјРёСѓРј РІРєР»Р°Рґ",
-    minLevel: 25,
-    minAmount: 200000,
-    maxAmount: 2000000,
-    interest: 15,
-    description: "РњР°РєСЃРёРјР°Р»СЊРЅС‹Р№ РґРѕС…РѕРґ РґР»СЏ РєСЂСѓРїРЅС‹С… СЃСѓРјРј",
-  },
-];
+const DEPOSIT_PROGRAMS: BankProgram[] = BALANCE_CONFIG.bank.depositPrograms.map((program: BankDepositProgramBalance) => ({
+  id: program.id,
+  name: program.name,
+  minLevel: program.minLevel,
+  minAmount: program.minAmount,
+  maxAmount: program.maxAmount,
+  durationMinutes: program.durationMinutes,
+  description: program.description,
+  depositKind: program.depositKind,
+  interest: program.guaranteedInterest,
+  riskyInterest: program.riskyInterest,
+  riskySuccessChance: program.riskySuccessChance,
+  pvpRewardBonusPct: program.pvpRewardBonusPct,
+  pvpRatingBonusFlat: program.pvpRatingBonusFlat,
+  pvpXpBonusPct: program.pvpXpBonusPct,
+  pvpBoostDurationMinutes: program.pvpBoostDurationMinutes,
+}));
 
 function getDefaultGameState(): GameState {
   return {
@@ -863,7 +883,43 @@ function sanitizeBankProduct(raw: unknown): GameBankProduct | null {
   if (!Number.isFinite(totalReturn) || totalReturn <= 0) return null;
   if (!name) return null;
 
-  return { type, amount, daysLeft, totalDays, totalReturn, name };
+  return {
+    type,
+    amount,
+    daysLeft,
+    totalDays,
+    totalReturn,
+    name,
+    programId: source.programId !== undefined ? String(source.programId) : undefined,
+    depositKind: source.depositKind === "safe" || source.depositKind === "risky" || source.depositKind === "pvp"
+      ? source.depositKind
+      : undefined,
+    overduePenaltyRate: source.overduePenaltyRate !== undefined ? Number(source.overduePenaltyRate) : undefined,
+    graceMinutes: source.graceMinutes !== undefined ? Number(source.graceMinutes) : undefined,
+    isOverdue: source.isOverdue !== undefined ? Boolean(source.isOverdue) : undefined,
+    rewardBonusPct: source.rewardBonusPct !== undefined ? Number(source.rewardBonusPct) : undefined,
+    ratingBonusFlat: source.ratingBonusFlat !== undefined ? Number(source.ratingBonusFlat) : undefined,
+    xpBonusPct: source.xpBonusPct !== undefined ? Number(source.xpBonusPct) : undefined,
+    boostDurationMinutes: source.boostDurationMinutes !== undefined ? Number(source.boostDurationMinutes) : undefined,
+  };
+}
+
+function sanitizePvpBankBoost(raw: unknown): GamePvpBankBoost | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const sourceName = String(source.sourceName ?? "").trim();
+  const rewardBonusPct = Number(source.rewardBonusPct ?? 0);
+  const ratingBonusFlat = Number(source.ratingBonusFlat ?? 0);
+  const xpBonusPct = Number(source.xpBonusPct ?? 0);
+  const expiresAt = Number(source.expiresAt ?? 0);
+  if (!sourceName || !Number.isFinite(expiresAt) || expiresAt <= 0) return null;
+  return {
+    sourceName,
+    rewardBonusPct: Number.isFinite(rewardBonusPct) ? rewardBonusPct : 0,
+    ratingBonusFlat: Number.isFinite(ratingBonusFlat) ? ratingBonusFlat : 0,
+    xpBonusPct: Number.isFinite(xpBonusPct) ? xpBonusPct : 0,
+    expiresAt,
+  };
 }
 
 function addInventoryItem(state: GameState, item: GameInventoryItem) {
@@ -989,17 +1045,23 @@ function findInventoryItemByRef(state: GameState, ref: string) {
   return state.inventory.find((item) => item.id === trimmed) ?? null;
 }
 
-function findShopItemByRef(ref: string) {
+function localizeAmountForCity(baseLocalAmount: number, city?: string) {
+  const rate = Math.max(0.000001, getGrmPerLocal(city || "Сан-Франциско"));
+  return Math.max(1, Math.round(baseLocalAmount / rate));
+}
+
+function findShopItemByRef(ref: string, city?: string) {
+  const items = listShopItems(city);
   const trimmed = ref.trim();
   if (!trimmed) return null;
 
   if (/^\d+$/.test(trimmed)) {
     const index = Number(trimmed) - 1;
-    if (index >= 0 && index < SHOP_ITEMS.length) return SHOP_ITEMS[index];
+    if (index >= 0 && index < items.length) return items[index];
     return null;
   }
 
-  return SHOP_ITEMS.find((item) => item.id === trimmed) ?? null;
+  return items.find((item) => item.id === trimmed) ?? null;
 }
 
 function withBalancedJob(city: string, job: Job): Job {
@@ -1063,8 +1125,8 @@ function findJobByRef(city: string, ref: string, professionId?: ProfessionId | n
   return found ?? null;
 }
 
-function findBankProgramByRef(type: BankProductType, ref: string) {
-  const programs = type === "credit" ? CREDIT_PROGRAMS : DEPOSIT_PROGRAMS;
+function findBankProgramByRef(type: BankProductType, ref: string, city?: string) {
+  const programs = type === "credit" ? listCreditPrograms(city) : listDepositPrograms(city);
   const trimmed = ref.trim();
   if (!trimmed) return null;
 
@@ -1074,7 +1136,25 @@ function findBankProgramByRef(type: BankProductType, ref: string) {
     return null;
   }
 
-  return programs.find((program) => program.name.toLowerCase() === trimmed.toLowerCase()) ?? null;
+  return programs.find((program) =>
+    program.id.toLowerCase() === trimmed.toLowerCase()
+    || program.name.toLowerCase() === trimmed.toLowerCase()
+  ) ?? null;
+}
+
+function getBankProductCompletionValue(product: GameBankProduct) {
+  if (product.type === "credit") {
+    return Math.round(product.totalReturn);
+  }
+  if (product.depositKind === "safe") {
+    return Math.round(product.totalReturn);
+  }
+  if (product.depositKind === "risky") {
+    const successChance = Math.max(0, Math.min(1, Number(product.rewardBonusPct || 0)));
+    const hit = Math.random() < successChance;
+    return hit ? Math.round(product.totalReturn) : Math.round(product.amount);
+  }
+  return Math.round(product.amount);
 }
 
 function resolveCityBonus(user: User): CityBonus {
@@ -1151,44 +1231,92 @@ async function advanceState(user: User, state: GameState): Promise<GameTickResul
   state.workTime = Math.min(1, Number((state.workTime + elapsedSeconds * ENERGY_REGEN_PER_SECOND).toFixed(4)));
   state.studyTime = Math.min(1, Number((state.studyTime + elapsedSeconds * ENERGY_REGEN_PER_SECOND).toFixed(4)));
 
+  if (state.activePvpBankBoost && state.activePvpBankBoost.expiresAt <= now) {
+    notices.push(`🏦 PvP-вклад "${state.activePvpBankBoost.sourceName}" завершился.`);
+    state.activePvpBankBoost = null;
+  }
+
   if (!state.activeBankProduct) return { user, notices };
 
-  const nextDaysLeft = state.activeBankProduct.daysLeft - elapsedSeconds / 60;
-  if (nextDaysLeft > 0) {
-    state.activeBankProduct.daysLeft = nextDaysLeft;
+  const nextMinutesLeft = state.activeBankProduct.daysLeft - elapsedSeconds / 60;
+  if (nextMinutesLeft > 0) {
+    state.activeBankProduct.daysLeft = nextMinutesLeft;
     return { user, notices };
   }
 
   const completedProduct = state.activeBankProduct;
-  state.activeBankProduct = null;
   const advancedPersonality = getAdvancedPersonalityId(user);
+  const currency = getCurrencySymbol(user.city);
 
   if (completedProduct.type === "deposit") {
-    let payout = Math.round(completedProduct.totalReturn);
+    state.activeBankProduct = null;
+
+    if (completedProduct.depositKind === "pvp") {
+      state.activePvpBankBoost = {
+        sourceName: completedProduct.name,
+        rewardBonusPct: Number(completedProduct.rewardBonusPct || 0),
+        ratingBonusFlat: Number(completedProduct.ratingBonusFlat || 0),
+        xpBonusPct: Number(completedProduct.xpBonusPct || 0),
+        expiresAt: now + Math.max(1, Number(completedProduct.boostDurationMinutes || 0)) * 60_000,
+      };
+      const updated = await storage.updateUser(user.id, {
+        balance: user.balance + Math.round(completedProduct.amount),
+      });
+      notices.push(
+        `✅ PvP-вклад завершён: ${currency}${Math.round(completedProduct.amount)} возвращены, а PvP-бонус активен ${Math.max(1, Math.round(Number(completedProduct.boostDurationMinutes || 0)))}м.`,
+      );
+      return { user: updated, notices };
+    }
+
+    let payout = getBankProductCompletionValue(completedProduct);
     if (advancedPersonality === "investor") {
       payout = Math.max(1, Math.round(payout * ADVANCED_PERSONALITY_MODIFIERS.investor.investmentIncomeMultiplier));
     }
     const updated = await storage.updateUser(user.id, {
       balance: user.balance + payout,
     });
-    notices.push(`вњ… Р’РєР»Р°Рґ Р·Р°РІРµСЂС€РµРЅ: +${getCurrencySymbol(updated.city)}${payout}`);
+    if (completedProduct.depositKind === "risky" && payout <= Math.round(completedProduct.amount)) {
+      notices.push(`⚠️ Рискованный вклад завершён без прибыли. Возвращено ${currency}${payout}.`);
+    } else {
+      notices.push(`✅ Вклад завершён: +${currency}${payout}`);
+    }
     return { user: updated, notices };
   }
 
   const creditDue = Math.round(completedProduct.totalReturn);
   if (user.balance >= creditDue) {
+    state.activeBankProduct = null;
     const updated = await storage.updateUser(user.id, {
       balance: user.balance - creditDue,
     });
-    notices.push(`вњ… РљСЂРµРґРёС‚ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РїРѕРіР°С€РµРЅ: -${getCurrencySymbol(updated.city)}${creditDue}`);
+    notices.push(`✅ Кредит автоматически погашен: -${currency}${creditDue}`);
     return { user: updated, notices };
   }
 
+  if (completedProduct.isOverdue) {
+    state.activeBankProduct = null;
+    const reputationLoss = 5;
+    const updated = await storage.updateUser(user.id, {
+      reputation: Math.max(0, Number(user.reputation || 0) - reputationLoss),
+    });
+    notices.push(`⚠️ Просрочка по кредиту усилилась. Долг закрыт банком, репутация -${reputationLoss}.`);
+    return { user: updated, notices };
+  }
+
+  const penaltyRate = Math.max(0, Number(completedProduct.overduePenaltyRate || 0.15));
+  const graceMinutes = Math.max(30, Math.round(Number(completedProduct.graceMinutes || 60)));
+  const overdueReturn = Math.max(1, Math.round(creditDue * (1 + penaltyRate)));
+  state.activeBankProduct = {
+    ...completedProduct,
+    totalReturn: overdueReturn,
+    totalDays: graceMinutes,
+    daysLeft: graceMinutes,
+    isOverdue: true,
+  };
   const updated = await storage.updateUser(user.id, {
-    balance: 0,
-    reputation: Math.max(0, user.reputation - 25),
+    reputation: Math.max(0, Number(user.reputation || 0) - 3),
   });
-  notices.push("вљ пёЏ РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ РґР»СЏ РїРѕРіР°С€РµРЅРёСЏ РєСЂРµРґРёС‚Р°. Р‘Р°Р»Р°РЅСЃ РѕР±РЅСѓР»РµРЅ, СЂРµРїСѓС‚Р°С†РёСЏ СЃРЅРёР¶РµРЅР°.");
+  notices.push(`⚠️ Кредит просрочен. Долг вырос до ${currency}${overdueReturn}, на погашение есть ещё ${graceMinutes}м.`);
   return { user: updated, notices };
 }
 
@@ -1247,12 +1375,12 @@ export function getInventoryCapacity(user: Pick<User, "city" | "tutorialState">)
   return getInventoryCapacityForUser(user);
 }
 
-export function listShopItems() {
+export function listShopItems(city?: string) {
   return SHOP_ITEMS.map((item) => {
     const priceModifier = getGlobalEventModifier({
       type: "price_modifier",
       target: item.id,
-      city: "global",
+      city: city || "global",
     });
     if (priceModifier > 0.15) {
       registerPriceSpikeSignal(item.id, Math.round(priceModifier * 10));
@@ -1260,19 +1388,50 @@ export function listShopItems() {
     const basePrice = item.type === "consumable"
       ? Math.round(item.price * 1.25)
       : item.price;
+    const localizedPrice = localizeAmountForCity(basePrice, city);
     return {
       ...item,
-      price: Math.max(1, Math.round(applyGlobalEventMultiplier(basePrice, priceModifier))),
+      price: Math.max(1, Math.round(applyGlobalEventMultiplier(localizedPrice, priceModifier))),
     };
   });
 }
 
-export function listCreditPrograms() {
-  return CREDIT_PROGRAMS;
+export function listCreditPrograms(city?: string) {
+  return CREDIT_PROGRAMS.map((program) => ({
+    ...program,
+    minAmount: localizeAmountForCity(program.minAmount, city),
+    maxAmount: localizeAmountForCity(program.maxAmount, city),
+  }));
 }
 
-export function listDepositPrograms() {
-  return DEPOSIT_PROGRAMS;
+export function listDepositPrograms(city?: string) {
+  return DEPOSIT_PROGRAMS.map((program) => ({
+    ...program,
+    minAmount: localizeAmountForCity(program.minAmount, city),
+    maxAmount: localizeAmountForCity(program.maxAmount, city),
+  }));
+}
+
+export function getActivePvpBankBoost(userId: string) {
+  const state = getOrCreateState(userId);
+  const boost = sanitizePvpBankBoost(state.activePvpBankBoost);
+  if (!boost) {
+    state.activePvpBankBoost = null;
+    return null;
+  }
+  if (boost.expiresAt <= Date.now()) {
+    state.activePvpBankBoost = null;
+    return null;
+  }
+  return boost;
+}
+
+export function consumePvpBankBoost(userId: string) {
+  const boost = getActivePvpBankBoost(userId);
+  if (!boost) return null;
+  const state = getOrCreateState(userId);
+  state.activePvpBankBoost = null;
+  return boost;
 }
 
 export async function getUserWithGameState(userId: string) {
@@ -1288,6 +1447,7 @@ export async function getUserWithGameState(userId: string) {
       studyTime: context.state.studyTime,
       gramBalance: context.state.gramBalance,
       activeBankProduct: context.state.activeBankProduct,
+      activePvpBankBoost: getActivePvpBankBoost(userId),
       jobDropPity: context.state.jobDropPity,
     },
     notices: context.notices,
@@ -1324,6 +1484,10 @@ export function applyGameStatePatch(userId: string, payload: any) {
 
   if ("activeBankProduct" in payload) {
     state.activeBankProduct = sanitizeBankProduct(payload.activeBankProduct);
+  }
+
+  if ("activePvpBankBoost" in payload) {
+    state.activePvpBankBoost = sanitizePvpBankBoost(payload.activePvpBankBoost);
   }
 
   state.lastTickAt = Date.now();
@@ -1551,7 +1715,7 @@ export async function buyShopItem(userId: string, itemRef: string) {
   let user = context.user;
   const notices = [...context.notices];
 
-  const item = findShopItemByRef(itemRef);
+  const item = findShopItemByRef(itemRef, user.city);
   if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
   if (item.type === "consumable") {
     const minLevel = getConsumableMinLevel(item);
@@ -1593,22 +1757,27 @@ export async function useInventoryItem(userId: string, itemRef: string) {
   if (item.type === "consumable") {
     const trainingLimit = getConsumableTrainingLimitForLevel(context.user.level);
     const usedAtLevel = getTrainingConsumablesUsedAtLevel(context.user);
+    const professionId = getPlayerProfessionId(context.user);
     if (usedAtLevel >= trainingLimit) {
       throw new Error(`На этом уровне уже использован лимит учебных предметов: ${usedAtLevel}/${trainingLimit}. Подними уровень, чтобы продолжить.`);
     }
-    const skillCap = getSkillTrainingCapForLevel(context.user.level);
     let applied = false;
     for (const [skillKey, rawBoost] of Object.entries(item.stats || {})) {
       const skill = skillKey as SkillName;
       if (!(skill in state.skills)) continue;
       const current = Number(state.skills[skill] || 0);
+      const skillCap = getTrainingSkillCapForLevel(context.user.level, skill, professionId);
       const allowedBoost = Math.max(0, Math.min(Number(rawBoost) || 0, skillCap - current));
       if (allowedBoost <= 0) continue;
       state.skills[skill] = Number((current + allowedBoost).toFixed(2));
       applied = true;
     }
     if (!applied) {
-      throw new Error(`Навыки из этого курса уже упираются в потолок уровня (${skillCap}). Повышай уровень или выбери другой путь развития.`);
+      const highestCap = Object.keys(item.stats || {}).reduce((best, skillKey) => {
+        const skill = skillKey as SkillName;
+        return Math.max(best, getTrainingSkillCapForLevel(context.user.level, skill, professionId));
+      }, getTrainingSkillCapForLevel(context.user.level));
+      throw new Error(`Навыки из этого курса уже упираются в потолок уровня (${highestCap}). Повышай уровень или выбери другой путь развития.`);
     }
     removeOneInventoryItem(state, item);
     const updatedUser = await incrementTrainingConsumablesUsedAtLevel(context.user.id, context.user.level);
@@ -1759,17 +1928,22 @@ export async function openBankProduct(
     throw new Error("РЎРЅР°С‡Р°Р»Р° Р·Р°РєСЂРѕР№ С‚РµРєСѓС‰РёР№ РєСЂРµРґРёС‚/РІРєР»Р°Рґ");
   }
 
-  const program = findBankProgramByRef(type, programRef);
+  const program = findBankProgramByRef(type, programRef, user.city);
   if (!program) throw new Error("Р‘Р°РЅРєРѕРІСЃРєР°СЏ РїСЂРѕРіСЂР°РјРјР° РЅРµ РЅР°Р№РґРµРЅР°");
   if (user.level < program.minLevel) throw new Error(`РўСЂРµР±СѓРµС‚СЃСЏ СѓСЂРѕРІРµРЅСЊ ${program.minLevel}+`);
   if (amount < program.minAmount || amount > program.maxAmount) {
     throw new Error(`РЎСѓРјРјР° РґРѕР»Р¶РЅР° Р±С‹С‚СЊ РѕС‚ ${program.minAmount} РґРѕ ${program.maxAmount}`);
   }
-  if (days < 7 || days > 90) throw new Error("РЎСЂРѕРє РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РѕС‚ 7 РґРѕ 90 РґРЅРµР№");
+  void days;
 
-  let totalReturn = Math.round(amount * (1 + (program.interest / 100) * (days / 365)));
-  if (type === "deposit" && getAdvancedPersonalityId(user) === "investor") {
-    totalReturn = Math.max(1, Math.round(totalReturn * ADVANCED_PERSONALITY_MODIFIERS.investor.investmentIncomeMultiplier));
+  const durationMinutes = Math.max(1, Math.round(Number(program.durationMinutes || 60)));
+  let totalReturn = amount;
+  if (type === "credit") {
+    totalReturn = Math.round(amount * (1 + Number(program.interest || 0) / 100));
+  } else if (program.depositKind === "safe") {
+    totalReturn = Math.round(amount * (1 + Number(program.interest || 0) / 100));
+  } else if (program.depositKind === "risky") {
+    totalReturn = Math.round(amount * (1 + Number(program.riskyInterest || 0) / 100));
   }
 
   if (type === "credit") {
@@ -1777,13 +1951,16 @@ export async function openBankProduct(
     state.activeBankProduct = {
       type: "credit",
       amount,
-      daysLeft: days,
-      totalDays: days,
+      daysLeft: durationMinutes,
+      totalDays: durationMinutes,
       totalReturn,
       name: program.name,
+      programId: program.id,
+      overduePenaltyRate: Number(program.overduePenaltyRate || 0),
+      graceMinutes: Number(program.graceMinutes || 0),
     };
     notices.push(
-      `вњ… РљСЂРµРґРёС‚ РѕРґРѕР±СЂРµРЅ: +${getCurrencySymbol(user.city)}${amount}. Р§РµСЂРµР· ${days} РґРЅРµР№ Рє РІРѕР·РІСЂР°С‚Сѓ ${getCurrencySymbol(user.city)}${totalReturn}`,
+      `✅ Кредит одобрен: +${getCurrencySymbol(user.city)}${amount}. Через ${durationMinutes}м к возврату ${getCurrencySymbol(user.city)}${totalReturn}.`,
     );
     return { user, state, notices, program, totalReturn };
   }
@@ -1793,14 +1970,32 @@ export async function openBankProduct(
   state.activeBankProduct = {
     type: "deposit",
     amount,
-    daysLeft: days,
-    totalDays: days,
+    daysLeft: durationMinutes,
+    totalDays: durationMinutes,
     totalReturn,
     name: program.name,
+    programId: program.id,
+    depositKind: program.depositKind,
+    rewardBonusPct: program.depositKind === "risky"
+      ? Number(program.riskySuccessChance || 0)
+      : Number(program.pvpRewardBonusPct || 0),
+    ratingBonusFlat: Number(program.pvpRatingBonusFlat || 0),
+    xpBonusPct: Number(program.pvpXpBonusPct || 0),
+    boostDurationMinutes: Number(program.pvpBoostDurationMinutes || 0),
   };
-  notices.push(
-    `вњ… Р’РєР»Р°Рґ РѕС‚РєСЂС‹С‚: -${getCurrencySymbol(user.city)}${amount}. Р§РµСЂРµР· ${days} РґРЅРµР№ РїРѕР»СѓС‡РёС‚Рµ ${getCurrencySymbol(user.city)}${totalReturn}`,
-  );
+  if (program.depositKind === "pvp") {
+    notices.push(
+      `✅ PvP-вклад открыт: -${getCurrencySymbol(user.city)}${amount}. Через ${durationMinutes}м деньги вернутся и включится PvP-бонус.`,
+    );
+  } else if (program.depositKind === "risky") {
+    notices.push(
+      `✅ Рискованный вклад открыт: -${getCurrencySymbol(user.city)}${amount}. Через ${durationMinutes}м либо вернётся только сумма, либо до ${getCurrencySymbol(user.city)}${totalReturn}.`,
+    );
+  } else {
+    notices.push(
+      `✅ Вклад открыт: -${getCurrencySymbol(user.city)}${amount}. Через ${durationMinutes}м получите ${getCurrencySymbol(user.city)}${totalReturn}.`,
+    );
+  }
   return { user, state, notices, program, totalReturn };
 }
 
@@ -1815,8 +2010,8 @@ export async function closeBankProduct(userId: string, action: BankEarlyAction) 
   const active = state.activeBankProduct;
   if (!active) throw new Error("РќРµС‚ Р°РєС‚РёРІРЅРѕРіРѕ Р±Р°РЅРєРѕРІСЃРєРѕРіРѕ РїСЂРѕРґСѓРєС‚Р°");
 
-  const daysPassed = active.totalDays - Math.ceil(active.daysLeft);
-  const daysPassedPercent = daysPassed / active.totalDays;
+  const minutesPassed = Math.max(0, active.totalDays - Math.ceil(active.daysLeft));
+  const daysPassedPercent = minutesPassed / Math.max(1, active.totalDays);
   const totalInterest = active.totalReturn - active.amount;
   const interestForPassed = Math.round(totalInterest * daysPassedPercent);
 
@@ -1832,13 +2027,13 @@ export async function closeBankProduct(userId: string, action: BankEarlyAction) 
   }
 
   if (action === "withdraw" && active.type === "deposit") {
-    let amountToReceive = active.amount + interestForPassed;
-    if (getAdvancedPersonalityId(user) === "investor") {
+    let amountToReceive = active.depositKind === "safe" ? active.amount + interestForPassed : active.amount;
+    if (active.depositKind === "safe" && getAdvancedPersonalityId(user) === "investor") {
       amountToReceive = Math.max(1, Math.round(amountToReceive * ADVANCED_PERSONALITY_MODIFIERS.investor.investmentIncomeMultiplier));
     }
     user = await storage.updateUser(user.id, { balance: user.balance + amountToReceive });
     state.activeBankProduct = null;
-    notices.push(`вњ… Р’РєР»Р°Рґ СЃРЅСЏС‚ РґРѕСЃСЂРѕС‡РЅРѕ: +${getCurrencySymbol(user.city)}${amountToReceive}`);
+    notices.push(`✅ Вклад снят досрочно: +${getCurrencySymbol(user.city)}${amountToReceive}`);
     return { user, state, notices, amount: amountToReceive };
   }
 
