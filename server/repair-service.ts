@@ -209,7 +209,7 @@ export async function listRepairableGadgets(userId: string) {
   const snapshot = await getUserWithGameState(userId);
   if (!snapshot) return [];
   return (snapshot.game.inventory || [])
-    .filter((item) => item.type === "gadget")
+    .filter((item) => item.type === "gadget" || item.type === "gear")
     .map((item) => normalizeGadget(item))
     .filter((item) => item.condition < item.maxCondition || item.isBroken);
 }

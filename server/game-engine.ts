@@ -1,4 +1,5 @@
 ﻿import type { User } from "../shared/schema";
+import { getBlueprintById, type GadgetBranch, type GadgetCategory, type GadgetRoundBonus } from "../shared/gadgets";
 import type { RarityName } from "../client/src/lib/parts";
 import { RARITY_LEVELS, getPartPrice, rollRandomPartDrop } from "../client/src/lib/parts";
 import { resolveCity } from "../shared/registration";
@@ -61,13 +62,28 @@ export type Skills = Record<SkillName, number>;
 export interface GameInventoryItem {
   id: string;
   name: string;
+  title?: string;
   stats: Record<string, number>;
   rarity: string;
   quantity: number;
   type: InventoryItemType;
   baseName?: string;
   category?: string;
+  branch?: GadgetBranch;
+  generation?: number;
+  requiredLevel?: number;
+  isCompanyMade?: boolean;
+  isExclusive?: boolean;
+  upgradeLevel?: number;
+  companyId?: string | null;
+  companyEmoji?: string | null;
+  codingBonus?: number;
+  designBonus?: number;
+  analyticsBonus?: number;
+  testingBonus?: number;
+  attentionBonus?: number;
   isEquipped?: boolean;
+  appliedStats?: Record<string, number>;
   durability?: number;
   maxDurability?: number;
   condition?: number;
@@ -75,6 +91,19 @@ export interface GameInventoryItem {
   isBroken?: boolean;
   reliability?: number;
   quality?: number;
+  wear?: number;
+  wearRate?: number;
+  repairCost?: number;
+  basePrice?: number;
+  productionCostGrm?: number;
+  auctionMinPrice?: number;
+  auctionMaxPrice?: number;
+  productionPartsRequirement?: Record<string, number>;
+  pvpRoundBonus?: GadgetRoundBonus | null;
+  specialEffect?: string | null;
+  hashPower?: number;
+  incomePerCycle?: number;
+  powerCostPerCycle?: number;
   exclusiveLevel?: number;
   repairStatus?: "none" | "queued" | "accepted" | "in_progress" | "completed";
   repairOrderId?: string;
@@ -149,6 +178,19 @@ export interface ShopItem {
   description: string;
   rarity: string;
   type: "consumable" | "gear";
+  category?: GadgetCategory;
+  branch?: GadgetBranch;
+  generation?: number;
+  requiredLevel?: number;
+  quality?: number;
+  reliability?: number;
+  wearRate?: number;
+  repairCost?: number;
+  basePrice?: number;
+  auctionMinPrice?: number;
+  auctionMaxPrice?: number;
+  pvpRoundBonus?: GadgetRoundBonus | null;
+  specialEffect?: string | null;
 }
 
 export interface BankProgram {
@@ -178,7 +220,7 @@ type GameTickResult = {
   notices: string[];
 };
 
-export type GadgetWearCause = "pvp" | "blueprint_development" | "production";
+export type GadgetWearCause = "pvp" | "blueprint_development" | "production" | "work";
 
 export type GadgetWearReport = {
   cause: GadgetWearCause;
@@ -408,7 +450,7 @@ const JOBS_BY_CITY: Record<string, Job[]> = {
   ],
 };
 
-const SHOP_ITEMS: ShopItem[] = [
+export const SHOP_ITEMS: ShopItem[] = [
   {
     id: "coding-book",
     name: "Учебник по программированию",
@@ -458,46 +500,111 @@ const SHOP_ITEMS: ShopItem[] = [
     id: "gaming-keyboard",
     name: "🎮 Механическая клавиатура",
     price: 250,
-    stats: { coding: 1, testing: 1 },
-    description: "Экипировка: +1 Кодинг, +1 Тестирование",
+    stats: { coding: 4, testing: 4 },
+    description: "Экипировка: +4 Кодинг, +4 Тестирование",
     rarity: "Uncommon",
     type: "gear",
+    category: "laptops",
+    branch: "budget",
+    generation: 1,
+    requiredLevel: 1,
+    quality: 1.04,
+    reliability: 1.02,
+    wearRate: 0.96,
+    repairCost: 85,
+    basePrice: 250,
+    auctionMinPrice: 160,
+    auctionMaxPrice: 340,
+    pvpRoundBonus: { round: "core", bonusPct: 0.02 },
+    specialEffect: "Базовый бонус к раунду разработки",
   },
   {
     id: "gaming-mouse",
     name: "🖱️ Программируемая мышь",
     price: 200,
-    stats: { testing: 1, attention: 1 },
-    description: "Экипировка: +1 Тестирование, +1 Внимание",
+    stats: { testing: 4, attention: 4 },
+    description: "Экипировка: +4 Тестирование, +4 Внимание",
     rarity: "Uncommon",
     type: "gear",
+    category: "smartwatches",
+    branch: "budget",
+    generation: 1,
+    requiredLevel: 1,
+    quality: 1.03,
+    reliability: 1.05,
+    wearRate: 0.94,
+    repairCost: 75,
+    basePrice: 200,
+    auctionMinPrice: 130,
+    auctionMaxPrice: 290,
+    pvpRoundBonus: { round: "tests", bonusPct: 0.02 },
+    specialEffect: "Помогает держать точность в отладке",
   },
   {
     id: "monitor-uhd",
     name: "🖥️ 4K Монитор",
     price: 800,
-    stats: { design: 2, drawing: 2 },
-    description: "Экипировка: +2 Дизайн, +2 Рисование",
+    stats: { design: 5, drawing: 4 },
+    description: "Экипировка: +5 Дизайн, +4 Рисование",
     rarity: "Rare",
     type: "gear",
+    category: "tablets",
+    branch: "creative",
+    generation: 1,
+    requiredLevel: 4,
+    quality: 1.12,
+    reliability: 1.08,
+    wearRate: 0.9,
+    repairCost: 180,
+    basePrice: 800,
+    auctionMinPrice: 560,
+    auctionMaxPrice: 1080,
+    pvpRoundBonus: { round: "concept", bonusPct: 0.04 },
+    specialEffect: "Усиливает проектирование и визуал",
   },
   {
     id: "headphones-pro",
     name: "🎧 Профессиональные наушники",
     price: 300,
-    stats: { attention: 2, coding: 1 },
-    description: "Экипировка: +2 Внимание, +1 Кодинг",
+    stats: { attention: 4, coding: 4 },
+    description: "Экипировка: +4 Внимание, +4 Кодинг",
     rarity: "Uncommon",
     type: "gear",
+    category: "smartwatches",
+    branch: "business",
+    generation: 1,
+    requiredLevel: 2,
+    quality: 1.05,
+    reliability: 1.07,
+    wearRate: 0.92,
+    repairCost: 95,
+    basePrice: 300,
+    auctionMinPrice: 210,
+    auctionMaxPrice: 420,
+    pvpRoundBonus: { round: "tests", bonusPct: 0.03 },
+    specialEffect: "Повышает концентрацию в фазе отладки",
   },
   {
     id: "laptop-pro",
     name: "💻 MacBook Pro",
     price: 2000,
-    stats: { coding: 3, design: 2, testing: 1 },
-    description: "Экипировка: +3 Кодинг, +2 Дизайн, +1 Тестирование",
+    stats: { coding: 5, design: 3, testing: 3, attention: 1 },
+    description: "Экипировка: +5 Кодинг, +3 Дизайн, +3 Тестирование, +1 Внимание",
     rarity: "Epic",
     type: "gear",
+    category: "laptops",
+    branch: "performance",
+    generation: 2,
+    requiredLevel: 6,
+    quality: 1.18,
+    reliability: 1.12,
+    wearRate: 0.86,
+    repairCost: 360,
+    basePrice: 2000,
+    auctionMinPrice: 1500,
+    auctionMaxPrice: 2650,
+    pvpRoundBonus: { round: "core", bonusPct: 0.05 },
+    specialEffect: "Сильнее раскрывается в разработке и мультизадачности",
   },
 ];
 
@@ -612,10 +719,27 @@ function sanitizeInventoryItem(raw: unknown): GameInventoryItem | null {
   return normalizeGadgetInventoryFields({
     id,
     name,
+    title: source.title !== undefined ? String(source.title) : undefined,
     type,
     stats: sanitizeNumericStatMap(source.stats),
+    appliedStats: sanitizeNumericStatMap(source.appliedStats),
     rarity: String(source.rarity ?? "Common"),
     quantity: Math.max(1, Math.floor(Number(source.quantity ?? 1) || 1)),
+    baseName: source.baseName !== undefined ? String(source.baseName) : undefined,
+    category: source.category !== undefined ? String(source.category) : undefined,
+    branch: source.branch !== undefined ? String(source.branch) as GadgetBranch : undefined,
+    generation: source.generation !== undefined ? Number(source.generation) : undefined,
+    requiredLevel: source.requiredLevel !== undefined ? Number(source.requiredLevel) : undefined,
+    isCompanyMade: source.isCompanyMade !== undefined ? Boolean(source.isCompanyMade) : undefined,
+    isExclusive: source.isExclusive !== undefined ? Boolean(source.isExclusive) : undefined,
+    upgradeLevel: source.upgradeLevel !== undefined ? Number(source.upgradeLevel) : undefined,
+    companyId: source.companyId !== undefined ? String(source.companyId) : undefined,
+    companyEmoji: source.companyEmoji !== undefined ? String(source.companyEmoji) : undefined,
+    codingBonus: source.codingBonus !== undefined ? Number(source.codingBonus) : undefined,
+    designBonus: source.designBonus !== undefined ? Number(source.designBonus) : undefined,
+    analyticsBonus: source.analyticsBonus !== undefined ? Number(source.analyticsBonus) : undefined,
+    testingBonus: source.testingBonus !== undefined ? Number(source.testingBonus) : undefined,
+    attentionBonus: source.attentionBonus !== undefined ? Number(source.attentionBonus) : undefined,
     isEquipped: Boolean(source.isEquipped),
     durability: source.durability !== undefined ? Number(source.durability) : undefined,
     maxDurability: source.maxDurability !== undefined ? Number(source.maxDurability) : undefined,
@@ -623,6 +747,27 @@ function sanitizeInventoryItem(raw: unknown): GameInventoryItem | null {
     maxCondition: source.maxCondition !== undefined ? Number(source.maxCondition) : undefined,
     isBroken: source.isBroken !== undefined ? Boolean(source.isBroken) : undefined,
     reliability: source.reliability !== undefined ? Number(source.reliability) : undefined,
+    quality: source.quality !== undefined ? Number(source.quality) : undefined,
+    wear: source.wear !== undefined ? Number(source.wear) : undefined,
+    wearRate: source.wearRate !== undefined ? Number(source.wearRate) : undefined,
+    repairCost: source.repairCost !== undefined ? Number(source.repairCost) : undefined,
+    basePrice: source.basePrice !== undefined ? Number(source.basePrice) : undefined,
+    productionCostGrm: source.productionCostGrm !== undefined ? Number(source.productionCostGrm) : undefined,
+    auctionMinPrice: source.auctionMinPrice !== undefined ? Number(source.auctionMinPrice) : undefined,
+    auctionMaxPrice: source.auctionMaxPrice !== undefined ? Number(source.auctionMaxPrice) : undefined,
+    productionPartsRequirement: source.productionPartsRequirement && typeof source.productionPartsRequirement === "object"
+      ? sanitizeNumericStatMap(source.productionPartsRequirement)
+      : undefined,
+    pvpRoundBonus: source.pvpRoundBonus && typeof source.pvpRoundBonus === "object"
+      ? {
+          round: String((source.pvpRoundBonus as any).round || "core") as GadgetRoundBonus["round"],
+          bonusPct: Number((source.pvpRoundBonus as any).bonusPct || 0),
+        }
+      : undefined,
+    specialEffect: source.specialEffect !== undefined ? String(source.specialEffect) : undefined,
+    hashPower: source.hashPower !== undefined ? Number(source.hashPower) : undefined,
+    incomePerCycle: source.incomePerCycle !== undefined ? Number(source.incomePerCycle) : undefined,
+    powerCostPerCycle: source.powerCostPerCycle !== undefined ? Number(source.powerCostPerCycle) : undefined,
     repairStatus: source.repairStatus !== undefined ? String(source.repairStatus) as GameInventoryItem["repairStatus"] : undefined,
     repairOrderId: source.repairOrderId !== undefined ? String(source.repairOrderId) : undefined,
     repairLocked: source.repairLocked !== undefined ? Boolean(source.repairLocked) : undefined,
@@ -643,11 +788,98 @@ function clampNumber(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function isTechInventoryItem(item: Pick<GameInventoryItem, "type"> | null | undefined) {
+  return item?.type === "gadget" || item?.type === "gear";
+}
+
+function inferDefaultCategory(item: Pick<GameInventoryItem, "id" | "name" | "category">) {
+  if (item.category) return String(item.category) as GadgetCategory;
+  const raw = `${String(item.id || "")} ${String(item.name || "")}`.toLowerCase();
+  if (raw.includes("watch")) return "smartwatches";
+  if (raw.includes("tablet") || raw.includes("tab")) return "tablets";
+  if (raw.includes("miner") || raw.includes("asic")) return "asic_miners";
+  if (raw.includes("laptop") || raw.includes("book") || raw.includes("macbook")) return "laptops";
+  return "smartphones";
+}
+
+function getDefaultRequiredLevel(item: Pick<GameInventoryItem, "rarity" | "category" | "requiredLevel">) {
+  if (Number.isFinite(Number(item.requiredLevel))) return Math.max(1, Number(item.requiredLevel));
+  const rarity = String(item.rarity || "Common").toLowerCase();
+  const category = inferDefaultCategory(item as Pick<GameInventoryItem, "id" | "name" | "category">);
+  const rarityBase = rarity === "legendary" || rarity === "exclusive" ? 8 : rarity === "epic" ? 6 : rarity === "rare" ? 4 : rarity === "uncommon" ? 2 : 1;
+  return category === "asic_miners" ? rarityBase + 1 : rarityBase;
+}
+
+export function getGadgetWearPercent(item: Pick<GameInventoryItem, "type" | "condition" | "maxCondition" | "durability" | "maxDurability" | "wear">) {
+  if (!isTechInventoryItem(item)) return 0;
+  if (Number.isFinite(Number(item.wear))) {
+    return clampNumber(Number(item.wear), 0, 100);
+  }
+  const maxCondition = Math.max(1, Number(item.maxCondition ?? item.maxDurability ?? 100));
+  const condition = clampNumber(Number(item.condition ?? item.durability ?? maxCondition), 0, maxCondition);
+  return Number((100 - (condition / maxCondition) * 100).toFixed(2));
+}
+
+function getGadgetWearPenaltyMultiplier(wearPercent: number) {
+  if (wearPercent > 80) return 0.72;
+  if (wearPercent > 60) return 0.88;
+  return 1;
+}
+
+function getGadgetQualityBoostMultiplier(quality: number) {
+  return clampNumber(Number((1 + (quality - 1) * 0.22).toFixed(4)), 0.92, 1.16);
+}
+
+export function getGadgetUpgradeMultiplier(item: Pick<GameInventoryItem, "upgradeLevel" | "exclusiveLevel">) {
+  const level = Math.max(0, Math.min(3, Number(item.upgradeLevel ?? item.exclusiveLevel ?? 0) || 0));
+  return Number((1 + level * 0.05).toFixed(4));
+}
+
+export function getGadgetRepairCost(item: Pick<GameInventoryItem, "type" | "repairCost" | "basePrice" | "quality" | "condition" | "maxCondition" | "durability" | "maxDurability" | "isBroken">) {
+  if (!isTechInventoryItem(item)) return 0;
+  const wearPercent = getGadgetWearPercent(item);
+  const basePrice = Math.max(120, Number(item.basePrice ?? 0) || 0);
+  const explicit = Number(item.repairCost ?? 0);
+  const derived = explicit > 0 ? explicit : Math.max(30, Math.round(basePrice * 0.12 + wearPercent * 1.8));
+  return Math.max(20, Math.round(derived + (item.isBroken ? 75 : 0)));
+}
+
+export function getEffectiveGadgetStats(
+  item: Pick<GameInventoryItem, "type" | "stats" | "quality" | "requiredLevel" | "upgradeLevel" | "exclusiveLevel" | "condition" | "maxCondition" | "durability" | "maxDurability" | "wear" | "isBroken">,
+  options?: { playerLevel?: number | null },
+) {
+  const baseStats = sanitizeNumericStatMap(item.stats);
+  if (!isTechInventoryItem(item)) return baseStats;
+  const playerLevel = Math.max(1, Number(options?.playerLevel ?? 1) || 1);
+  const requiredLevel = getDefaultRequiredLevel(item as Pick<GameInventoryItem, "rarity" | "category" | "requiredLevel">);
+  if (playerLevel < requiredLevel || item.isBroken) {
+    return Object.fromEntries(Object.keys(baseStats).map((key) => [key, 0]));
+  }
+  const qualityMultiplier = getGadgetQualityBoostMultiplier(Math.max(0.75, Number(item.quality ?? 1) || 1));
+  const wearMultiplier = getGadgetWearPenaltyMultiplier(getGadgetWearPercent(item));
+  const upgradeMultiplier = getGadgetUpgradeMultiplier(item);
+  const totalMultiplier = Number((qualityMultiplier * wearMultiplier * upgradeMultiplier).toFixed(4));
+  return Object.fromEntries(
+    Object.entries(baseStats).map(([key, value]) => [key, Number((Number(value || 0) * totalMultiplier).toFixed(2))]),
+  );
+}
+
+export function getEffectiveGadgetPowerScore(
+  item: Pick<GameInventoryItem, "type" | "stats" | "quality" | "requiredLevel" | "upgradeLevel" | "exclusiveLevel" | "condition" | "maxCondition" | "durability" | "maxDurability" | "wear" | "isBroken" | "pvpRoundBonus">,
+  options?: { playerLevel?: number | null },
+) {
+  const stats = getEffectiveGadgetStats(item, options);
+  const statPower = Object.values(stats).reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0);
+  const roundBonus = Math.max(0, Number(item.pvpRoundBonus?.bonusPct || 0)) * 20;
+  return Number((statPower + roundBonus).toFixed(2));
+}
+
 function normalizeGadgetInventoryFields(item: GameInventoryItem): GameInventoryItem {
-  if (item.type !== "gadget") {
+  if (!isTechInventoryItem(item)) {
     return item;
   }
 
+  const blueprint = item.type === "gadget" ? getBlueprintById(String(item.id || "")) : null;
   const maxCondition = Math.max(
     1,
     Math.round(
@@ -667,14 +899,76 @@ function normalizeGadgetInventoryFields(item: GameInventoryItem): GameInventoryI
   const reliability = Number.isFinite(Number(item.reliability))
     ? clampNumber(Number(item.reliability), 0.7, 1.6)
     : 1;
+  const category = inferDefaultCategory(item);
+  const branch = item.branch ?? blueprint?.branch ?? "budget";
+  const generation = Math.max(1, Number(item.generation ?? blueprint?.generation ?? 1) || 1);
+  const requiredLevel = getDefaultRequiredLevel(item);
+  const quality = Number.isFinite(Number(item.quality))
+    ? Math.max(0.75, Number(item.quality))
+    : Number((
+      String(item.rarity || "Common").toLowerCase() === "legendary" ? 1.26
+      : String(item.rarity || "Common").toLowerCase() === "epic" ? 1.18
+      : String(item.rarity || "Common").toLowerCase() === "rare" ? 1.1
+      : 1
+    ).toFixed(2));
+  const wear = Number(getGadgetWearPercent({ ...item, condition, maxCondition }).toFixed(2));
+  const wearRate = Number.isFinite(Number(item.wearRate))
+    ? Math.max(0.5, Number(item.wearRate))
+    : Number((getRarityWearMultiplier(String(item.rarity || "Common")) * (1.18 - Math.min(1.1, reliability) * 0.12)).toFixed(2));
+  const basePriceFromStats = Math.max(
+    120,
+    Math.round(
+      180
+      + Object.values(item.stats || {}).reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0) * 110,
+    ),
+  );
+  const basePrice = Math.max(120, Math.round(Number(item.basePrice ?? blueprint?.basePrice ?? basePriceFromStats) || basePriceFromStats));
+  const upgradeLevel = Math.max(0, Math.min(3, Number(item.upgradeLevel ?? item.exclusiveLevel ?? 0) || 0));
+  const productionCostGrm = Math.max(0, Math.round(Number(item.productionCostGrm ?? blueprint?.productionCostGrm ?? basePrice * 0.22) || 0));
+  const repairCost = getGadgetRepairCost({
+    ...item,
+    basePrice,
+    quality,
+    condition,
+    maxCondition,
+    isBroken: Boolean(item.isBroken) || condition <= 0,
+  });
 
   return {
     ...item,
+    title: item.title ?? item.name,
+    category,
+    branch,
+    generation,
+    requiredLevel,
+    isCompanyMade: Boolean(item.isCompanyMade) || Boolean(item.companyId),
+    isExclusive: Boolean(item.isExclusive) || Math.max(0, Number(item.exclusiveLevel ?? 0)) > 0,
+    upgradeLevel,
     condition,
     maxCondition,
     durability: condition,
     maxDurability: maxCondition,
     reliability: Number(reliability.toFixed(2)),
+    quality: Number(quality.toFixed(2)),
+    wear,
+    wearRate,
+    repairCost,
+    basePrice,
+    productionCostGrm,
+    auctionMinPrice: Math.max(80, Math.round(Number(item.auctionMinPrice ?? basePrice * 0.8) || basePrice * 0.8)),
+    auctionMaxPrice: Math.max(120, Math.round(Number(item.auctionMaxPrice ?? basePrice * 1.4) || basePrice * 1.4)),
+    productionPartsRequirement: item.productionPartsRequirement ?? (blueprint?.productionPartsRequirement ? { ...blueprint.productionPartsRequirement } : undefined),
+    pvpRoundBonus: item.pvpRoundBonus ?? blueprint?.pvpRoundBonus ?? null,
+    specialEffect: item.specialEffect ?? blueprint?.specialEffect ?? null,
+    hashPower: item.hashPower ?? blueprint?.hashPower,
+    incomePerCycle: item.incomePerCycle ?? blueprint?.incomePerCycle,
+    powerCostPerCycle: item.powerCostPerCycle ?? blueprint?.powerCostPerCycle,
+    codingBonus: Number(item.codingBonus ?? item.stats?.coding ?? 0),
+    designBonus: Number(item.designBonus ?? item.stats?.design ?? 0),
+    analyticsBonus: Number(item.analyticsBonus ?? item.stats?.analytics ?? 0),
+    testingBonus: Number(item.testingBonus ?? item.stats?.testing ?? 0),
+    attentionBonus: Number(item.attentionBonus ?? item.stats?.attention ?? 0),
+    appliedStats: sanitizeNumericStatMap(item.appliedStats),
     isBroken: Boolean(item.isBroken) || condition <= 0,
     repairStatus: item.repairStatus ?? "none",
     repairOrderId: item.repairOrderId ? String(item.repairOrderId) : undefined,
@@ -699,12 +993,14 @@ function buildGadgetConditionWarning(before: number, after: number, itemName: st
 function buildNegativeWearEvent(cause: GadgetWearCause) {
   if (cause === "pvp") return "Сбой в пылу дуэли";
   if (cause === "production") return "Пиковая нагрузка на сборке";
+  if (cause === "work") return "Рабочая нагрузка";
   return "Негативный сбой в разработке";
 }
 
 function getBaseWearByCause(cause: GadgetWearCause) {
   if (cause === "pvp") return 1.4;
   if (cause === "production") return 1.2;
+  if (cause === "work") return 0.55;
   return 0.9;
 }
 
@@ -741,7 +1037,7 @@ export async function applyGadgetWear(userId: string, options: GadgetWearOptions
 
   const { state } = context;
   const user = context.user;
-  const equippedGadgets = state.inventory.filter((item) => item.type === "gadget" && item.isEquipped);
+  const equippedGadgets = state.inventory.filter((item) => isTechInventoryItem(item) && item.isEquipped);
   if (!equippedGadgets.length) {
     return {
       user,
@@ -798,10 +1094,9 @@ export async function applyGadgetWear(userId: string, options: GadgetWearOptions
     if (warning) report.warnings.push(warning);
 
     if (after <= 0) {
-      if (item.isEquipped) {
-        adjustSkillByItemStats(state, item, -1);
-      }
+      if (item.isEquipped) adjustSkillByStatMap(state, getAppliedInventoryItemStats(item), -1);
       item.isEquipped = false;
+      item.appliedStats = {};
       item.isBroken = true;
     } else {
       item.isBroken = false;
@@ -965,7 +1260,8 @@ function hasFreeInventorySlot(user: Pick<User, "city" | "tutorialState">, state:
 }
 
 function canStoreInventoryItem(user: Pick<User, "city" | "tutorialState">, state: GameState, item: Pick<GameInventoryItem, "id" | "type">) {
-  void item;
+  const existing = state.inventory.find((current) => current.id === item.id && current.type === item.type);
+  if (existing) return true;
   return hasFreeInventorySlot(user, state);
 }
 
@@ -1023,12 +1319,39 @@ function removeOneInventoryItem(state: GameState, item: GameInventoryItem) {
   state.inventory = state.inventory.filter((inv) => inv !== item);
 }
 
-function adjustSkillByItemStats(state: GameState, item: GameInventoryItem, multiplier: 1 | -1) {
-  for (const [key, value] of Object.entries(item.stats || {})) {
+function adjustSkillByStatMap(state: GameState, stats: Record<string, number>, multiplier: 1 | -1) {
+  for (const [key, value] of Object.entries(stats || {})) {
     if (!(key in state.skills)) continue;
     const skillKey = key as SkillName;
     const next = state.skills[skillKey] + Number(value) * multiplier;
     state.skills[skillKey] = Number(next.toFixed(2));
+  }
+}
+
+function getAppliedInventoryItemStats(item: GameInventoryItem) {
+  return sanitizeNumericStatMap(item.appliedStats && Object.keys(item.appliedStats).length ? item.appliedStats : item.stats);
+}
+
+function reconcileEquippedTechBonuses(user: User, state: GameState, notices: string[]) {
+  for (const item of state.inventory) {
+    if (!isTechInventoryItem(item) || !item.isEquipped) continue;
+    Object.assign(item, normalizeGadgetInventoryFields(item));
+    const previouslyApplied = getAppliedInventoryItemStats(item);
+    adjustSkillByStatMap(state, previouslyApplied, -1);
+
+    const requiredLevel = Math.max(1, Number(item.requiredLevel ?? 1) || 1);
+    if (item.isBroken || Number(user.level || 1) < requiredLevel) {
+      item.isEquipped = false;
+      item.appliedStats = {};
+      if (Number(user.level || 1) < requiredLevel) {
+        notices.push(`⛔ ${item.name} снят: нужен ${requiredLevel} уровень.`);
+      }
+      continue;
+    }
+
+    const effectiveStats = getEffectiveGadgetStats(item, { playerLevel: Number(user.level || 1) });
+    adjustSkillByStatMap(state, effectiveStats, 1);
+    item.appliedStats = effectiveStats;
   }
 }
 
@@ -1326,6 +1649,7 @@ async function loadContext(userId: string) {
   const state = getOrCreateState(userId);
   const tick = await advanceState(user, state);
   await applyHousingPassiveIncome(tick.user, state, tick.notices);
+  reconcileEquippedTechBonuses(tick.user, state, tick.notices);
   return { user: tick.user, state, notices: tick.notices };
 }
 
@@ -1351,7 +1675,7 @@ export function getCurrencySymbol(city: string) {
 }
 
 export function getGadgetConditionStatusLabel(item: Pick<GameInventoryItem, "type" | "condition" | "maxCondition" | "durability" | "maxDurability" | "isBroken">) {
-  if (item.type !== "gadget") return "не применяется";
+  if (!isTechInventoryItem(item)) return "не применяется";
   const normalized = normalizeGadgetInventoryFields(item as GameInventoryItem);
   if (normalized.isBroken || Number(normalized.condition || 0) <= 0) return "сломано";
   const percent = Math.round((Number(normalized.condition || 0) / Math.max(1, Number(normalized.maxCondition || 100))) * 100);
@@ -1611,11 +1935,12 @@ export async function completeJob(userId: string, jobRef: string) {
     : { failureRateReduction: 0, salaryBoost: 0, skillGrowthBoost: 0, xpBoost: 0 };
 
   state.workTime = Math.max(0, Number((state.workTime - energyCost).toFixed(4)));
-  const effectiveFailureChance = getJobFailureChance(
+  const luckyFailureReduction = user.personality === "lucky" ? 5 : 0;
+  const effectiveFailureChance = Math.max(2, getJobFailureChance(
     user.city,
     resolveJobTierFromRank(job.rankRequired),
     bonus.failureRateReduction,
-  );
+  ) - luckyFailureReduction);
   const failed = Math.random() * 100 < effectiveFailureChance;
   if (failed) {
     const penaltyMoney = Math.max(1, Math.floor(job.reward * 0.2));
@@ -1623,6 +1948,16 @@ export async function completeJob(userId: string, jobRef: string) {
       balance: Math.max(0, user.balance - penaltyMoney),
     });
     notices.push(`❌ Вакансия провалена: штраф ${getCurrencySymbol(user.city)}${penaltyMoney}.`);
+    const gadgetWear = await applyGadgetWear(user.id, {
+      cause: "work",
+      testing: Number(state.skills.testing ?? 0),
+      attention: Number(state.skills.attention ?? 0),
+      severityMultiplier: 0.9,
+      negativeEventChanceBonus: -0.03,
+    });
+    if (gadgetWear.report.summary) {
+      notices.push(gadgetWear.report.summary);
+    }
     return {
       user,
       state,
@@ -1638,10 +1973,10 @@ export async function completeJob(userId: string, jobRef: string) {
 
   if (user.personality === "workaholic") finalExp = Math.floor(finalExp * 1.2);
   if (user.personality === "businessman") finalMoney = Math.floor(finalMoney * 1.15);
-  if (user.personality === "lucky" && Math.random() < 0.2) {
-    finalMoney = Math.floor(finalMoney * 1.1);
-    finalExp = Math.floor(finalExp * 1.1);
-    notices.push("🍀 Удача сработала: +10% денег и XP за вакансию.");
+  if (user.personality === "lucky" && Math.random() < 0.3) {
+    finalMoney = Math.floor(finalMoney * 1.15);
+    finalExp = Math.floor(finalExp * 1.15);
+    notices.push("🍀 Удача сработала: +15% денег и XP за вакансию.");
   }
 
   finalMoney = Math.floor(finalMoney * (1 + bonus.salaryBoost / 100));
@@ -1690,6 +2025,17 @@ export async function completeJob(userId: string, jobRef: string) {
     state.jobDropPity = Math.min(state.jobDropPity + 1, 4);
   }
 
+  const gadgetWear = await applyGadgetWear(user.id, {
+    cause: "work",
+    testing: Number(state.skills.testing ?? 0),
+    attention: Number(state.skills.attention ?? 0),
+    severityMultiplier: 0.9,
+    negativeEventChanceBonus: -0.03,
+  });
+  if (gadgetWear.report.summary) {
+    notices.push(gadgetWear.report.summary);
+  }
+
   return {
     user,
     state,
@@ -1732,13 +2078,38 @@ export async function buyShopItem(userId: string, itemRef: string) {
     balance: user.balance - item.price,
   });
 
+  const gadgetCondition = item.type === "gear"
+    ? createGadgetConditionProfile({
+        rarity: String(item.rarity || "Common"),
+        quality: Number(item.quality ?? 1),
+        testing: Number(item.stats.testing || 0),
+        attention: Number(item.stats.attention || 0),
+        maxCondition: 100,
+      })
+    : {};
+
   addInventoryItem(state, {
     id: item.id,
     name: item.name,
+    title: item.name,
     stats: { ...item.stats },
     rarity: item.rarity,
     quantity: 1,
     type: item.type,
+    category: item.category,
+    branch: item.branch,
+    generation: item.generation,
+    requiredLevel: item.requiredLevel,
+    quality: item.quality,
+    reliability: item.reliability,
+    wearRate: item.wearRate,
+    repairCost: item.repairCost,
+    basePrice: item.basePrice ?? item.price,
+    auctionMinPrice: item.auctionMinPrice,
+    auctionMaxPrice: item.auctionMaxPrice,
+    pvpRoundBonus: item.pvpRoundBonus,
+    specialEffect: item.specialEffect,
+    ...gadgetCondition,
   });
 
   notices.push(`🛍 Куплено: ${item.name}`);
@@ -1797,10 +2168,10 @@ export async function toggleGearItem(userId: string, itemRef: string) {
   const notices = [...context.notices];
   const item = findInventoryItemByRef(state, itemRef);
   if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
-  if (item.type !== "gear" && item.type !== "gadget") {
+  if (!isTechInventoryItem(item)) {
     throw new Error("РљРѕРјР°РЅРґР° /equip работает только для экипировки и гаджетов");
   }
-  if (item.type === "gadget") {
+  if (item.type === "gadget" || item.type === "gear") {
     const gadget = normalizeGadgetInventoryFields(item);
     if (gadget.repairLocked) {
       throw new Error("Гаджет сейчас находится в сервисе и временно недоступен");
@@ -1808,11 +2179,19 @@ export async function toggleGearItem(userId: string, itemRef: string) {
     if (gadget.isBroken) {
       throw new Error("Сломанный гаджет нельзя использовать, пока он не будет отремонтирован");
     }
+    const requiredLevel = Math.max(1, Number(gadget.requiredLevel ?? 1) || 1);
+    if (!item.isEquipped && Number(context.user.level || 1) < requiredLevel) {
+      throw new Error(`Этот гаджет откроется с ${requiredLevel} уровня.`);
+    }
   }
 
   const willEquip = !item.isEquipped;
-  adjustSkillByItemStats(state, item, willEquip ? 1 : -1);
+  const appliedStats = willEquip
+    ? getEffectiveGadgetStats(item, { playerLevel: Number(context.user.level || 1) })
+    : getAppliedInventoryItemStats(item);
+  adjustSkillByStatMap(state, appliedStats, willEquip ? 1 : -1);
   item.isEquipped = willEquip;
+  item.appliedStats = willEquip ? appliedStats : {};
 
   notices.push(willEquip ? `🟢 Экипировано: ${item.name}` : `⚪ Снято: ${item.name}`);
   return { user: context.user, state, notices, item, isEquipped: willEquip };
@@ -1827,7 +2206,7 @@ export async function serviceGadgetItem(userId: string, itemRef: string) {
   const notices = [...context.notices];
   const item = findInventoryItemByRef(state, itemRef);
   if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
-  if (item.type !== "gadget") throw new Error("РћР±СЃР»СѓР¶РёРІР°РЅРёРµ РґРѕСЃС‚СѓРїРЅРѕ С‚РѕР»СЊРєРѕ РґР»СЏ РіР°РґР¶РµС‚РѕРІ");
+  if (!isTechInventoryItem(item)) throw new Error("Обслуживание доступно только для экипировки и гаджетов");
 
   const gadget = normalizeGadgetInventoryFields(item);
   if (gadget.repairLocked) throw new Error("Этот гаджет уже находится в сервисе");
@@ -1836,7 +2215,7 @@ export async function serviceGadgetItem(userId: string, itemRef: string) {
   const missingDurability = Math.max(0, maxDurability - currentDurability);
   if (missingDurability <= 0) throw new Error("Р“Р°РґР¶РµС‚ СѓР¶Рµ РІ РёРґРµР°Р»СЊРЅРѕРј СЃРѕСЃС‚РѕСЏРЅРёРё");
 
-  const serviceCost = Math.max(20, missingDurability * 5 + (gadget.isBroken ? 90 : 0));
+  const serviceCost = Math.max(getGadgetRepairCost(gadget), Math.max(20, missingDurability * 5 + (gadget.isBroken ? 90 : 0)));
   if (user.balance < serviceCost) throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ. РќСѓР¶РЅРѕ: ${getCurrencySymbol(user.city)}${serviceCost}`);
 
   user = await storage.updateUser(user.id, {
@@ -1848,6 +2227,7 @@ export async function serviceGadgetItem(userId: string, itemRef: string) {
   item.durability = maxDurability;
   item.maxDurability = maxDurability;
   item.isBroken = false;
+  item.wear = 0;
   notices.push(`🔧 Гаджет отремонтирован: ${item.name} (-${getCurrencySymbol(user.city)}${serviceCost})`);
   return { user, state, notices, item, serviceCost };
 }

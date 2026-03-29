@@ -86,6 +86,7 @@ type MemoryStorageSnapshot = {
   companies: Company[];
   playerRuntimeStates: Array<readonly [string, GameState]>;
   telegramBindings?: Array<readonly [string, string]>;
+  runtimeSnapshots?: Record<string, unknown>;
   members: Array<[string, CompanyMember[]]>;
   joinRequests: JoinRequest[];
   messages: Message[];
@@ -140,6 +141,38 @@ export interface IStorage {
   getPvpDuelHistoryByUser(userId: string, limit?: number): Promise<StoredPvpDuelLog[]>;
 
   resetAllData(): Promise<void>;
+}
+
+type RuntimeSnapshotProvider = {
+  exportSnapshot: () => unknown;
+  importSnapshot: (snapshot: unknown) => void;
+  clear: () => void;
+};
+
+const runtimeSnapshotProviders = new Map<string, RuntimeSnapshotProvider>();
+
+export function registerRuntimeSnapshotProvider(key: string, provider: RuntimeSnapshotProvider) {
+  runtimeSnapshotProviders.set(key, provider);
+}
+
+function exportRuntimeSnapshots(): Record<string, unknown> {
+  const snapshots: Record<string, unknown> = {};
+  for (const [key, provider] of runtimeSnapshotProviders.entries()) {
+    snapshots[key] = provider.exportSnapshot();
+  }
+  return snapshots;
+}
+
+function importRuntimeSnapshots(snapshots: Record<string, unknown> | null | undefined) {
+  for (const [key, provider] of runtimeSnapshotProviders.entries()) {
+    provider.importSnapshot(snapshots?.[key]);
+  }
+}
+
+function clearRuntimeSnapshots() {
+  for (const provider of runtimeSnapshotProviders.values()) {
+    provider.clear();
+  }
 }
 
 function isLocalPersistentStorageEnabled() {
@@ -869,6 +902,7 @@ export class MemStorage implements IStorage {
     this.pvpDuelLogsStore = [];
     clearAllPlayerRuntimeState();
     clearTelegramBindings();
+    clearRuntimeSnapshots();
   }
 
   exportSnapshot(): MemoryStorageSnapshot {
@@ -879,6 +913,7 @@ export class MemStorage implements IStorage {
       companies: Array.from(this.companies.values()),
       playerRuntimeStates: exportPlayerRuntimeStateSnapshot(),
       telegramBindings: exportTelegramBindingsSnapshot(),
+      runtimeSnapshots: exportRuntimeSnapshots(),
       members: Array.from(this.members.entries()),
       joinRequests: Array.from(this.joinRequests.values()),
       messages: [...this.msgs],
@@ -924,6 +959,11 @@ export class MemStorage implements IStorage {
       Array.isArray(snapshot?.telegramBindings)
         ? snapshot.telegramBindings as Array<readonly [string, string]>
         : [],
+    );
+    importRuntimeSnapshots(
+      snapshot?.runtimeSnapshots && typeof snapshot.runtimeSnapshots === "object"
+        ? snapshot.runtimeSnapshots as Record<string, unknown>
+        : {},
     );
     this.members = nextMembers;
     this.joinRequests = nextJoinRequests;

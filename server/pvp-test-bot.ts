@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { findBestPvpBotTarget, generateBalancedBotForTarget, leavePvpQueue, queuePlayerForPvp, updatePvpHeartbeat } from "./pvp-duel";
 import { applyGameStatePatch, getUserWithGameState } from "./game-engine";
 import { storage } from "./storage";
+import { PVP_DUEL_CONFIG } from "../shared/pvp-duel";
 
 const TEST_BOT_USERNAME = process.env.PVP_TEST_BOT_USERNAME || "pvp_test_bot";
 const TEST_BOT_ENABLED = String(process.env.PVP_TEST_BOT_ENABLED ?? "true").toLowerCase() !== "false";
@@ -97,7 +98,16 @@ async function tickSinglePvpTestBot(index: number, reservedTargets: Set<string>)
   applyGameStatePatch(user.id, { skills });
 
   const duelSkills = normalizeDuelSkills(skills);
-  const pvpPowerScore = duelSkills.skillSum + nextLevel * 2;
+  const pvpPowerScore = Number((
+    duelSkills.analytics
+    + duelSkills.design
+    + duelSkills.coding
+    + duelSkills.testing
+    + duelSkills.attention
+    + duelSkills.modeling * 0.4
+    + duelSkills.drawing * 0.35
+    + nextLevel * PVP_DUEL_CONFIG.scoring.levelPowerWeight
+  ).toFixed(2));
   queuePlayerForPvp({
     userId: user.id,
     username: user.username,

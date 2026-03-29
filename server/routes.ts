@@ -2,7 +2,7 @@
 import type { Express } from "express";
 import { type Server } from "http";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
-import { storage } from "./storage";
+import { registerRuntimeSnapshotProvider, storage } from "./storage";
 import {
   bindTelegramIdToUser,
   getTelegramIdByUserId,
@@ -24,16 +24,20 @@ import {
   normalizeRegistrationSkillsAllocation,
   REGISTRATION_INITIAL_SKILL_POINTS,
 } from "../shared/registration";
-import { GADGET_BLUEPRINTS, getAvailableBlueprints, RARITY_QUALITY_MULTIPLIERS, type BlueprintStatus } from "../shared/gadgets";
+import { GADGET_BLUEPRINTS, getAvailableBlueprints, getBlueprintById, RARITY_QUALITY_MULTIPLIERS, type BlueprintStatus } from "../shared/gadgets";
 import {
   applyGameStatePatch,
   applyGadgetWear,
   consumePvpBankBoost,
   createGadgetConditionProfile,
+  getEffectiveGadgetPowerScore,
+  getEffectiveGadgetStats,
+  getCurrencySymbol,
   getUserWithGameState,
+  SHOP_ITEMS,
   spendGram,
 } from "./game-engine";
-import { companyWarehousePartsByCompanyId } from "./telegram/state";
+import { companyBlueprintWarehouseByCompanyId, companyWarehousePartsByCompanyId } from "./telegram/state";
 import { ALL_PARTS, getPartPrice } from "../client/src/lib/parts";
 import {
   COMPANY_MINING_DEFAULT_PLAN_ID,
@@ -128,13 +132,16 @@ import { registerProductionSignal } from "./game/events/event-history";
 import { getPvpShopRotation, PVP_DUEL_CONFIG } from "../shared/pvp-duel";
 import {
   clearPendingPvpBoosts,
+  clearPendingPvpTactics,
   getPendingPvpBoosts,
+  getPendingPvpTactics,
   getPvpBoostCatalog,
   consumePendingPvpResult,
   getPvpQueueState,
   leavePvpQueue,
   type PvpDuelResult,
   purchasePvpBoost,
+  selectPvpTactic,
   settleCompletedPvpDuels,
   startActivePvpDuelNow,
   queuePlayerForPvp,
@@ -155,6 +162,7 @@ import {
   EXCLUSIVE_UPGRADE_BASE_COST_GRM,
   EXCLUSIVE_UPGRADE_BASE_DURATION_MINUTES,
   EXCLUSIVE_UPGRADE_MAX_LEVEL,
+  EXCLUSIVE_UPGRADE_REQUIRED_GADGETS,
   EXCLUSIVE_UPGRADE_RARITY_SCORE,
   EXCLUSIVE_UPGRADE_REQUIRED_PARTS,
   EXCLUSIVE_UPGRADE_SUCCESS_MULTIPLIER,
@@ -167,9 +175,21 @@ import {
 import { getAdminPassword, warnIfAdminPasswordMissing } from "./shared/env";
 
 type CompanyBlueprintState = {
+  id?: string;
+  companyId?: string;
   blueprintId: string;
   status: BlueprintStatus;
+  projectStatus?: "active" | "completed" | "cancelled";
   progressHours: number;
+  startedByUserId?: string;
+  requiredPoints?: Partial<Record<"coding" | "design" | "analytics" | "testing" | "attention", number>>;
+  currentPoints?: Partial<Record<"coding" | "design" | "analytics" | "testing" | "attention", number>>;
+  lastContribution?: Partial<Record<"coding" | "design" | "analytics" | "testing" | "attention", number>>;
+  participantUserIds?: string[];
+  tickSeconds?: number;
+  estimatedFinishAt?: number | null;
+  lastTickAt?: number;
+  lastNotifiedStatus?: "in_progress" | "production_ready" | null;
   startedAt?: number;
   completedAt?: number;
 };
@@ -203,11 +223,31 @@ type ProducedGadget = {
   blueprintId: string;
   companyId: string;
   name: string;
+  title?: string;
   baseName?: string;
   category: string;
+  branch?: string;
+  generation?: number;
+  rarity?: string;
+  requiredLevel?: number;
   description?: string;
   stats: Record<string, number>;
+  companyEmoji?: string | null;
+  isCompanyMade?: boolean;
   quality: number;
+  wear?: number;
+  wearRate?: number;
+  repairCost?: number;
+  basePrice?: number;
+  productionCostGrm?: number;
+  auctionMinPrice?: number;
+  auctionMaxPrice?: number;
+  productionPartsRequirement?: Record<string, number>;
+  pvpRoundBonus?: any;
+  specialEffect?: string | null;
+  hashPower?: number;
+  incomePerCycle?: number;
+  powerCostPerCycle?: number;
   minPrice: number;
   maxPrice: number;
   durability: number;
@@ -373,6 +413,35 @@ type CompanyMiningState = {
   claimedAt?: number;
 };
 
+type BlueprintResearchSkillKey = "coding" | "design" | "analytics" | "testing" | "attention";
+type BlueprintResearchPoints = Partial<Record<BlueprintResearchSkillKey, number>>;
+
+const BLUEPRINT_RESEARCH_SKILLS: BlueprintResearchSkillKey[] = ["coding", "design", "analytics", "testing", "attention"];
+const BLUEPRINT_RESEARCH_TICK_SECONDS = 5;
+const BLUEPRINT_RESEARCH_PARTICIPANT_SYNERGY = [1, 1.03, 1.06, 1.08, 1.1] as const;
+
+const BLUEPRINT_RESEARCH_DEPARTMENT_BOOSTS: Record<
+  CompanyDepartmentKey,
+  Partial<Record<BlueprintResearchSkillKey, number>>
+> = {
+  researchAndDevelopment: { coding: 0.12, analytics: 0.08, testing: 0.06 },
+  production: { coding: 0.08, testing: 0.08, attention: 0.05 },
+  marketing: { design: 0.12, analytics: 0.06, attention: 0.04 },
+  finance: { analytics: 0.12, attention: 0.05, design: 0.03 },
+  infrastructure: { testing: 0.12, attention: 0.08, coding: 0.04 },
+};
+
+const BLUEPRINT_RESEARCH_PROFESSION_BOOSTS: Record<
+  string,
+  Partial<Record<BlueprintResearchSkillKey, number>>
+> = {
+  backend: { coding: 0.04, testing: 0.02 },
+  designer: { design: 0.04, attention: 0.02 },
+  analyst: { analytics: 0.04, coding: 0.02 },
+  qa: { testing: 0.04, attention: 0.02 },
+  devops: { coding: 0.03, testing: 0.03, attention: 0.02 },
+};
+
 const companyBlueprints = new Map<string, CompanyBlueprintState>();
 const companyGadgets = new Map<string, ProducedGadget[]>();
 const exclusiveProjectByCompanyId = new Map<string, ExclusiveProjectState>();
@@ -401,6 +470,14 @@ function getCompanyWarehouseParts(companyId: string) {
 
 function setCompanyWarehouseParts(companyId: string, parts: any[]) {
   companyWarehousePartsByCompanyId.set(companyId, parts);
+}
+
+function storeCompanyBlueprintForCompany(companyId: string, blueprintId: string) {
+  const normalizedId = String(blueprintId || "").trim();
+  if (!normalizedId) return;
+  const current = companyBlueprintWarehouseByCompanyId.get(companyId) ?? new Set<string>();
+  current.add(normalizedId);
+  companyBlueprintWarehouseByCompanyId.set(companyId, current);
 }
 
 function removeCompanyWarehousePartForMarket(companyId: string, ref: string) {
@@ -541,6 +618,298 @@ function createEmptyExclusiveResearchMap(): ExclusiveResearchMap {
   };
 }
 
+function createEmptyBlueprintResearchPoints(): BlueprintResearchPoints {
+  return {
+    coding: 0,
+    design: 0,
+    analytics: 0,
+    testing: 0,
+    attention: 0,
+  };
+}
+
+function buildBlueprintResearchRequirements(blueprint: any): BlueprintResearchPoints {
+  const requirements = blueprint?.requirements ?? {};
+  const stats = blueprint?.baseStats ?? {};
+  const next = createEmptyBlueprintResearchPoints();
+
+  next.coding = Math.max(
+    0,
+    Math.round(
+      Math.max(
+        Number(requirements.coding ?? 0),
+        Number(stats.coding ?? 0) > 0 ? Number(stats.coding ?? 0) * 34 : 0,
+      ),
+    ),
+  );
+  next.design = Math.max(
+    0,
+    Math.round(
+      Math.max(
+        Number(requirements.design ?? 0),
+        Number(stats.design ?? 0) > 0 ? Number(stats.design ?? 0) * 34 : 0,
+      ),
+    ),
+  );
+  next.analytics = Math.max(
+    0,
+    Math.round(
+      Math.max(
+        Number(requirements.analytics ?? 0),
+        Number(stats.analytics ?? 0) > 0 ? Number(stats.analytics ?? 0) * 32 : 0,
+      ),
+    ),
+  );
+  next.testing = Math.max(0, Math.round(Number(stats.testing ?? 0) > 0 ? Number(stats.testing ?? 0) * 36 : 0));
+  next.attention = Math.max(0, Math.round(Number(stats.attention ?? 0) > 0 ? Number(stats.attention ?? 0) * 30 : 0));
+  return next;
+}
+
+function getBlueprintResearchSynergyMultiplier(participantCount: number) {
+  if (participantCount <= 1) return BLUEPRINT_RESEARCH_PARTICIPANT_SYNERGY[0];
+  if (participantCount === 2) return BLUEPRINT_RESEARCH_PARTICIPANT_SYNERGY[1];
+  if (participantCount === 3) return BLUEPRINT_RESEARCH_PARTICIPANT_SYNERGY[2];
+  if (participantCount === 4) return BLUEPRINT_RESEARCH_PARTICIPANT_SYNERGY[3];
+  return BLUEPRINT_RESEARCH_PARTICIPANT_SYNERGY[4];
+}
+
+function calculateBlueprintResearchPercent(required: BlueprintResearchPoints, current: BlueprintResearchPoints) {
+  const requiredEntries = BLUEPRINT_RESEARCH_SKILLS
+    .map((skill) => ({ skill, required: Math.max(0, Number(required[skill] ?? 0)) }))
+    .filter((entry) => entry.required > 0);
+  if (!requiredEntries.length) return 100;
+  const totalRequired = requiredEntries.reduce((sum, entry) => sum + entry.required, 0);
+  const totalCurrent = requiredEntries.reduce((sum, entry) => sum + Math.min(entry.required, Math.max(0, Number(current[entry.skill] ?? 0))), 0);
+  return Math.max(0, Math.min(100, Math.round((totalCurrent / totalRequired) * 100)));
+}
+
+function isBlueprintResearchComplete(required: BlueprintResearchPoints, current: BlueprintResearchPoints) {
+  return BLUEPRINT_RESEARCH_SKILLS.every((skill) => {
+    const needed = Math.max(0, Number(required[skill] ?? 0));
+    if (needed <= 0) return true;
+    return Math.max(0, Number(current[skill] ?? 0)) >= needed;
+  });
+}
+
+function estimateBlueprintResearchFinishAt(
+  required: BlueprintResearchPoints,
+  current: BlueprintResearchPoints,
+  perTick: BlueprintResearchPoints,
+  tickSeconds: number,
+) {
+  const now = Date.now();
+  let slowestTicks: number | null = null;
+
+  for (const skill of BLUEPRINT_RESEARCH_SKILLS) {
+    const needed = Math.max(0, Number(required[skill] ?? 0));
+    if (needed <= 0) continue;
+    const have = Math.max(0, Number(current[skill] ?? 0));
+    if (have >= needed) continue;
+    const gain = Math.max(0, Number(perTick[skill] ?? 0));
+    if (gain <= 0) return null;
+    const ticksLeft = Math.ceil((needed - have) / gain);
+    slowestTicks = slowestTicks === null ? ticksLeft : Math.max(slowestTicks, ticksLeft);
+  }
+
+  if (slowestTicks === null) return now;
+  return now + slowestTicks * Math.max(1, tickSeconds) * 1000;
+}
+
+function findUserActiveBlueprintResearch(userId: string, excludeCompanyId?: string) {
+  for (const [companyId, state] of companyBlueprints.entries()) {
+    if (excludeCompanyId && companyId === excludeCompanyId) continue;
+    if (state.status !== "in_progress" || state.projectStatus !== "active") continue;
+    if ((state.participantUserIds ?? []).includes(userId)) return state;
+  }
+  return null;
+}
+
+async function assertBlueprintResearchAvailability(userId: string, companyId: string) {
+  const otherProject = findUserActiveBlueprintResearch(userId, companyId);
+  if (otherProject) {
+    throw new Error("Игрок уже участвует в другой разработке чертежа");
+  }
+  const pvpState = getPvpQueueState(userId);
+  if (pvpState.activeDuel) {
+    throw new Error("Нельзя присоединиться к разработке во время активной PvP-дуэли");
+  }
+}
+
+async function sendTelegramBotText(chatId: number, text: string, replyMarkup?: Record<string, unknown>) {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken || !Number.isFinite(chatId) || chatId <= 0) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      }),
+    });
+  } catch (error) {
+    console.warn("Failed to send blueprint research telegram message:", error);
+  }
+}
+
+async function notifyCompanyBlueprintResearchStarted(company: any, blueprint: any, participantUserIds: string[]) {
+  const members = await storage.getCompanyMembers(company.id);
+  for (const member of members) {
+    if (participantUserIds.includes(member.userId)) continue;
+    const telegramId = Number(getTelegramIdByUserId(member.userId) || 0);
+    if (!telegramId) continue;
+    await sendTelegramBotText(
+      telegramId,
+      [
+        `🧪 CEO начал разработку нового чертежа: ${blueprint.name}`,
+        `🏢 Компания: ${company.name}`,
+        "Чтобы ускорить исследование, присоединяйся к проекту и вложи свои навыки в разработку.",
+      ].join("\n"),
+      {
+        inline_keyboard: [
+          [{ text: "🤝 Присоединиться", callback_data: "company:bp_join" }],
+          [{ text: "📈 Открыть прогресс", callback_data: "company:bp_progress_live" }],
+          [{ text: "Позже", callback_data: "company:bureau" }],
+        ],
+      },
+    );
+  }
+}
+
+async function notifyCompanyBlueprintResearchCompleted(company: any, state: CompanyBlueprintState, blueprint: any) {
+  const notified = new Set<string>([company.ownerId, ...(state.participantUserIds ?? [])]);
+  for (const userId of notified) {
+    const telegramId = Number(getTelegramIdByUserId(userId) || 0);
+    if (!telegramId) continue;
+    await sendTelegramBotText(
+      telegramId,
+      [
+        `✅ Разработка завершена: ${blueprint?.name ?? state.blueprintId}`,
+        `🏢 Компания: ${company.name}`,
+        "Чертёж готов к производству. CEO уже может запускать выпуск партии.",
+      ].join("\n"),
+    );
+  }
+}
+
+async function computeBlueprintResearchTick(company: any, state: CompanyBlueprintState) {
+  const staffing = await getCompanyStaffingSnapshot(company.id);
+  const staffingByUserId = new Map(staffing.members.map((member) => [member.userId, member.assignedDepartment ?? null] as const));
+  const members = await storage.getCompanyMembers(company.id);
+  const memberIds = new Set(members.map((member) => member.userId));
+  const activeParticipants = Array.from(new Set([company.ownerId, ...(state.participantUserIds ?? [])])).filter((userId) => memberIds.has(userId));
+  const synergy = getBlueprintResearchSynergyMultiplier(activeParticipants.length);
+  const next = createEmptyBlueprintResearchPoints();
+
+  for (const userId of activeParticipants) {
+    const snapshot = await getUserWithGameState(userId);
+    if (!snapshot) continue;
+    const skills = ((snapshot.game as any)?.skills ?? {}) as Record<string, number>;
+    const professionId = getPlayerProfessionId(snapshot.user);
+    const advanced = getAdvancedPersonalityId(snapshot.user);
+    const department = staffingByUserId.get(userId) as CompanyDepartmentKey | null | undefined;
+    for (const skill of BLUEPRINT_RESEARCH_SKILLS) {
+      const needed = Math.max(0, Number(state.requiredPoints?.[skill] ?? 0));
+      if (needed <= 0) continue;
+      const base = Math.max(0, Number(skills[skill] ?? 0));
+      if (base <= 0) continue;
+      const departmentMultiplier = 1 + Math.max(0, Number(BLUEPRINT_RESEARCH_DEPARTMENT_BOOSTS[department as CompanyDepartmentKey]?.[skill] ?? 0));
+      const professionMultiplier = 1 + Math.max(0, Number(BLUEPRINT_RESEARCH_PROFESSION_BOOSTS[String(professionId || "")]?.[skill] ?? 0));
+      const advancedMultiplier = advanced === "engineer" ? 1.05 : advanced === "strategist" ? 1.03 : 1;
+      next[skill] = Number(((next[skill] ?? 0) + base * departmentMultiplier * professionMultiplier * advancedMultiplier).toFixed(2));
+    }
+  }
+
+  for (const skill of BLUEPRINT_RESEARCH_SKILLS) {
+    next[skill] = Number((Math.max(0, Number(next[skill] ?? 0)) * synergy).toFixed(2));
+  }
+
+  return {
+    participantUserIds: activeParticipants,
+    perTick: next,
+  };
+}
+
+async function syncCompanyBlueprintResearchProject(company: any) {
+  const state = companyBlueprints.get(company.id);
+  if (!state || state.status !== "in_progress" || state.projectStatus !== "active") {
+    return state ?? null;
+  }
+
+  const blueprint = getBlueprintById(state.blueprintId) ?? (isTutorialCompany(company) ? buildTutorialBlueprintView() : null);
+  if (!blueprint) {
+    return state;
+  }
+
+  const tickMs = Math.max(1, Number(state.tickSeconds ?? BLUEPRINT_RESEARCH_TICK_SECONDS)) * 1000;
+  const startedAt = Number(state.startedAt || Date.now());
+  const lastTickAt = Math.max(startedAt, Number(state.lastTickAt || startedAt));
+  const now = Date.now();
+  let ticksToApply = Math.floor((now - lastTickAt) / tickMs);
+
+  if (ticksToApply <= 0) {
+    const contribution = await computeBlueprintResearchTick(company, state);
+    state.participantUserIds = contribution.participantUserIds;
+    state.lastContribution = contribution.perTick;
+    state.estimatedFinishAt = estimateBlueprintResearchFinishAt(
+      state.requiredPoints ?? createEmptyBlueprintResearchPoints(),
+      state.currentPoints ?? createEmptyBlueprintResearchPoints(),
+      contribution.perTick,
+      Number(state.tickSeconds ?? BLUEPRINT_RESEARCH_TICK_SECONDS),
+    );
+    companyBlueprints.set(company.id, state);
+    return state;
+  }
+
+  while (ticksToApply > 0 && state.status === "in_progress" && state.projectStatus === "active") {
+    const contribution = await computeBlueprintResearchTick(company, state);
+    state.participantUserIds = contribution.participantUserIds;
+    state.lastContribution = contribution.perTick;
+    const current = { ...createEmptyBlueprintResearchPoints(), ...(state.currentPoints ?? {}) };
+    const required = { ...createEmptyBlueprintResearchPoints(), ...(state.requiredPoints ?? {}) };
+    for (const skill of BLUEPRINT_RESEARCH_SKILLS) {
+      const needed = Math.max(0, Number(required[skill] ?? 0));
+      if (needed <= 0) continue;
+      const nextValue = Math.min(needed, Math.max(0, Number(current[skill] ?? 0)) + Math.max(0, Number(contribution.perTick[skill] ?? 0)));
+      current[skill] = Number(nextValue.toFixed(2));
+    }
+    state.currentPoints = current;
+    state.lastTickAt = Math.min(now, Math.max(lastTickAt, Number(state.lastTickAt || lastTickAt)) + tickMs);
+    state.progressHours = Number(((Number(blueprint.time || 1) * calculateBlueprintResearchPercent(required, current)) / 100).toFixed(2));
+    state.estimatedFinishAt = estimateBlueprintResearchFinishAt(required, current, contribution.perTick, Number(state.tickSeconds ?? BLUEPRINT_RESEARCH_TICK_SECONDS));
+
+    if (isBlueprintResearchComplete(required, current)) {
+      state.status = "production_ready";
+      state.projectStatus = "completed";
+      state.completedAt = Date.now();
+      state.estimatedFinishAt = Date.now();
+      storeCompanyBlueprintForCompany(company.id, state.blueprintId);
+      await storage.updateCompany(company.id, { ork: Number(company.ork || 0) + 1 });
+      if (state.lastNotifiedStatus !== "production_ready") {
+        await notifyCompanyBlueprintResearchCompleted(company, state, blueprint);
+        state.lastNotifiedStatus = "production_ready";
+      }
+    }
+    ticksToApply -= 1;
+  }
+
+  companyBlueprints.set(company.id, state);
+  return state;
+}
+
+async function buildBlueprintResearchApiView(company: any, state: CompanyBlueprintState | null | undefined) {
+  if (!state) return null;
+  const members = await storage.getCompanyMembers(company.id);
+  const memberNameByUserId = new Map(members.map((member) => [member.userId, member.username] as const));
+  return {
+    ...state,
+    participantNames: (state.participantUserIds ?? [])
+      .map((userId) => memberNameByUserId.get(userId))
+      .filter(Boolean),
+  };
+}
+
 function buildExclusiveResearchContribution(input: {
   members: Array<{
     skills: Record<string, number>;
@@ -588,6 +957,69 @@ function buildExclusiveResearchContribution(input: {
 const marketListings: MarketListing[] = [];
 const cityContracts = new Map<string, CityContract[]>();
 const companyMiningByCompanyId = new Map<string, CompanyMiningState>();
+
+function exportCompanyRoutesRuntimeSnapshot() {
+  return {
+    companyBlueprints: Array.from(companyBlueprints.entries()),
+    companyGadgets: Array.from(companyGadgets.entries()),
+    exclusiveProjectByCompanyId: Array.from(exclusiveProjectByCompanyId.entries()),
+    exclusiveCatalogByCompanyId: Array.from(exclusiveCatalogByCompanyId.entries()),
+    companyProductionOrders: Array.from(companyProductionOrders.entries()),
+    marketListings: [...marketListings],
+    cityContracts: Array.from(cityContracts.entries()),
+    companyMiningByCompanyId: Array.from(companyMiningByCompanyId.entries()),
+  };
+}
+
+function importCompanyRoutesRuntimeSnapshot(snapshot: unknown) {
+  companyBlueprints.clear();
+  companyGadgets.clear();
+  exclusiveProjectByCompanyId.clear();
+  exclusiveCatalogByCompanyId.clear();
+  companyProductionOrders.clear();
+  marketListings.length = 0;
+  cityContracts.clear();
+  companyMiningByCompanyId.clear();
+
+  const next = snapshot && typeof snapshot === "object" ? snapshot as Record<string, unknown> : {};
+  const importMapEntries = <T>(target: Map<string, T>, source: unknown) => {
+    if (!Array.isArray(source)) return;
+    for (const entry of source) {
+      if (!Array.isArray(entry) || entry.length < 2) continue;
+      const key = String(entry[0] ?? "").trim();
+      if (!key) continue;
+      target.set(key, entry[1] as T);
+    }
+  };
+
+  importMapEntries(companyBlueprints, next.companyBlueprints);
+  importMapEntries(companyGadgets, next.companyGadgets);
+  importMapEntries(exclusiveProjectByCompanyId, next.exclusiveProjectByCompanyId);
+  importMapEntries(exclusiveCatalogByCompanyId, next.exclusiveCatalogByCompanyId);
+  importMapEntries(companyProductionOrders, next.companyProductionOrders);
+  if (Array.isArray(next.marketListings)) {
+    marketListings.push(...next.marketListings as MarketListing[]);
+  }
+  importMapEntries(cityContracts, next.cityContracts);
+  importMapEntries(companyMiningByCompanyId, next.companyMiningByCompanyId);
+}
+
+function clearCompanyRoutesRuntimeState() {
+  companyBlueprints.clear();
+  companyGadgets.clear();
+  exclusiveProjectByCompanyId.clear();
+  exclusiveCatalogByCompanyId.clear();
+  companyProductionOrders.clear();
+  marketListings.length = 0;
+  cityContracts.clear();
+  companyMiningByCompanyId.clear();
+}
+
+registerRuntimeSnapshotProvider("company-routes", {
+  exportSnapshot: exportCompanyRoutesRuntimeSnapshot,
+  importSnapshot: importCompanyRoutesRuntimeSnapshot,
+  clear: clearCompanyRoutesRuntimeState,
+});
 
 const PASSIVE_INCOME = {
   tier1: { referrals: 1, percentage: 0.5, cap: 100 },
@@ -724,9 +1156,9 @@ function readDuelSkills(snapshot: Awaited<ReturnType<typeof getUserWithGameState
 function readEquippedPvpGadget(snapshot: Awaited<ReturnType<typeof getUserWithGameState>>) {
   const inventory = Array.isArray((snapshot?.game as any)?.inventory) ? (snapshot?.game as any).inventory : [];
   const equipped = inventory
-    .filter((item: any) => item?.type === "gadget" && item?.isEquipped)
+    .filter((item: any) => (item?.type === "gadget" || item?.type === "gear") && item?.isEquipped)
     .map((item: any) => {
-      const stats = item?.stats && typeof item.stats === "object" ? item.stats : {};
+      const stats = getEffectiveGadgetStats(item, { playerLevel: Number(snapshot?.user?.level || 1) });
       const normalizedStats = {
         analytics: Math.max(0, Number(stats.analytics || 0)),
         coding: Math.max(0, Number(stats.coding || 0)),
@@ -748,7 +1180,11 @@ function readEquippedPvpGadget(snapshot: Awaited<ReturnType<typeof getUserWithGa
         id: String(item?.id || "gadget"),
         name: String(item?.name || "Гаджет"),
         stats: normalizedStats,
-        powerScore: Number(powerScore.toFixed(2)),
+        powerScore: Number((getEffectiveGadgetPowerScore(item, { playerLevel: Number(snapshot?.user?.level || 1) }) || powerScore).toFixed(2)),
+        requiredLevel: Number(item?.requiredLevel || 1),
+        quality: Number(item?.quality || 1),
+        wear: Number(item?.wear || 0),
+        pvpRoundBonus: item?.pvpRoundBonus ?? null,
       };
     })
     .sort((a: any, b: any) => Number(b.powerScore || 0) - Number(a.powerScore || 0));
@@ -779,14 +1215,16 @@ async function applyDuelResultToPlayers(result: PvpDuelResult | null) {
   const a = await storage.getUser(result.playerAUserId);
   const b = await storage.getUser(result.playerBUserId);
   if (!a || !b) return;
+  const isBotA = Boolean(result.playerAIsBot);
+  const isBotB = Boolean(result.playerBIsBot);
 
   const isWinnerA = result.winnerUserId === a.id;
   const isWinnerB = result.winnerUserId === b.id;
   const isDraw = result.winnerUserId === null;
   const xpA = isDraw ? Number(result.drawXp || result.loserXp || 0) : isWinnerA ? result.winnerXp : result.loserXp;
   const xpB = isDraw ? Number(result.drawXp || result.loserXp || 0) : isWinnerB ? result.winnerXp : result.loserXp;
-  const repA = isDraw ? 0 : isWinnerA ? result.winnerReputation : 0;
-  const repB = isDraw ? 0 : isWinnerB ? result.winnerReputation : 0;
+  const repA = isDraw ? Number(result.drawReputation || 0) : isWinnerA ? result.winnerReputation : 0;
+  const repB = isDraw ? Number(result.drawReputation || 0) : isWinnerB ? result.winnerReputation : 0;
 
   const stamp = getUtcDayStamp(result.createdAtMs);
   const aDailyMatches = a.pvpDailyStamp === stamp ? Number(a.pvpDailyMatches || 0) + 1 : 1;
@@ -817,31 +1255,35 @@ async function applyDuelResultToPlayers(result: PvpDuelResult | null) {
     });
   }
 
-  await storage.updateUser(a.id, {
-    level: aLevelState.level,
-    experience: aLevelState.experience,
-    reputation: Number(a.reputation || 0) + repA + repBonusA,
-    pvpRating: Math.max(0, Number(result.playerARatingAfter || 0) + ratingBonusA),
-    pvpMatches: Number(a.pvpMatches || 0) + 1,
-    pvpWins: Number(a.pvpWins || 0) + (isWinnerA ? 1 : 0),
-    pvpLosses: Number(a.pvpLosses || 0) + (isDraw ? 0 : isWinnerA ? 0 : 1),
-    pvpDailyStamp: stamp,
-    pvpDailyMatches: aDailyMatches,
-    lastActiveAt: Math.floor(Date.now() / 1000),
-  });
+  if (!isBotA) {
+    await storage.updateUser(a.id, {
+      level: aLevelState.level,
+      experience: aLevelState.experience,
+      reputation: Number(a.reputation || 0) + repA + repBonusA,
+      pvpRating: Math.max(0, Number(result.playerARatingAfter || 0) + ratingBonusA),
+      pvpMatches: Number(a.pvpMatches || 0) + 1,
+      pvpWins: Number(a.pvpWins || 0) + (isWinnerA ? 1 : 0),
+      pvpLosses: Number(a.pvpLosses || 0) + (isDraw ? 0 : isWinnerA ? 0 : 1),
+      pvpDailyStamp: stamp,
+      pvpDailyMatches: aDailyMatches,
+      lastActiveAt: Math.floor(Date.now() / 1000),
+    });
+  }
 
-  await storage.updateUser(b.id, {
-    level: bLevelState.level,
-    experience: bLevelState.experience,
-    reputation: Number(b.reputation || 0) + repB + repBonusB,
-    pvpRating: Math.max(0, Number(result.playerBRatingAfter || 0) + ratingBonusB),
-    pvpMatches: Number(b.pvpMatches || 0) + 1,
-    pvpWins: Number(b.pvpWins || 0) + (isWinnerB ? 1 : 0),
-    pvpLosses: Number(b.pvpLosses || 0) + (isDraw ? 0 : isWinnerB ? 0 : 1),
-    pvpDailyStamp: stamp,
-    pvpDailyMatches: bDailyMatches,
-    lastActiveAt: Math.floor(Date.now() / 1000),
-  });
+  if (!isBotB) {
+    await storage.updateUser(b.id, {
+      level: bLevelState.level,
+      experience: bLevelState.experience,
+      reputation: Number(b.reputation || 0) + repB + repBonusB,
+      pvpRating: Math.max(0, Number(result.playerBRatingAfter || 0) + ratingBonusB),
+      pvpMatches: Number(b.pvpMatches || 0) + 1,
+      pvpWins: Number(b.pvpWins || 0) + (isWinnerB ? 1 : 0),
+      pvpLosses: Number(b.pvpLosses || 0) + (isDraw ? 0 : isWinnerB ? 0 : 1),
+      pvpDailyStamp: stamp,
+      pvpDailyMatches: bDailyMatches,
+      lastActiveAt: Math.floor(Date.now() / 1000),
+    });
+  }
 
   await storage.createPvpDuelLog({
     id: result.id,
@@ -865,6 +1307,12 @@ async function flushCompletedPvpDuels() {
     await applyDuelResultToPlayers(result);
   }
   return completed;
+}
+
+function isPvpBotUsername(username: string | null | undefined) {
+  const value = String(username || "").trim().toLowerCase();
+  const base = String(process.env.PVP_TEST_BOT_USERNAME || "pvp_test_bot").trim().toLowerCase();
+  return value === base || value.startsWith(`${base}_`);
 }
 
 
@@ -1194,16 +1642,62 @@ function removeProducedGadget(companyId: string, gadgetId: string): ProducedGadg
   return removed;
 }
 
+function getProducedGadgetUpgradeGroupKey(gadget: ProducedGadget) {
+  const baseName = String(gadget.baseName || gadget.name || "").trim().toLowerCase();
+  const category = normalizeProducedCategory(gadget.category);
+  const blueprintId = String(gadget.blueprintId || "").trim().toLowerCase();
+  return `${baseName}::${category}::${blueprintId}`;
+}
+
+function getExclusiveUpgradeCandidates(companyId: string) {
+  const produced = companyGadgets.get(companyId) ?? [];
+  const groups = new Map<string, { representative: ProducedGadget; items: ProducedGadget[] }>();
+  for (const item of produced) {
+    if (item.isExclusive) continue;
+    const key = getProducedGadgetUpgradeGroupKey(item);
+    const current = groups.get(key);
+    if (current) {
+      current.items.push(item);
+      continue;
+    }
+    groups.set(key, { representative: item, items: [item] });
+  }
+
+  return Array.from(groups.values())
+    .filter((group) => group.items.length >= EXCLUSIVE_UPGRADE_REQUIRED_GADGETS)
+    .map((group) => ({
+      ...group.representative,
+      availableQuantity: group.items.length,
+    }));
+}
+
+function getProducedGadgetUpgradeBatch(companyId: string, gadgetId: string, requiredCount: number) {
+  const produced = companyGadgets.get(companyId) ?? [];
+  const target = produced.find((item) => item.id === gadgetId);
+  if (!target) return [];
+  const key = getProducedGadgetUpgradeGroupKey(target);
+  return produced
+    .filter((item) => !item.isExclusive && getProducedGadgetUpgradeGroupKey(item) === key)
+    .slice(0, requiredCount);
+}
+
 function buildPlayerInventoryGadgetFromProduced(gadget: ProducedGadget) {
   return {
     id: gadget.id,
     name: gadget.name,
+    title: gadget.title ?? gadget.name,
     baseName: gadget.baseName,
     category: gadget.category,
+    branch: gadget.branch as any,
+    generation: Number(gadget.generation ?? 1),
+    requiredLevel: Number(gadget.requiredLevel ?? 1),
     stats: { ...(gadget.stats || {}) },
-    rarity: gadget.isExclusive ? "Exclusive" : "Rare",
+    rarity: String(gadget.rarity || (gadget.isExclusive ? "Exclusive" : "Rare")),
     quantity: 1,
     type: "gadget" as const,
+    isCompanyMade: Boolean(gadget.isCompanyMade ?? true),
+    companyId: gadget.companyId,
+    companyEmoji: gadget.companyEmoji ?? null,
     durability: gadget.durability,
     maxDurability: gadget.maxDurability,
     condition: gadget.condition,
@@ -1211,7 +1705,21 @@ function buildPlayerInventoryGadgetFromProduced(gadget: ProducedGadget) {
     isBroken: Boolean(gadget.isBroken),
     reliability: Number(gadget.reliability ?? 1),
     quality: Number(gadget.quality ?? 1),
+    wear: Number(gadget.wear ?? 0),
+    wearRate: Number(gadget.wearRate ?? 1),
+    repairCost: Number(gadget.repairCost ?? 0),
+    basePrice: Number(gadget.basePrice ?? gadget.minPrice ?? 0),
+    productionCostGrm: Number(gadget.productionCostGrm ?? 0),
+    auctionMinPrice: Number(gadget.auctionMinPrice ?? gadget.minPrice ?? 0),
+    auctionMaxPrice: Number(gadget.auctionMaxPrice ?? gadget.maxPrice ?? 0),
+    productionPartsRequirement: gadget.productionPartsRequirement ? { ...(gadget.productionPartsRequirement || {}) } : undefined,
+    pvpRoundBonus: gadget.pvpRoundBonus ?? null,
+    specialEffect: gadget.specialEffect ?? null,
+    hashPower: gadget.hashPower,
+    incomePerCycle: gadget.incomePerCycle,
+    powerCostPerCycle: gadget.powerCostPerCycle,
     isExclusive: Boolean(gadget.isExclusive),
+    upgradeLevel: getProducedGadgetExclusiveLevel(gadget),
     exclusiveLevel: getProducedGadgetExclusiveLevel(gadget),
     exclusiveBonusType: gadget.exclusiveBonusType,
     exclusiveBonusValue: gadget.exclusiveBonusValue,
@@ -1441,16 +1949,35 @@ function buildProducedGadgetsFromOrder(input: {
       blueprintId: input.order.blueprintId,
       companyId: input.companyId,
       name: input.order.blueprintName,
+      title: input.order.blueprintName,
       baseName: input.order.baseName || input.order.blueprintName,
       category: input.order.category,
+      branch: getBlueprintById(input.order.blueprintId)?.branch,
+      generation: getBlueprintById(input.order.blueprintId)?.generation ?? 1,
+      rarity: getBlueprintById(input.order.blueprintId)?.rarity ?? (input.order.isExclusive ? "Epic" : "Rare"),
+      requiredLevel: getBlueprintById(input.order.blueprintId)?.requiredLevel ?? 1,
       stats: Object.fromEntries(
         Object.entries(input.order.stats).map(([key, value]) => [key, Number(value.toFixed ? value.toFixed(2) : Number(value || 0).toFixed(2))]),
       ),
       quality: Number(input.order.quality.toFixed(2)),
+      wear: 0,
+      wearRate: Number(getBlueprintById(input.order.blueprintId)?.wearRate ?? 1),
+      repairCost: Number(getBlueprintById(input.order.blueprintId)?.repairCost ?? 0),
+      basePrice: Number(getBlueprintById(input.order.blueprintId)?.basePrice ?? input.order.minPrice ?? 0),
+      productionCostGrm: Number(input.order.gramCost ?? getBlueprintById(input.order.blueprintId)?.productionCostGrm ?? 0),
+      auctionMinPrice: Number(input.order.minPrice ?? getBlueprintById(input.order.blueprintId)?.auctionMinPrice ?? 0),
+      auctionMaxPrice: Number(input.order.maxPrice ?? getBlueprintById(input.order.blueprintId)?.auctionMaxPrice ?? 0),
+      productionPartsRequirement: { ...(getBlueprintById(input.order.blueprintId)?.productionPartsRequirement || {}) },
+      pvpRoundBonus: getBlueprintById(input.order.blueprintId)?.pvpRoundBonus ?? null,
+      specialEffect: getBlueprintById(input.order.blueprintId)?.specialEffect ?? null,
+      hashPower: getBlueprintById(input.order.blueprintId)?.hashPower,
+      incomePerCycle: getBlueprintById(input.order.blueprintId)?.incomePerCycle,
+      powerCostPerCycle: getBlueprintById(input.order.blueprintId)?.powerCostPerCycle,
       minPrice: input.order.minPrice,
       maxPrice: input.order.maxPrice,
       ...gadgetCondition,
       producedAt: Date.now(),
+      isCompanyMade: true,
       isExclusive: input.order.isExclusive,
       exclusiveLevel: Math.max(0, Number(input.order.exclusiveLevel || 0)),
       exclusiveBonusType: input.order.exclusiveBonusType,
@@ -1567,6 +2094,7 @@ function buildExclusiveUpgradeBlueprint(input: {
     upgradeLevel: nextLevel,
     requiredPartType: requiredPartType as any,
     requiredPartCount: EXCLUSIVE_UPGRADE_REQUIRED_PARTS,
+    requiredGadgetCount: EXCLUSIVE_UPGRADE_REQUIRED_GADGETS,
   } satisfies ExclusiveBlueprintDefinition;
 }
 
@@ -1660,6 +2188,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await applyHackathonRewards();
     },
   });
+  setInterval(() => {
+    void (async () => {
+      const companies = await storage.getAllCompanies();
+      for (const company of companies) {
+        try {
+          await syncCompanyBlueprintResearchProject(company);
+        } catch (error) {
+          console.warn("Failed to sync company blueprint research tick:", error);
+        }
+      }
+    })();
+  }, BLUEPRINT_RESEARCH_TICK_SECONDS * 1000);
 
   // вњ… Р Р•Р“РРЎРўР РђР¦РРЇ РџРћР›Р¬Р—РћР’РђРўР•Р›РЇ
   app.post("/api/register", async (req, res) => {
@@ -2430,7 +2970,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       await assertFeatureEnabled("leaderboards", "Leaderboards are disabled by admin settings");
       const sort = String(req.query.sort ?? "level");
-      const users = await storage.getUsers();
+      const users = (await storage.getUsers()).filter((user) => !isPvpBotUsername(user.username));
 
       const sorted = [...users].sort((a, b) => {
         if (sort === "pvp") return Number(b.pvpRating || 1000) - Number(a.pvpRating || 1000);
@@ -2474,7 +3014,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/leaderboard/pvp-developers", async (_req, res) => {
     try {
       await assertFeatureEnabled("leaderboards", "Leaderboards are disabled by admin settings");
-      const users = await storage.getUsers();
+      const users = (await storage.getUsers()).filter((user) => !isPvpBotUsername(user.username));
       const sorted = [...users]
         .sort((a, b) => {
           const ratingDiff = Number(b.pvpRating || 1000) - Number(a.pvpRating || 1000);
@@ -2535,6 +3075,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         hasPendingResult: state.hasPendingResult,
         activeDuel: state.activeDuel,
         pendingBoosts: state.pendingBoosts,
+        pendingTactics: state.pendingTactics,
         boostCatalog: getPvpBoostCatalog(),
         boostRotation: getPvpShopRotation(),
         rating: Number(user.pvpRating || 1000),
@@ -2598,6 +3139,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ ok: true, activeDuel: state.activeDuel });
     } catch (error: any) {
       res.status(400).json({ error: error?.message || "Failed to start PvP duel" });
+    }
+  });
+
+  app.post("/api/pvp/tactics/select", async (req, res) => {
+    try {
+      const userId = String(req.body?.userId || "");
+      const stageKey = String(req.body?.stageKey || "") as "concept" | "core" | "tests";
+      const tacticId = String(req.body?.tacticId || "") as "speed" | "quality" | "stability" | "pressure";
+      if (!userId || !stageKey || !tacticId) {
+        return res.status(400).json({ error: "userId, stageKey and tacticId are required" });
+      }
+      if (!["concept", "core", "tests"].includes(stageKey)) {
+        return res.status(400).json({ error: "Unknown PvP round" });
+      }
+      if (!["speed", "quality", "stability", "pressure"].includes(tacticId)) {
+        return res.status(400).json({ error: "Unknown PvP tactic" });
+      }
+      const user = await storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      const access = canEnterPvp(user);
+      if (!access.ok) {
+        return res.status(400).json({ error: getPvpAccessMessage(access.reason), reason: access.reason });
+      }
+      const tactics = selectPvpTactic(userId, stageKey, tacticId);
+      const state = getPvpQueueState(userId);
+      res.json({
+        ok: true,
+        tactics,
+        activeDuel: state.activeDuel,
+        pendingTactics: state.pendingTactics,
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to select PvP tactic" });
     }
   });
 
@@ -2683,6 +3257,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!userId) return res.status(400).json({ error: "userId is required" });
       leavePvpQueue(userId);
       clearPendingPvpBoosts(userId);
+      clearPendingPvpTactics(userId);
       res.json({ ok: true });
     } catch (error: any) {
       res.status(500).json({ error: error?.message || "Failed to leave PvP queue" });
@@ -2702,6 +3277,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const myAfter = perspectiveA ? result.playerARatingAfter : result.playerBRatingAfter;
       const opponentName = perspectiveA ? result.playerBName : result.playerAName;
       const isWinner = result.winnerUserId === userId;
+      const opponentIsBot = perspectiveA ? Boolean(result.playerBIsBot) : Boolean(result.playerAIsBot);
+      const moneyReward = isWinner && opponentIsBot ? Math.max(0, Number(PVP_DUEL_CONFIG.reward.botWinMoney || 0)) : 0;
+      const user = await storage.getUser(userId);
+      if (moneyReward > 0 && user) {
+        await storage.updateUser(user.id, { balance: Number(user.balance || 0) + moneyReward });
+      }
       const gadgetWear = await applyGadgetWear(userId, {
         cause: "pvp",
         severityMultiplier: result.winnerUserId === null ? 1 : isWinner ? 1 : 1.08,
@@ -2721,8 +3302,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ratingBefore: myBefore,
           ratingAfter: myAfter,
           ratingDelta: myAfter - myBefore,
-          xpReward: result.winnerUserId === null ? 0 : isWinner ? result.winnerXp : result.loserXp,
-          reputationReward: result.winnerUserId === null ? 0 : isWinner ? result.winnerReputation : 0,
+          xpReward: result.winnerUserId === null ? Number(result.drawXp || 0) : isWinner ? result.winnerXp : result.loserXp,
+          reputationReward: result.winnerUserId === null ? Number(result.drawReputation || 0) : isWinner ? result.winnerReputation : 0,
+          moneyReward,
+          moneyRewardCurrency: getCurrencySymbol(user?.city || "Сан-Франциско"),
           energyCost: perspectiveA ? Number(result.energyCostA || 0) : Number(result.energyCostB || 0),
           gadgetWear: gadgetWear.report,
         },
@@ -3345,11 +3928,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
 
-    const current = await syncTutorialBlueprintState(company, companyBlueprints.get(company.id));
+    const current = await syncCompanyBlueprintResearchProject(company);
     const productionOrder = syncCompanyProductionOrder(company.id);
     res.json({
       available: isTutorialCompany(company) ? [buildTutorialBlueprintView()] : getAvailableBlueprints(company.level),
-      active: current ?? null,
+      active: await buildBlueprintResearchApiView(company, current),
       produced: companyGadgets.get(company.id) ?? [],
       productionOrder,
     });
@@ -3365,7 +3948,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         active: getExclusiveProject(company.id),
         catalog: getExclusiveCatalog(company.id),
         produced: produced.filter((item) => item.isExclusive),
-        upgradeCandidates: produced.filter((item) => !item.isExclusive),
+        upgradeCandidates: getExclusiveUpgradeCandidates(company.id),
         productionOrder,
       });
     } catch (error: any) {
@@ -3388,6 +3971,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const produced = companyGadgets.get(company.id) ?? [];
       const targetGadget = produced.find((item) => item.id === gadgetId);
       if (!targetGadget) return res.status(404).json({ error: "Базовый гаджет для апгрейда не найден" });
+      const targetBatch = getProducedGadgetUpgradeBatch(company.id, gadgetId, EXCLUSIVE_UPGRADE_REQUIRED_GADGETS);
+      if (targetBatch.length < EXCLUSIVE_UPGRADE_REQUIRED_GADGETS) {
+        return res.status(400).json({ error: `Для EX-апгрейда нужно минимум ${EXCLUSIVE_UPGRADE_REQUIRED_GADGETS} одинаковых обычных гаджетов этой модели` });
+      }
       const currentLevel = getProducedGadgetExclusiveLevel(targetGadget);
       if (currentLevel >= EXCLUSIVE_UPGRADE_MAX_LEVEL) {
         return res.status(400).json({ error: `Гаджет уже достиг максимального уровня EX+${EXCLUSIVE_UPGRADE_MAX_LEVEL}` });
@@ -3455,6 +4042,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const produced = companyGadgets.get(company.id) ?? [];
       const targetGadget = produced.find((item) => item.id === gadgetId);
       if (!targetGadget) return res.status(404).json({ error: "Базовый гаджет для апгрейда не найден" });
+      const targetBatch = getProducedGadgetUpgradeBatch(company.id, gadgetId, EXCLUSIVE_UPGRADE_REQUIRED_GADGETS);
+      if (targetBatch.length < EXCLUSIVE_UPGRADE_REQUIRED_GADGETS) {
+        return res.status(400).json({ error: `Для EX-апгрейда нужно минимум ${EXCLUSIVE_UPGRADE_REQUIRED_GADGETS} одинаковых обычных гаджетов этой модели` });
+      }
       const currentLevel = getProducedGadgetExclusiveLevel(targetGadget);
       if (currentLevel >= EXCLUSIVE_UPGRADE_MAX_LEVEL) {
         return res.status(400).json({ error: `Гаджет уже достиг максимального уровня EX+${EXCLUSIVE_UPGRADE_MAX_LEVEL}` });
@@ -3480,16 +4071,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           type: String(part.type || "processor"),
         })),
       });
-      reservedTargetGadget = removeProducedGadget(company.id, targetGadget.id);
-      if (!reservedTargetGadget) {
-        return res.status(404).json({ error: "Не удалось зарезервировать базовый гаджет для апгрейда" });
+      const reservedBatch = targetBatch
+        .map((item) => removeProducedGadget(company.id, item.id))
+        .filter(Boolean) as ProducedGadget[];
+      reservedTargetGadget = reservedBatch[0] ?? null;
+      if (reservedBatch.length !== EXCLUSIVE_UPGRADE_REQUIRED_GADGETS || !reservedTargetGadget) {
+        for (const gadget of reservedBatch) {
+          const producedList = companyGadgets.get(company.id) ?? [];
+          producedList.push(gadget);
+          companyGadgets.set(company.id, producedList);
+        }
+        return res.status(404).json({ error: "Не удалось зарезервировать партию базовых гаджетов для апгрейда" });
       }
 
       if (Number(company.balance || 0) < Number(blueprint.developmentCostGrm || 0)) {
-        if (reservedTargetGadget) {
-          const produced = companyGadgets.get(company.id) ?? [];
-          produced.push(reservedTargetGadget);
-          companyGadgets.set(company.id, produced);
+        for (const gadget of reservedBatch) {
+          const producedList = companyGadgets.get(company.id) ?? [];
+          producedList.push(gadget);
+          companyGadgets.set(company.id, producedList);
         }
         return res.status(400).json({ error: `Недостаточно GRM компании для старта разработки (${blueprint.developmentCostGrm} GRM)` });
       }
@@ -3522,6 +4121,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               exclusiveLevel: getProducedGadgetExclusiveLevel(reservedTargetGadget),
             }
           : undefined,
+        reservedBatchGadgets: reservedBatch.map((gadget) => ({
+          id: gadget.id,
+          name: gadget.name,
+          baseName: gadget.baseName,
+          category: gadget.category,
+          stats: { ...(gadget.stats || {}) },
+          quality: Number(gadget.quality || 1),
+          reliability: Number(gadget.reliability ?? 1),
+          condition: Number(gadget.condition || gadget.maxCondition || 100),
+          maxCondition: Number(gadget.maxCondition || 100),
+          minPrice: Number(gadget.minPrice || 0),
+          maxPrice: Number(gadget.maxPrice || 0),
+          exclusiveLevel: getProducedGadgetExclusiveLevel(gadget),
+        })),
       };
       exclusiveProjectByCompanyId.set(company.id, project);
       const gadgetWear = await applyGadgetWear(userId, {
@@ -3586,29 +4199,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             setExclusiveCatalog(company.id, [project.blueprint, ...getExclusiveCatalog(company.id)]);
           } else {
             project.status = "failed";
-            project.failedReason = "Апгрейд не стабилизировался. Базовый гаджет возвращён на склад компании";
-            if (!project.targetReturned && project.targetGadget) {
+            project.failedReason = `Апгрейд не стабилизировался. На склад компании возвращена партия из ${EXCLUSIVE_UPGRADE_REQUIRED_GADGETS} гаджетов`;
+            if (!project.targetReturned && Array.isArray(project.reservedBatchGadgets) && project.reservedBatchGadgets.length) {
               const produced = companyGadgets.get(company.id) ?? [];
-              produced.push({
-                id: project.targetGadget.id,
-                blueprintId: project.blueprint.targetGadgetId || project.targetGadget.id,
-                companyId: company.id,
-                name: project.targetGadget.name,
-                baseName: project.blueprint.targetGadgetName || project.targetGadget.name,
-                category: project.targetGadget.category,
-                stats: { ...(project.targetGadget.stats || {}) },
-                quality: Number(project.targetGadget.quality || 1),
-                minPrice: Number(project.targetGadget.minPrice || 0),
-                maxPrice: Number(project.targetGadget.maxPrice || 0),
-                durability: Number(project.targetGadget.maxCondition || 100),
-                maxDurability: Number(project.targetGadget.maxCondition || 100),
-                condition: Number(project.targetGadget.condition || project.targetGadget.maxCondition || 100),
-                maxCondition: Number(project.targetGadget.maxCondition || 100),
-                reliability: Number(project.targetGadget.reliability ?? 1),
-                producedAt: Date.now(),
-                isExclusive: Number(project.targetGadget.exclusiveLevel || 0) > 0,
-                exclusiveLevel: Number(project.targetGadget.exclusiveLevel || 0),
-              });
+              for (const gadget of project.reservedBatchGadgets) {
+                produced.push({
+                  id: gadget.id,
+                  blueprintId: project.blueprint.targetGadgetId || gadget.id,
+                  companyId: company.id,
+                  name: gadget.name,
+                  baseName: gadget.baseName || project.blueprint.targetGadgetName || gadget.name,
+                  category: gadget.category,
+                  stats: { ...(gadget.stats || {}) },
+                  quality: Number(gadget.quality || 1),
+                  minPrice: Number(gadget.minPrice || 0),
+                  maxPrice: Number(gadget.maxPrice || 0),
+                  durability: Number(gadget.maxCondition || 100),
+                  maxDurability: Number(gadget.maxCondition || 100),
+                  condition: Number(gadget.condition || gadget.maxCondition || 100),
+                  maxCondition: Number(gadget.maxCondition || 100),
+                  reliability: Number(gadget.reliability ?? 1),
+                  producedAt: Date.now(),
+                  isExclusive: Number(gadget.exclusiveLevel || 0) > 0,
+                  exclusiveLevel: Number(gadget.exclusiveLevel || 0),
+                });
+              }
               companyGadgets.set(company.id, produced);
               project.targetReturned = true;
             }
@@ -3876,6 +4491,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ? (normalizedBlueprintId === TUTORIAL_DEMO_BLUEPRINT.id ? buildTutorialBlueprintView() : null)
       : GADGET_BLUEPRINTS.find((b) => b.id === normalizedBlueprintId);
     if (!blueprint) return res.status(404).json({ error: "Blueprint not found" });
+    const current = await syncCompanyBlueprintResearchProject(company);
+    if (current && current.status === "in_progress") {
+      return res.status(400).json({ error: "У компании уже идет активная разработка чертежа" });
+    }
+    await assertBlueprintResearchAvailability(String(userId), company.id);
 
     if (!isTutorial) {
       const settings = await getGameSettings();
@@ -3907,20 +4527,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.updateCompany(company.id, { balance: company.balance - blueprintCost });
       // TODO: Persist blueprint development ledger/history for auditing economy changes.
     }
-
-    companyBlueprints.set(company.id, {
+    const requiredPoints = buildBlueprintResearchRequirements(blueprint);
+    const startedAt = Date.now();
+    const activeProject: CompanyBlueprintState = {
+      id: randomUUID(),
+      companyId: company.id,
       blueprintId: normalizedBlueprintId,
+      startedByUserId: String(userId),
       status: "in_progress",
+      projectStatus: "active",
       progressHours: 0,
-      startedAt: Date.now(),
-    });
+      requiredPoints,
+      currentPoints: createEmptyBlueprintResearchPoints(),
+      lastContribution: createEmptyBlueprintResearchPoints(),
+      participantUserIds: [String(userId)],
+      tickSeconds: BLUEPRINT_RESEARCH_TICK_SECONDS,
+      estimatedFinishAt: null,
+      lastTickAt: startedAt,
+      lastNotifiedStatus: "in_progress",
+      startedAt,
+    };
+    companyBlueprints.set(company.id, activeProject);
+    await syncCompanyBlueprintResearchProject(company);
+    await notifyCompanyBlueprintResearchStarted(company, blueprint, activeProject.participantUserIds ?? []);
 
     const gadgetWear = await applyGadgetWear(userId, {
       cause: "blueprint_development",
       qualityHint: Number(blueprint.time || 1) > 18 ? 0.95 : 1,
     });
     res.json({
-      ...companyBlueprints.get(company.id),
+      ...(await buildBlueprintResearchApiView(company, companyBlueprints.get(company.id))),
       ceoAdvancedPersonality: ceoAdvanced,
       gadgetWear: gadgetWear.report,
     });
@@ -3932,58 +4568,55 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (error: any) {
       return res.status(403).json({ error: error?.message || "Blueprints are disabled by admin settings" });
     }
-    const { userId, hours = 24 } = req.body ?? {};
+    const { userId } = req.body ?? {};
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
-    if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can progress blueprint" });
-    const ceoUser = await storage.getUser(company.ownerId);
-    const ceoAdvanced = ceoUser ? getAdvancedPersonalityId(ceoUser) : null;
-
-    const state = companyBlueprints.get(company.id);
+    const membership = await storage.getMemberByUserId(company.id, String(userId || ""));
+    if (!membership) return res.status(403).json({ error: "Only company members can view blueprint progress" });
+    const state = await syncCompanyBlueprintResearchProject(company);
     if (!state) return res.status(400).json({ error: "No active blueprint" });
-
-    if (isTutorialCompany(company)) {
-      const synced = await syncTutorialBlueprintState(company, state);
-      const gadgetWear = await applyGadgetWear(String(userId || company.ownerId), {
-        cause: "blueprint_development",
-      });
-      return res.json({ ...synced, gadgetWear: gadgetWear.report });
-    }
-
-    const blueprint = GADGET_BLUEPRINTS.find((b) => b.id === state.blueprintId);
-    if (!blueprint) return res.status(404).json({ error: "Blueprint not found" });
-
-    const settings = await getGameSettings();
-    const winnerBoost = getWinnerBoostForCompany(company.id);
-    const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(company);
-    const speedMultiplier = Math.max(
-      0.1,
-      settings.multipliers.productionSpeedMultiplier
-        * Number(winnerBoost && "productionSpeedMultiplier" in winnerBoost ? winnerBoost.productionSpeedMultiplier : 1),
-    );
-    const productionModifier = getGlobalEventModifier({
-      type: "production_modifier",
-      target: String(blueprint.category || "all"),
-      city: company.city,
-    });
-    const engineerMultiplier = ceoAdvanced === "engineer" ? 1.15 : 1;
-    state.progressHours += Number(hours) * speedMultiplier * Math.max(0.1, 1 + productionModifier) * engineerMultiplier * departmentEffects.blueprintSpeedMultiplier;
-    if (state.progressHours >= blueprint.time) {
-      state.status = "production_ready";
-      state.completedAt = Date.now();
-      const updated = await storage.updateCompany(company.id, { ork: company.ork + 1 });
-      const gadgetWear = await applyGadgetWear(String(userId), {
-        cause: "blueprint_development",
-        qualityHint: Number(hours || 1) / Math.max(1, Number(blueprint.time || 1)),
-      });
-      return res.json({ ...state, company: updated, gadgetWear: gadgetWear.report });
-    }
-
     const gadgetWear = await applyGadgetWear(String(userId), {
       cause: "blueprint_development",
-      qualityHint: Number(hours || 1) / Math.max(1, Number(blueprint.time || 1)),
+      qualityHint: 1,
     });
-    return res.json({ ...state, gadgetWear: gadgetWear.report });
+    return res.json({ ...(await buildBlueprintResearchApiView(company, state)), gadgetWear: gadgetWear.report });
+  });
+
+  app.post("/api/companies/:id/blueprints/join", async (req, res) => {
+    try {
+      await assertFeatureEnabled("blueprints", "Blueprints are disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Blueprints are disabled by admin settings" });
+    }
+    try {
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      const userId = String(req.body?.userId || "");
+      if (!userId) return res.status(400).json({ error: "userId is required" });
+      const membership = await storage.getMemberByUserId(company.id, userId);
+      if (!membership) return res.status(403).json({ error: "Только сотрудники компании могут присоединиться к разработке" });
+      await assertBlueprintResearchAvailability(userId, company.id);
+      const state = await syncCompanyBlueprintResearchProject(company);
+      if (!state || state.status !== "in_progress" || state.projectStatus !== "active") {
+        return res.status(400).json({ error: "Сейчас нет активной разработки" });
+      }
+      const participantIds = new Set([...(state.participantUserIds ?? []), company.ownerId]);
+      if (participantIds.has(userId)) {
+        return res.json({ ok: true, alreadyJoined: true, project: await buildBlueprintResearchApiView(company, state) });
+      }
+      participantIds.add(userId);
+      state.participantUserIds = Array.from(participantIds);
+      state.lastTickAt = Math.min(Date.now(), Number(state.lastTickAt || Date.now()));
+      companyBlueprints.set(company.id, state);
+      const synced = await syncCompanyBlueprintResearchProject(company);
+      res.json({
+        ok: true,
+        alreadyJoined: false,
+        project: await buildBlueprintResearchApiView(company, synced),
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to join blueprint research" });
+    }
   });
 
   app.post("/api/companies/:id/produce", async (req, res) => {
@@ -4794,6 +5427,101 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.sendStatus(200);
     } catch (e) {
       res.status(500).send("Failed to reset database");
+    }
+  });
+
+  app.get("/api/admin/companies/gadget-catalog", async (req, res) => {
+    if (!assertAdminRequest(req, res)) return;
+    const catalog = GADGET_BLUEPRINTS.map((blueprint) => ({
+      id: blueprint.id,
+      name: blueprint.name,
+      category: blueprint.category,
+      costGram: blueprint.production.costGram,
+      stats: blueprint.baseStats,
+    }));
+    res.json(catalog);
+  });
+
+  app.post("/api/admin/companies/:id/grant-gadget", async (req, res) => {
+    if (!assertAdminRequest(req, res)) return;
+    try {
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+
+      const blueprintId = String(req.body?.blueprintId || "").trim();
+      const quantity = Math.max(1, Math.floor(Number(req.body?.quantity || 0)));
+      if (!blueprintId) return res.status(400).json({ error: "blueprintId is required" });
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        return res.status(400).json({ error: "quantity must be greater than 0" });
+      }
+
+      const blueprint = GADGET_BLUEPRINTS.find((item) => item.id === blueprintId);
+      if (!blueprint) return res.status(404).json({ error: "Blueprint not found" });
+
+      const companyEmoji = getLeadingCompanyEmoji(company.name);
+      const displayName = companyEmoji ? buildCompanyDisplayName(blueprint.name, companyEmoji) : blueprint.name;
+      const basePrice = Math.max(100, blueprint.production.costGram * 10);
+      const gadgetCondition = createGadgetConditionProfile({
+        rarity: "Common",
+        quality: 1,
+        testing: 0,
+        attention: 0,
+      });
+
+      const produced = companyGadgets.get(company.id) ?? [];
+  for (let index = 0; index < quantity; index += 1) {
+        produced.push({
+          id: randomUUID(),
+          blueprintId: blueprint.id,
+          companyId: company.id,
+          name: displayName,
+          title: blueprint.title,
+          baseName: blueprint.name,
+          category: blueprint.category,
+          branch: blueprint.branch,
+          generation: blueprint.generation,
+          rarity: blueprint.rarity,
+          requiredLevel: blueprint.requiredLevel,
+          description: blueprint.description,
+          stats: Object.fromEntries(
+            Object.entries(blueprint.baseStats).map(([key, value]) => [key, Number(Number(value || 0).toFixed(2))]),
+          ),
+          companyEmoji: companyEmoji || null,
+          isCompanyMade: true,
+          quality: Number(blueprint.quality ?? 1),
+          wear: 0,
+          wearRate: Number(blueprint.wearRate ?? 1),
+          repairCost: Number(blueprint.repairCost ?? 0),
+          basePrice: Number(blueprint.basePrice ?? basePrice),
+          productionCostGrm: Number(blueprint.productionCostGrm ?? blueprint.production.costGram ?? 0),
+          auctionMinPrice: Number(blueprint.auctionMinPrice ?? Math.round(basePrice * 0.9)),
+          auctionMaxPrice: Number(blueprint.auctionMaxPrice ?? Math.round(basePrice * 1.4)),
+          productionPartsRequirement: { ...(blueprint.productionPartsRequirement || blueprint.production.parts || {}) },
+          pvpRoundBonus: blueprint.pvpRoundBonus ?? null,
+          specialEffect: blueprint.specialEffect ?? null,
+          hashPower: blueprint.hashPower,
+          incomePerCycle: blueprint.incomePerCycle,
+          powerCostPerCycle: blueprint.powerCostPerCycle,
+          minPrice: Number(blueprint.auctionMinPrice ?? Math.round(basePrice * 0.9)),
+          maxPrice: Number(blueprint.auctionMaxPrice ?? Math.round(basePrice * 1.4)),
+          ...gadgetCondition,
+          producedAt: Date.now(),
+          isExclusive: false,
+          exclusiveLevel: 0,
+        });
+      }
+      companyGadgets.set(company.id, produced);
+
+      res.json({
+        ok: true,
+        companyId: company.id,
+        companyName: company.name,
+        blueprintId: blueprint.id,
+        gadgetName: displayName,
+        quantity,
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to add company gadget" });
     }
   });
 
