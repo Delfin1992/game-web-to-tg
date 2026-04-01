@@ -17,7 +17,7 @@ export {
   unbindTelegramByTelegramId,
   unbindTelegramByUserId,
 } from "./telegram-bindings";
-import { insertMessageSchema, insertUserSchema } from "../shared/schema";
+import { insertMessageSchema, insertUserSchema, type Company } from "../shared/schema";
 import {
   countRegistrationSkillPoints,
   isValidRegistrationSkillsAllocation,
@@ -37,8 +37,21 @@ import {
   SHOP_ITEMS,
   spendGram,
 } from "./game-engine";
-import { companyBlueprintWarehouseByCompanyId, companyWarehousePartsByCompanyId } from "./telegram/state";
-import { ALL_PARTS, getPartPrice } from "../client/src/lib/parts";
+import {
+  companyBlueprintGlobalOwnerByBlueprintId,
+  companyBlueprintWarehouseByCompanyId,
+  companyWarehousePartsByCompanyId,
+} from "./telegram/state";
+import {
+  ALL_PARTS,
+  getPartById,
+  getPartPrice,
+  normalizePartQuality,
+  rollRandomPartDrop,
+  resolvePartDefinition,
+  type PartQuality,
+  type PartType,
+} from "../client/src/lib/parts";
 import {
   COMPANY_MINING_DEFAULT_PLAN_ID,
   COMPANY_MINING_PLANS,
@@ -78,6 +91,8 @@ import {
   startTutorial,
 } from "./tutorial";
 import { assertFeatureEnabled, getGameSettings, updateGameSettings } from "./game-settings";
+import { appendEconomyAuditEvent } from "./economy-audit";
+import { canManageCompanyAssets, COMPANY_ASSET_MANAGER_ERROR } from "./company-security";
 import type { GameSettingsPatch } from "../shared/game-settings";
 import { BALANCE_CONFIG, getCompanyCreateCostLocal, getMarketFeeRate, resolveCityId } from "../shared/balance-config";
 import {
@@ -87,16 +102,19 @@ import {
   type HackathonSabotageType,
 } from "../shared/weekly-hackathon";
 import {
+  applyWeeklyHackathonRewards,
   applyWinnerRewardsToCompanies,
   contributeGrmToWeeklyHackathon,
   contributePartToWeeklyHackathon,
   contributeSkillToWeeklyHackathon,
   endWeeklyHackathon,
   formatWeeklyHackathonTop,
+  getHackathonRoundView,
   getWeeklyHackathonCompanyScore,
   getWeeklyHackathonPlayerStats,
   getWeeklyHackathonSabotageState,
   getWeeklyHackathonState,
+  joinPlayerToWeeklyHackathonTeam,
   launchWeeklyHackathonSabotage,
   resolveHackathonPoachOffer,
   getWinnerBoostForCompany,
@@ -105,6 +123,7 @@ import {
   resetWeeklyHackathon,
   startWeeklyHackathon,
   startWeeklyHackathonScheduler,
+  validateHackathonEligibility,
 } from "./weekly-hackathon";
 import {
   PLAYABLE_PROFESSIONS,
@@ -262,6 +281,9 @@ type ProducedGadget = {
   exclusiveBonusType?: "finance" | "xp" | "skills";
   exclusiveBonusValue?: number;
   exclusiveBonusLabel?: string;
+  acquisitionSource?: "auction" | "company_production" | "reward" | "other";
+  acquiredAt?: number;
+  lastAuctionPurchaseAt?: number | null;
 };
 
 const companyEmojiSegmenter = typeof Intl !== "undefined" && typeof Intl.Segmenter !== "undefined"
@@ -373,6 +395,7 @@ type MarketListing = {
   currentBid?: number;
   currentBidderId?: string;
   auctionEndsAt?: number;
+  auctionDurationHours?: number;
   minIncrement?: number;
   status: "active" | "sold" | "expired";
   salePrice?: number;
@@ -465,11 +488,123 @@ const EXCLUSIVE_PRODUCTION_BASE_SECONDS: Record<string, number> = {
 };
 
 function getCompanyWarehouseParts(companyId: string) {
-  return companyWarehousePartsByCompanyId.get(companyId) ?? [];
+  const current = companyWarehousePartsByCompanyId.get(companyId) ?? [];
+  const normalized = normalizeCompanyWarehouseParts(current);
+  if (normalized.changed) {
+    companyWarehousePartsByCompanyId.set(companyId, normalized.parts);
+  }
+  return normalized.parts;
 }
 
 function setCompanyWarehouseParts(companyId: string, parts: any[]) {
-  companyWarehousePartsByCompanyId.set(companyId, parts);
+  companyWarehousePartsByCompanyId.set(companyId, normalizeCompanyWarehouseParts(parts).parts);
+}
+
+type NormalizedCompanyWarehousePart = {
+  id: string;
+  name: string;
+  title: string;
+  type: PartType;
+  partType: PartType;
+  rarity: PartQuality;
+  quality: PartQuality;
+  deviceCategory: string;
+  gadgetCategory: string;
+  quantity: number;
+};
+
+function normalizeCompanyWarehousePart(item: any): NormalizedCompanyWarehousePart | null {
+  const definition = resolvePartDefinition({
+    id: item?.id,
+    type: item?.type,
+    partType: item?.partType,
+    rarity: item?.rarity,
+    quality: item?.quality,
+    deviceCategory: item?.deviceCategory,
+  });
+  if (!definition) return null;
+  const quantity = Math.max(1, Number(item?.quantity || 1));
+  return {
+    id: definition.id,
+    name: definition.name,
+    title: definition.title,
+    type: definition.type,
+    partType: definition.partType,
+    rarity: definition.quality,
+    quality: definition.quality,
+    deviceCategory: definition.deviceCategory,
+    gadgetCategory: definition.gadgetCategory,
+    quantity,
+  };
+}
+
+function normalizeCompanyWarehouseParts(parts: any[]) {
+  const normalized: NormalizedCompanyWarehousePart[] = [];
+  let changed = false;
+  for (const item of Array.isArray(parts) ? parts : []) {
+    const nextItem = normalizeCompanyWarehousePart(item);
+    if (!nextItem) {
+      changed = true;
+      continue;
+    }
+    if (
+      String(item?.id || "") !== nextItem.id
+      || String(item?.rarity || "") !== nextItem.rarity
+      || String(item?.quality || "") !== nextItem.quality
+      || String(item?.type || "") !== nextItem.type
+      || String(item?.deviceCategory || "") !== nextItem.deviceCategory
+      || String(item?.gadgetCategory || "") !== nextItem.gadgetCategory
+      || String(item?.name || "") !== nextItem.name
+    ) {
+      changed = true;
+    }
+    const existing = normalized.find((entry) => entry.id === nextItem.id);
+    if (existing) {
+      existing.quantity += nextItem.quantity;
+      changed = true;
+      continue;
+    }
+    normalized.push(nextItem);
+  }
+  return { parts: normalized, changed };
+}
+
+function normalizeSelectedWarehousePart(part: any, fallbackType?: string) {
+  const definition = resolvePartDefinition({
+    id: part?.id,
+    type: part?.type ?? fallbackType,
+    partType: part?.partType,
+    rarity: part?.rarity,
+    quality: part?.quality,
+    deviceCategory: part?.deviceCategory,
+  });
+  if (!definition) return null;
+  return {
+    id: definition.id,
+    name: definition.name,
+    title: definition.title,
+    type: definition.type,
+    partType: definition.partType,
+    rarity: definition.quality,
+    quality: definition.quality,
+    deviceCategory: definition.deviceCategory,
+    gadgetCategory: definition.gadgetCategory,
+  };
+}
+
+function getBlueprintRecipeRequirements(blueprint: { productionRecipe?: Array<{ partType: string; quality: string; quantity: number }>; production?: { parts?: Record<string, number> } }) {
+  if (Array.isArray(blueprint.productionRecipe) && blueprint.productionRecipe.length) {
+    return blueprint.productionRecipe.map((item) => ({
+      partType: String(item.partType) as PartType,
+      quality: normalizePartQuality(item.quality) as PartQuality,
+      quantity: Math.max(1, Number(item.quantity || 1)),
+    }));
+  }
+  return Object.entries(blueprint.production?.parts ?? {}).map(([partType, quantity]) => ({
+    partType: String(partType) as PartType,
+    quality: "Common" as PartQuality,
+    quantity: Math.max(1, Number(quantity || 1)),
+  }));
 }
 
 function storeCompanyBlueprintForCompany(companyId: string, blueprintId: string) {
@@ -478,6 +613,25 @@ function storeCompanyBlueprintForCompany(companyId: string, blueprintId: string)
   const current = companyBlueprintWarehouseByCompanyId.get(companyId) ?? new Set<string>();
   current.add(normalizedId);
   companyBlueprintWarehouseByCompanyId.set(companyId, current);
+}
+
+function rememberGlobalBlueprintOwner(company: Company, blueprintId: string) {
+  const normalizedId = String(blueprintId || "").trim();
+  if (!normalizedId) return null;
+  const current = companyBlueprintGlobalOwnerByBlueprintId.get(normalizedId);
+  if (current?.companyId) return current;
+  const companyEmoji = getLeadingCompanyEmoji(company.name);
+  const owner = {
+    companyId: company.id,
+    companyName: company.name,
+    companyEmoji: companyEmoji || null,
+  };
+  companyBlueprintGlobalOwnerByBlueprintId.set(normalizedId, owner);
+  return owner;
+}
+
+function getGlobalBlueprintOwner(blueprintId: string) {
+  return companyBlueprintGlobalOwnerByBlueprintId.get(String(blueprintId || "").trim()) ?? null;
 }
 
 function removeCompanyWarehousePartForMarket(companyId: string, ref: string) {
@@ -490,8 +644,8 @@ function removeCompanyWarehousePartForMarket(companyId: string, ref: string) {
   const available = Math.max(1, Number(item?.quantity || 1));
   const removed = {
     id: partId,
-    name: String(item?.name || ALL_PARTS[partId as keyof typeof ALL_PARTS]?.name || partId),
-    type: String(item?.type || ALL_PARTS[partId as keyof typeof ALL_PARTS]?.type || "unknown"),
+    name: String(item?.name || getPartById(partId)?.name || partId),
+    type: String(item?.type || getPartById(partId)?.type || "unknown"),
     rarity: String(item?.rarity || rarity),
     quantity: 1,
   };
@@ -517,8 +671,13 @@ function restoreCompanyWarehousePartFromMarket(
     next.push({
       id: part.id,
       name: part.name,
-      type: part.type,
-      rarity: part.rarity,
+      title: String(getPartById(part.id)?.title || part.name),
+      type: part.type as PartType,
+      partType: part.type as PartType,
+      rarity: part.rarity as PartQuality,
+      quality: part.rarity as PartQuality,
+      deviceCategory: String(getPartById(part.id)?.deviceCategory || ""),
+      gadgetCategory: String(getPartById(part.id)?.gadgetCategory || ""),
       quantity: Math.max(1, Number(part.quantity || 1)),
     });
   }
@@ -526,7 +685,7 @@ function restoreCompanyWarehousePartFromMarket(
 }
 
 function buildPlayerInventoryPartFromMarket(part: { id: string; name: string; rarity: string; type: string }) {
-  const partDef = ALL_PARTS[part.id as keyof typeof ALL_PARTS];
+  const partDef = getPartById(part.id);
   return {
     id: part.id,
     name: part.name,
@@ -544,10 +703,10 @@ function buildCompanyWarehouseUnitRefs(
   const parts = getCompanyWarehouseParts(companyId);
   const refs: Array<{ ref: string; id: string; rarity: string; type: string }> = [];
   for (const item of parts) {
-    const itemType = String(item?.type || ALL_PARTS[item?.id as keyof typeof ALL_PARTS]?.type || "");
+    const itemType = String(item?.type || getPartById(item?.id)?.type || "");
     if (requiredPartType && itemType !== requiredPartType) continue;
     const quantity = Math.max(1, Number(item?.quantity || 1));
-    const rarity = String(item?.rarity || ALL_PARTS[item?.id as keyof typeof ALL_PARTS]?.rarity || "Common");
+    const rarity = String(item?.rarity || getPartById(item?.id)?.rarity || "Common");
     const id = String(item?.id || "");
     for (let unitIndex = 0; unitIndex < quantity; unitIndex += 1) {
       refs.push({
@@ -753,6 +912,24 @@ async function sendTelegramBotText(chatId: number, text: string, replyMarkup?: R
   }
 }
 
+function formatMarketAmount(value: number) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) return "0";
+  const sign = amount < 0 ? "-" : "";
+  const abs = Math.abs(amount);
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(2).replace(".", ",")}m`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(2).replace(".", ",")}k`;
+  if (Number.isInteger(abs)) return `${sign}${abs}`;
+  return `${sign}${abs.toFixed(2).replace(".", ",")}`;
+}
+
+function formatAuctionLotTitle(listing: MarketListing) {
+  if (listing.listingKind === "part") {
+    return String(listing.partName || ALL_PARTS[String(listing.partId || "") as keyof typeof ALL_PARTS]?.name || "Запчасть");
+  }
+  return String(listing.gadgetId || "гаджет");
+}
+
 async function notifyCompanyBlueprintResearchStarted(company: any, blueprint: any, participantUserIds: string[]) {
   const members = await storage.getCompanyMembers(company.id);
   for (const member of members) {
@@ -791,6 +968,20 @@ async function notifyCompanyBlueprintResearchCompleted(company: any, state: Comp
       ].join("\n"),
     );
   }
+
+  const users = await storage.getUsers();
+  const announcement = [
+    "📣 НОВЫЙ ЧЕРТЁЖ В МИРЕ ИГРЫ",
+    "━━━━━━━━━━━━━━",
+    `Разработан гаджет: ${String((blueprint?.name ?? state.blueprintId) || "Новый гаджет").trim()}`,
+    `Компания: ${String(company.name || "").trim()}`,
+  ].join("\n");
+  for (const user of users) {
+    if (notified.has(user.id) || isPvpBotUsername(user.username)) continue;
+    const telegramId = Number(getTelegramIdByUserId(user.id) || 0);
+    if (!telegramId) continue;
+    await sendTelegramBotText(telegramId, announcement);
+  }
 }
 
 async function computeBlueprintResearchTick(company: any, state: CompanyBlueprintState) {
@@ -800,6 +991,8 @@ async function computeBlueprintResearchTick(company: any, state: CompanyBlueprin
   const memberIds = new Set(members.map((member) => member.userId));
   const activeParticipants = Array.from(new Set([company.ownerId, ...(state.participantUserIds ?? [])])).filter((userId) => memberIds.has(userId));
   const synergy = getBlueprintResearchSynergyMultiplier(activeParticipants.length);
+  const winnerBoost = getWinnerBoostForCompany(company.id);
+  const winnerResearchMultiplier = typeof winnerBoost?.researchSpeedMultiplier === "number" ? winnerBoost.researchSpeedMultiplier : 1;
   const next = createEmptyBlueprintResearchPoints();
 
   for (const userId of activeParticipants) {
@@ -822,7 +1015,7 @@ async function computeBlueprintResearchTick(company: any, state: CompanyBlueprin
   }
 
   for (const skill of BLUEPRINT_RESEARCH_SKILLS) {
-    next[skill] = Number((Math.max(0, Number(next[skill] ?? 0)) * synergy).toFixed(2));
+    next[skill] = Number((Math.max(0, Number(next[skill] ?? 0)) * synergy * winnerResearchMultiplier).toFixed(2));
   }
 
   return {
@@ -885,6 +1078,7 @@ async function syncCompanyBlueprintResearchProject(company: any) {
       state.completedAt = Date.now();
       state.estimatedFinishAt = Date.now();
       storeCompanyBlueprintForCompany(company.id, state.blueprintId);
+      rememberGlobalBlueprintOwner(company, state.blueprintId);
       await storage.updateCompany(company.id, { ork: Number(company.ork || 0) + 1 });
       if (state.lastNotifiedStatus !== "production_ready") {
         await notifyCompanyBlueprintResearchCompleted(company, state, blueprint);
@@ -1436,12 +1630,12 @@ function pickWeighted<T extends string>(weights: Record<T, number>): T {
 
 function getMiningRarityWeights(companyLevel: number) {
   const level = Math.max(1, Math.floor(Number(companyLevel) || 1));
-  const bonusTier = Math.floor((level - 1) / 2);
-  const common = Math.max(40, 70 - bonusTier * 2);
-  const rare = 22 + bonusTier * 1.4;
-  const epic = 7 + bonusTier * 0.5;
-  const legendary = 1 + bonusTier * 0.1;
-  return { Common: common, Rare: rare, Epic: epic, Legendary: legendary };
+  const bonusTier = Math.floor((level - 1) / 3);
+  const common = Math.max(58, 78 - bonusTier * 2);
+  const uncommon = 18 + bonusTier * 1.5;
+  const rare = 4 + bonusTier * 0.35;
+  const epic = 0;
+  return { Common: common, Uncommon: uncommon, Rare: rare, Epic: epic };
 }
 
 function rollCompanyMiningReward(companyLevel: number, planId: CompanyMiningPlanId): CompanyMiningRewardView {
@@ -1724,15 +1918,31 @@ function buildPlayerInventoryGadgetFromProduced(gadget: ProducedGadget) {
     exclusiveBonusType: gadget.exclusiveBonusType,
     exclusiveBonusValue: gadget.exclusiveBonusValue,
     exclusiveBonusLabel: gadget.exclusiveBonusLabel,
+    acquisitionSource: gadget.acquisitionSource ?? "company_production",
+    acquiredAt: Number(gadget.acquiredAt || gadget.producedAt || Date.now()),
+    lastAuctionPurchaseAt: Number(gadget.lastAuctionPurchaseAt || 0) || null,
   };
 }
 
-async function transferProducedGadgetToPlayerInventory(userId: string, gadget: ProducedGadget | null) {
+async function transferProducedGadgetToPlayerInventory(
+  userId: string,
+  gadget: ProducedGadget | null,
+  acquisition?: {
+    acquisitionSource?: "auction" | "company_production" | "reward" | "other";
+    acquiredAt?: number;
+    lastAuctionPurchaseAt?: number | null;
+  },
+) {
   if (!gadget) return null;
   const snapshot = await getUserWithGameState(userId);
   if (!snapshot) return null;
   const inventory = Array.isArray((snapshot.game as any)?.inventory) ? [...((snapshot.game as any).inventory)] : [];
-  inventory.unshift(buildPlayerInventoryGadgetFromProduced(gadget));
+  inventory.unshift({
+    ...buildPlayerInventoryGadgetFromProduced(gadget),
+    acquisitionSource: acquisition?.acquisitionSource ?? gadget.acquisitionSource ?? "company_production",
+    acquiredAt: Number(acquisition?.acquiredAt || gadget.acquiredAt || gadget.producedAt || Date.now()),
+    lastAuctionPurchaseAt: Number(acquisition?.lastAuctionPurchaseAt || gadget.lastAuctionPurchaseAt || 0) || null,
+  });
   applyGameStatePatch(userId, { inventory });
   return gadget;
 }
@@ -1758,9 +1968,74 @@ async function transferMarketPartToPlayerInventory(
   return part;
 }
 
+function rollPvpRewardPart(input: { isWinner: boolean; isDraw: boolean }) {
+  if (input.isDraw) return null;
+  if (input.isWinner) {
+    const epic = rollRandomPartDrop(1, { allowedQualities: ["Epic"] });
+    if (epic) return epic;
+    const rare = rollRandomPartDrop(1.5, { allowedQualities: ["Rare"] });
+    return rare;
+  }
+  const uncommon = rollRandomPartDrop(5, { allowedQualities: ["Uncommon"] });
+  if (uncommon) return uncommon;
+  const common = rollRandomPartDrop(10, { allowedQualities: ["Common"] });
+  return common;
+}
+
 function isLeadershipRole(role: string | null | undefined) {
   const normalized = String(role || "").toLowerCase();
   return normalized === "owner" || normalized === "manager" || normalized === "cto";
+}
+
+async function resolveCompanyActorRole(companyId: string, userId: string) {
+  const membership = await storage.getMemberByUserId(companyId, userId);
+  return membership?.role ?? null;
+}
+
+async function requireCompanyAssetManagerAccess(input: {
+  company: Company;
+  userId: string;
+  action: string;
+}) {
+  const role = await resolveCompanyActorRole(input.company.id, input.userId);
+  const allowed = canManageCompanyAssets({
+    actorUserId: input.userId,
+    companyOwnerId: input.company.ownerId,
+    role,
+  });
+  if (!allowed) {
+    appendEconomyAuditEvent({
+      eventType: "COMPANY_ASSET_ACTION_DENIED",
+      userId: input.userId,
+      companyId: input.company.id,
+      targetId: input.action,
+      status: "blocked",
+      reason: COMPANY_ASSET_MANAGER_ERROR,
+      metadata: { action: input.action, role: role || null },
+    });
+    throw new Error(COMPANY_ASSET_MANAGER_ERROR);
+  }
+  return { role };
+}
+
+const AUCTION_GADGET_RELIST_BLOCK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getAuctionRelistBlockMessage() {
+  return "Этот гаджет нельзя перепродать в течение 7 дней после покупки на аукционе.";
+}
+
+function getRemainingAuctionRelistMs(gadget: Partial<ProducedGadget> | null | undefined) {
+  const lastAuctionPurchaseAt = Number(gadget?.lastAuctionPurchaseAt || 0);
+  if (!lastAuctionPurchaseAt) return 0;
+  return Math.max(0, lastAuctionPurchaseAt + AUCTION_GADGET_RELIST_BLOCK_MS - Date.now());
+}
+
+function canRelistAuctionPurchasedGadget(gadget: Partial<ProducedGadget> | null | undefined) {
+  const source = String(gadget?.acquisitionSource || "").trim().toLowerCase();
+  if (source !== "auction") return true;
+  const lastAuctionPurchaseAt = Number(gadget?.lastAuctionPurchaseAt || 0);
+  if (!lastAuctionPurchaseAt) return true;
+  return Date.now() - lastAuctionPurchaseAt >= AUCTION_GADGET_RELIST_BLOCK_MS;
 }
 
 function isTutorialCompany(company: any) {
@@ -1979,6 +2254,9 @@ function buildProducedGadgetsFromOrder(input: {
       producedAt: Date.now(),
       isCompanyMade: true,
       isExclusive: input.order.isExclusive,
+      acquisitionSource: "company_production",
+      acquiredAt: Date.now(),
+      lastAuctionPurchaseAt: null,
       exclusiveLevel: Math.max(0, Number(input.order.exclusiveLevel || 0)),
       exclusiveBonusType: input.order.exclusiveBonusType,
       exclusiveBonusValue: input.order.exclusiveBonusValue,
@@ -2147,6 +2425,9 @@ async function settleExpiredAuctions() {
     }
     await storage.updateUser(buyer.id, { balance: buyer.balance - listing.currentBid });
     await storage.updateCompany(company.id, { balance: company.balance + netIncome });
+    const soldGadget = listing.listingKind === "gadget"
+      ? removeProducedGadget(listing.companyId, String(listing.gadgetId || ""))
+      : null;
     if (listing.listingKind === "part") {
       await transferMarketPartToPlayerInventory(buyer.id, listing.partId ? {
         id: listing.partId,
@@ -2157,25 +2438,112 @@ async function settleExpiredAuctions() {
     } else {
       await transferProducedGadgetToPlayerInventory(
         buyer.id,
-        removeProducedGadget(listing.companyId, String(listing.gadgetId || "")),
+        soldGadget,
+        {
+          acquisitionSource: "auction",
+          acquiredAt: Date.now(),
+          lastAuctionPurchaseAt: Date.now(),
+        },
       );
+      appendEconomyAuditEvent({
+        eventType: "MARKET_GADGET_PURCHASED",
+        userId: buyer.id,
+        companyId: company.id,
+        targetId: String(soldGadget?.id || listing.gadgetId || ""),
+        amount: Number(listing.currentBid || 0),
+        status: "success",
+        metadata: {
+          sellerUserId: listing.sellerUserId,
+          saleType: "auction",
+          listingId: listing.id,
+        },
+      });
     }
 
     listing.status = "sold";
     listing.sold = true;
     listing.salePrice = listing.currentBid;
+
+    const buyerTelegramId = Number(getTelegramIdByUserId(buyer.id) || 0);
+    if (buyerTelegramId) {
+      await sendTelegramBotText(
+        buyerTelegramId,
+        [
+          `🏆 Аукцион завершён: ты выиграл лот`,
+          `Лот: ${listing.listingKind === "gadget" ? String(soldGadget?.name || "Гаджет") : String(listing.partName || "Запчасть")}`,
+          `Списано: ${formatMarketAmount(Number(listing.currentBid || 0))} GRM`,
+          listing.listingKind === "gadget"
+            ? "Гаджет уже добавлен в твой инвентарь."
+            : "Запчасть уже добавлена в твой инвентарь.",
+        ].join("\n"),
+      );
+    }
+
+    const sellerTelegramId = Number(getTelegramIdByUserId(company.ownerId) || 0);
+    if (sellerTelegramId) {
+      await sendTelegramBotText(
+        sellerTelegramId,
+        [
+          `✅ Аукцион компании завершён`,
+          `Лот продан за ${formatMarketAmount(Number(listing.currentBid || 0))} GRM`,
+          `Компания получила: ${formatMarketAmount(netIncome)} GRM`,
+        ].join("\n"),
+      );
+    }
   }
 }
 
 const LEVEL_REQUIREMENTS = BALANCE_CONFIG.company.levelRequirements;
 
 async function applyHackathonRewards() {
-  await applyWinnerRewardsToCompanies(async (companyId, addGrm) => {
-    const company = await storage.getCompany(companyId);
-    if (!company) return;
-    await storage.updateCompany(company.id, {
-      balance: Number(company.balance || 0) + Math.max(0, Math.floor(addGrm || 0)),
-    });
+  await applyWeeklyHackathonRewards({
+    updateCompanyBalance: async (companyId, addGrm) => {
+      const company = await storage.getCompany(companyId);
+      if (!company) return;
+      await storage.updateCompany(company.id, {
+        balance: Number(company.balance || 0) + Math.max(0, Math.floor(addGrm || 0)),
+      });
+    },
+    addCompanyPart: async (companyId, quality) => {
+      const dropped = rollRandomPartDrop(100, { allowedQualities: [quality] });
+      if (!dropped) return;
+      const current = companyWarehousePartsByCompanyId.get(companyId) ?? [];
+      const next = [...current];
+      const existingIndex = next.findIndex((item: any) => String(item?.id || "") === dropped.id);
+      if (existingIndex >= 0) {
+        next[existingIndex] = {
+          ...next[existingIndex],
+          quantity: Math.max(1, Number(next[existingIndex]?.quantity || 1)) + 1,
+        };
+      } else {
+        next.push({
+          id: dropped.id,
+          name: dropped.title,
+          rarity: dropped.rarity,
+          quantity: 1,
+          type: "part",
+          partType: dropped.partType,
+          deviceCategory: dropped.deviceCategory,
+        });
+      }
+      companyWarehousePartsByCompanyId.set(companyId, next);
+    },
+    updatePlayerGramBalance: async (userId, addGrm) => {
+      const snapshot = await getUserWithGameState(userId);
+      if (!snapshot) return;
+      const current = Number((snapshot.game as any)?.gramBalance || 0);
+      applyGameStatePatch(userId, { gramBalance: Number((current + Math.max(0, addGrm)).toFixed(2)) });
+    },
+    addPlayerPart: async (userId, quality) => {
+      const dropped = rollRandomPartDrop(100, { allowedQualities: [quality] });
+      if (!dropped) return;
+      await transferMarketPartToPlayerInventory(userId, {
+        id: dropped.id,
+        name: dropped.title,
+        rarity: dropped.rarity,
+        type: "part",
+      });
+    },
   });
 }
 
@@ -2184,6 +2552,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   startGlobalEventScheduler();
   startPvpTestBotLoop();
   startWeeklyHackathonScheduler({
+    resolvePlayerSnapshot: async (userId) => {
+      const snapshot = await getUserWithGameState(userId);
+      if (!snapshot) return null;
+      const companies = await storage.getAllCompanies();
+      let memberCreatedAt: number | null = null;
+      for (const company of companies) {
+        if (company.ownerId === userId) {
+          const ownerMember = await storage.getMemberByUserId(company.id, userId);
+          memberCreatedAt = Number(ownerMember?.createdAt || 0) || null;
+          break;
+        }
+        const member = await storage.getMemberByUserId(company.id, userId);
+        if (member) {
+          memberCreatedAt = Number(member.createdAt || 0) || null;
+          break;
+        }
+      }
+      const recentPvpLogs = await storage.getPvpDuelHistoryByUser(userId, 200);
+      const recentSinceSec = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+      return {
+        userId,
+        username: String(snapshot.user?.username || "Игрок"),
+        skills: { ...((snapshot.game as any)?.skills ?? {}) },
+        level: Number(snapshot.user?.level || 1),
+        membershipCreatedAt: memberCreatedAt,
+        totalPvpBattles: Number(snapshot.user?.pvpMatches || 0),
+        recentPvpBattles7d: recentPvpLogs.filter((row) => Number(row.createdAt || 0) >= recentSinceSec).length,
+      };
+    },
     onAutoEnd: async () => {
       await applyHackathonRewards();
     },
@@ -2200,6 +2597,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     })();
   }, BLUEPRINT_RESEARCH_TICK_SECONDS * 1000);
+
+  setInterval(() => {
+    void settleExpiredAuctions().catch((error) => {
+      console.warn("Failed to settle expired auctions:", error);
+    });
+  }, 15 * 1000);
 
   // вњ… Р Р•Р“РРЎРўР РђР¦РРЇ РџРћР›Р¬Р—РћР’РђРўР•Р›РЇ
   app.post("/api/register", async (req, res) => {
@@ -3277,12 +3680,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const myAfter = perspectiveA ? result.playerARatingAfter : result.playerBRatingAfter;
       const opponentName = perspectiveA ? result.playerBName : result.playerAName;
       const isWinner = result.winnerUserId === userId;
+      const isDraw = result.winnerUserId === null;
       const opponentIsBot = perspectiveA ? Boolean(result.playerBIsBot) : Boolean(result.playerAIsBot);
       const moneyReward = isWinner && opponentIsBot ? Math.max(0, Number(PVP_DUEL_CONFIG.reward.botWinMoney || 0)) : 0;
       const user = await storage.getUser(userId);
       if (moneyReward > 0 && user) {
         await storage.updateUser(user.id, { balance: Number(user.balance || 0) + moneyReward });
       }
+      const droppedPartDef = rollPvpRewardPart({ isWinner, isDraw });
+      const droppedPart = droppedPartDef
+        ? await transferMarketPartToPlayerInventory(userId, {
+            id: String(droppedPartDef.id),
+            name: String(droppedPartDef.name),
+            rarity: String(droppedPartDef.rarity),
+            type: String(droppedPartDef.partType || droppedPartDef.type || "unknown"),
+          })
+        : null;
       const gadgetWear = await applyGadgetWear(userId, {
         cause: "pvp",
         severityMultiplier: result.winnerUserId === null ? 1 : isWinner ? 1 : 1.08,
@@ -3298,7 +3711,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           rounds: result.rounds,
           winnerUserId: result.winnerUserId,
           isWinner,
-          isDraw: result.winnerUserId === null,
+          isDraw,
           ratingBefore: myBefore,
           ratingAfter: myAfter,
           ratingDelta: myAfter - myBefore,
@@ -3307,6 +3720,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           moneyReward,
           moneyRewardCurrency: getCurrencySymbol(user?.city || "Сан-Франциско"),
           energyCost: perspectiveA ? Number(result.energyCostA || 0) : Number(result.energyCostB || 0),
+          droppedPart,
           gadgetWear: gadgetWear.report,
         },
       });
@@ -3382,15 +3796,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({
       ...snapshot,
       topCompanies: formatWeeklyHackathonTop(10),
+      liveRound: getHackathonRoundView(),
       playerStats: userId && companyId ? getWeeklyHackathonPlayerStats(userId, companyId) : null,
       companyScore: companyId ? getWeeklyHackathonCompanyScore(companyId) : null,
       sabotage: getWeeklyHackathonSabotageState(companyId || undefined),
       config: {
         registrationCostGrm: WEEKLY_HACKATHON_CONFIG.registrationCostGrm,
-        contributionLimitPerDay: WEEKLY_HACKATHON_CONFIG.playerDailyContributionLimit,
-        playerPartLimit: WEEKLY_HACKATHON_CONFIG.playerPartLimit,
-        playerGrmLimit: WEEKLY_HACKATHON_CONFIG.playerGrmLimit,
-        grmPackages: WEEKLY_HACKATHON_CONFIG.grmPackages,
+        maxParticipantsPerCompany: WEEKLY_HACKATHON_CONFIG.maxParticipantsPerCompany,
+        registrationWindowMs: WEEKLY_HACKATHON_CONFIG.registrationWindowMs,
+        roundDurationMs: WEEKLY_HACKATHON_CONFIG.roundDurationMs,
+        tickMs: WEEKLY_HACKATHON_CONFIG.tickMs,
+        eligibility: WEEKLY_HACKATHON_CONFIG.eligibility,
       },
     });
   });
@@ -3415,18 +3831,53 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
 
       const rndLevel = Math.max(0, Math.floor(Number(company.ork || 0) / 100));
-      const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(company);
       const entry = registerCompanyForWeeklyHackathon({
         companyId: company.id,
         companyName: company.name,
         city: company.city,
         companyLevel: company.level,
         rndLevel,
-        securityLevel: Math.min(3, 1 + departmentEffects.sabotageSecurityBonus),
+        companyEmoji: null,
+        startedByUserId: userId,
       });
       res.json({ ok: true, entry, state: getWeeklyHackathonState() });
     } catch (error: any) {
       res.status(400).json({ error: error?.message || "Не удалось зарегистрировать компанию" });
+    }
+  });
+
+  app.post("/api/hackathon/join-team", async (req, res) => {
+    try {
+      const userId = String(req.body?.userId || "");
+      if (!userId) return res.status(400).json({ error: "userId обязателен" });
+      const membership = await resolvePlayerCompanyMembership(userId);
+      if (!membership) return res.status(400).json({ error: "Игрок не состоит в компании" });
+      const user = await storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: "Игрок не найден" });
+      const member = await storage.getMemberByUserId(membership.company.id, userId);
+      const recentPvpLogs = await storage.getPvpDuelHistoryByUser(userId, 200);
+      const recentSinceSec = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+      const eligibility = validateHackathonEligibility({
+        membershipCreatedAt: Number(member?.createdAt || 0) || null,
+        level: Number(user.level || 1),
+        totalPvpBattles: Number(user.pvpMatches || 0),
+        recentPvpBattles7d: recentPvpLogs.filter((row) => Number(row.createdAt || 0) >= recentSinceSec).length,
+      });
+      if (!eligibility.ok) {
+        return res.status(400).json({
+          error: eligibility.reasons[0] || "Игрок не проходит условия участия",
+          reasons: eligibility.reasons,
+          eligibility,
+        });
+      }
+      const joined = joinPlayerToWeeklyHackathonTeam({
+        userId,
+        username: String(user.username || "Игрок"),
+        companyId: membership.company.id,
+      });
+      res.json({ ok: true, joined, state: getWeeklyHackathonState() });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Не удалось записаться в состав" });
     }
   });
 
@@ -3963,7 +4414,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const userId = String(req.body?.userId || "");
       const gadgetId = String(req.body?.gadgetId || "");
       const seedPartsInput = Array.isArray(req.body?.seedParts) ? req.body.seedParts : [];
-      if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can preview exclusive upgrade" });
+      await requireCompanyAssetManagerAccess({ company, userId, action: "exclusive_preview" });
       if (!gadgetId) return res.status(400).json({ error: "Для EX-апгрейда сначала выберите базовый гаджет компании" });
       if (seedPartsInput.length !== EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
         return res.status(400).json({ error: `Для апгрейда нужно выбрать ровно ${EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей` });
@@ -4017,7 +4468,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const gadgetId = String(req.body?.gadgetId || "");
       const seedPartsInput = Array.isArray(req.body?.seedParts) ? req.body.seedParts : [];
       const selectedPartsCount = seedPartsInput.length;
-      if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can start exclusive gadget upgrade" });
+      await requireCompanyAssetManagerAccess({ company, userId, action: "exclusive_start" });
       if (!gadgetId) {
         return res.status(400).json({ error: "Для EX-апгрейда сначала выберите базовый гаджет компании" });
       }
@@ -4094,6 +4545,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       await storage.updateCompany(company.id, {
         balance: Number(company.balance || 0) - Number(blueprint.developmentCostGrm || 0),
+      });
+      await appendEconomyAuditEvent({
+        eventType: "COMPANY_FUNDS_SPENT",
+        userId: String(userId),
+        companyId: company.id,
+        amount: Number(blueprint.developmentCostGrm || 0),
+        status: "success",
+        reason: "exclusive_upgrade_start",
+        metadata: {
+          blueprintId: blueprint.id,
+          targetGadgetId: reservedTargetGadget?.id ?? null,
+        },
       });
 
       const project: ExclusiveProjectState = {
@@ -4220,6 +4683,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                   maxCondition: Number(gadget.maxCondition || 100),
                   reliability: Number(gadget.reliability ?? 1),
                   producedAt: Date.now(),
+                  acquisitionSource: "company_production",
+                  acquiredAt: Date.now(),
+                  lastAuctionPurchaseAt: null,
                   isExclusive: Number(gadget.exclusiveLevel || 0) > 0,
                   exclusiveLevel: Number(gadget.exclusiveLevel || 0),
                 });
@@ -4358,7 +4824,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const userId = String(req.body?.userId || "");
       const blueprintId = String(req.body?.blueprintId || "");
       const quantity = Math.max(1, Math.min(5, Math.floor(Number(req.body?.quantity || 1))));
-      if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can produce exclusive gadgets" });
+      await requireCompanyAssetManagerAccess({ company, userId, action: "exclusive_produce" });
       const activeOrder = syncCompanyProductionOrder(company.id);
       if (activeOrder) {
         return res.status(400).json({
@@ -4384,6 +4850,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (gramCost > 0) {
         await storage.updateCompany(company.id, {
           balance: Number(company.balance || 0) - gramCost,
+        });
+        await appendEconomyAuditEvent({
+          eventType: "COMPANY_FUNDS_SPENT",
+          userId: String(userId),
+          companyId: company.id,
+          amount: gramCost,
+          status: "success",
+          reason: "exclusive_production_start",
+          metadata: {
+            blueprintId: blueprint.id,
+            quantity: actualQuantity,
+          },
         });
       }
       const ceoUser = await storage.getUser(company.ownerId);
@@ -4462,7 +4940,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId, blueprintId } = req.body ?? {};
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
-    if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can start blueprint" });
+    await requireCompanyAssetManagerAccess({ company, userId, action: "blueprint_start" });
     const ceoUser = await storage.getUser(company.ownerId);
     const ceoAdvanced = ceoUser ? getAdvancedPersonalityId(ceoUser) : null;
 
@@ -4491,6 +4969,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ? (normalizedBlueprintId === TUTORIAL_DEMO_BLUEPRINT.id ? buildTutorialBlueprintView() : null)
       : GADGET_BLUEPRINTS.find((b) => b.id === normalizedBlueprintId);
     if (!blueprint) return res.status(404).json({ error: "Blueprint not found" });
+    const globalOwner = getGlobalBlueprintOwner(normalizedBlueprintId);
+    if (globalOwner && globalOwner.companyId !== company.id) {
+      return res.status(400).json({ error: `Этот чертёж уже разработан компанией ${globalOwner.companyName}` });
+    }
     const current = await syncCompanyBlueprintResearchProject(company);
     if (current && current.status === "in_progress") {
       return res.status(400).json({ error: "У компании уже идет активная разработка чертежа" });
@@ -4505,7 +4987,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         1,
         Math.round((Number(blueprint.production?.costGram || 1) * 25) * Math.max(0.1, settings.multipliers.blueprintCostMultiplier)),
       );
-      if (winnerBoost && "researchCostMultiplier" in winnerBoost) {
+      if (winnerBoost && typeof winnerBoost.researchCostMultiplier === "number") {
         blueprintCost = Math.max(1, Math.round(blueprintCost * winnerBoost.researchCostMultiplier));
       }
       const researchModifier = getGlobalEventModifier({
@@ -4525,7 +5007,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ error: `Недостаточно баланса компании для старта чертежа (${blueprintCost} GRM)` });
       }
       await storage.updateCompany(company.id, { balance: company.balance - blueprintCost });
-      // TODO: Persist blueprint development ledger/history for auditing economy changes.
+      await appendEconomyAuditEvent({
+        eventType: "COMPANY_FUNDS_SPENT",
+        userId: String(userId),
+        companyId: company.id,
+        amount: blueprintCost,
+        status: "success",
+        reason: "blueprint_research_start",
+        metadata: {
+          blueprintId: normalizedBlueprintId,
+        },
+      });
     }
     const requiredPoints = buildBlueprintResearchRequirements(blueprint);
     const startedAt = Date.now();
@@ -4628,7 +5120,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId, parts = [], quantity = 1 } = req.body ?? {};
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
-    if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can produce gadgets" });
+    await requireCompanyAssetManagerAccess({ company, userId, action: "production_start" });
     const activeOrder = syncCompanyProductionOrder(company.id);
     if (activeOrder) {
       return res.status(400).json({
@@ -4658,11 +5150,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       : GADGET_BLUEPRINTS.find((b) => b.id === state.blueprintId);
     if (!blueprint) return res.status(404).json({ error: "Blueprint not found" });
 
+    const normalizedSelectedParts = Array.isArray(parts)
+      ? parts
+          .map((part: any) => normalizeSelectedWarehousePart(part))
+          .filter((part): part is NonNullable<typeof part> => Boolean(part))
+      : [];
+
     if (!isTutorial) {
-      const reqParts = blueprint.production.parts;
-      for (const [partType, quantity] of Object.entries(reqParts)) {
-        const found = parts.filter((p: any) => p.type === partType).length;
-        if (found < quantity) return res.status(400).json({ error: `РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РґРµС‚Р°Р»РµР№ С‚РёРїР° ${partType}` });
+      const recipe = getBlueprintRecipeRequirements(blueprint);
+      const availability = new Map<string, number>();
+      for (const part of normalizedSelectedParts) {
+        const key = `${part.partType}:${part.quality}`;
+        availability.set(key, (availability.get(key) ?? 0) + 1);
+      }
+      for (const requirement of recipe) {
+        const key = `${requirement.partType}:${requirement.quality}`;
+        const found = availability.get(key) ?? 0;
+        if (found < requirement.quantity) {
+          return res.status(400).json({
+            error: `Недостаточно деталей ${requirement.partType} качества ${requirement.quality}: нужно ${requirement.quantity}, доступно ${found}`,
+          });
+        }
       }
     }
 
@@ -4699,13 +5207,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.updateCompany(company.id, {
         balance: companyBalanceAfterProduction,
       });
+      await appendEconomyAuditEvent({
+        eventType: "COMPANY_FUNDS_SPENT",
+        userId: String(userId),
+        companyId: company.id,
+        amount: productionGramCost,
+        status: "success",
+        reason: "standard_production_start",
+        metadata: {
+          blueprintId: blueprint.id,
+          quantity: actualQuantity,
+        },
+      });
     }
 
     const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(company);
     let quality = isTutorial
       ? 1
-      : parts.length
-      ? parts.reduce((sum: number, p: any) => sum + (RARITY_QUALITY_MULTIPLIERS[p.rarity as keyof typeof RARITY_QUALITY_MULTIPLIERS] ?? 1), 0) / parts.length
+      : normalizedSelectedParts.length
+      ? normalizedSelectedParts.reduce((sum: number, p: any) => sum + (RARITY_QUALITY_MULTIPLIERS[p.rarity as keyof typeof RARITY_QUALITY_MULTIPLIERS] ?? 1), 0) / normalizedSelectedParts.length
       : 1;
     quality *= 1 + departmentEffects.gadgetQualityBonus;
     quality *= 1 - getBatchQualityPenalty(actualQuantity);
@@ -4798,7 +5318,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
     const userId = String(req.body?.userId || "");
-    if (company.ownerId !== userId) return res.status(403).json({ error: "Only CEO can claim production" });
+    await requireCompanyAssetManagerAccess({ company, userId, action: "production_claim" });
 
     const order = syncCompanyProductionOrder(company.id);
     if (!order) return res.status(400).json({ error: "У компании нет активной производственной партии" });
@@ -4912,9 +5432,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId, gadgetId, partRef, price, mode = "fixed", durationHours = 2 } = req.body ?? {};
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
-    const membership = await storage.getMemberByUserId(company.id, userId);
-    const actorRole = company.ownerId === userId ? "owner" : membership?.role;
-    if (!isLeadershipRole(actorRole)) return res.status(403).json({ error: "Только руководящий состав может создавать лоты" });
+    const access = await requireCompanyAssetManagerAccess({ company, userId: String(userId || ""), action: "market_listing_create" });
     if (isTutorialCompany(company)) {
       return res.status(400).json({ error: "Tutorial company cannot list gadgets on market" });
     }
@@ -4923,15 +5441,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const gadget = gadgetId ? produced.find((g) => g.id === gadgetId) : null;
     const listedPart = partRef ? removeCompanyWarehousePartForMarket(company.id, String(partRef)) : null;
     if (!gadget && !listedPart) return res.status(404).json({ error: "Лот не найден на складе компании" });
+    if (gadget) {
+      appendEconomyAuditEvent({
+        eventType: "MARKET_GADGET_RELIST_ATTEMPT",
+        userId: String(userId || ""),
+        companyId: company.id,
+        targetId: gadget.id,
+        amount: Number(price || 0),
+        status: "success",
+        metadata: {
+          acquisitionSource: gadget.acquisitionSource ?? null,
+          lastAuctionPurchaseAt: gadget.lastAuctionPurchaseAt ?? null,
+        },
+      });
+      if (!canRelistAuctionPurchasedGadget(gadget)) {
+        appendEconomyAuditEvent({
+          eventType: "MARKET_GADGET_RELIST_BLOCKED",
+          userId: String(userId || ""),
+          companyId: company.id,
+          targetId: gadget.id,
+          amount: Number(price || 0),
+          status: "blocked",
+          reason: getAuctionRelistBlockMessage(),
+          metadata: {
+            acquisitionSource: gadget.acquisitionSource ?? null,
+            lastAuctionPurchaseAt: gadget.lastAuctionPurchaseAt ?? null,
+            remainingMs: getRemainingAuctionRelistMs(gadget),
+          },
+        });
+        return res.status(403).json({ error: getAuctionRelistBlockMessage() });
+      }
+    }
     // TODO: Apply dynamic gadget price bands when economy.dynamicGadgetPricesEnabled is wired to market analytics.
     if (mode !== "fixed" && mode !== "auction") {
       if (listedPart) restoreCompanyWarehousePartFromMarket(company.id, listedPart);
       return res.status(400).json({ error: "mode РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ fixed РёР»Рё auction" });
-    }
-
-    if (mode === "auction" && gadget && gadget.quality < 2) {
-      if (listedPart) restoreCompanyWarehousePartFromMarket(company.id, listedPart);
-      return res.status(400).json({ error: "РђСѓРєС†РёРѕРЅ РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ РґР»СЏ СЂРµРґРєРёС… РіР°РґР¶РµС‚РѕРІ (quality >= 2.0)" });
     }
 
     const minPrice = gadget
@@ -4966,6 +5510,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       currentBid: mode === "auction" ? price : undefined,
       currentBidderId: undefined,
       auctionEndsAt: mode === "auction" ? Date.now() + normalizedDuration * 60 * 60 * 1000 : undefined,
+      auctionDurationHours: mode === "auction" ? normalizedDuration : undefined,
       minIncrement: mode === "auction" ? Math.max(10, Math.floor(price * 0.05)) : undefined,
       status: "active",
       createdAt: Date.now(),
@@ -4973,6 +5518,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     };
 
     marketListings.unshift(listing);
+    appendEconomyAuditEvent({
+      eventType: "COMPANY_MARKET_LISTING_CREATED",
+      userId: String(userId || ""),
+      companyId: company.id,
+      targetId: listing.listingKind === "gadget" ? String(listing.gadgetId || "") : String(listing.partId || ""),
+      amount: Number(mode === "auction" ? listing.startingPrice || 0 : listing.price || 0),
+      status: "success",
+      metadata: {
+        listingId: listing.id,
+        listingKind: listing.listingKind,
+        saleType: listing.saleType,
+        role: access.role || null,
+      },
+    });
     res.json(listing);
   });
 
@@ -5056,10 +5615,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       : await transferProducedGadgetToPlayerInventory(
           buyerId,
           removeProducedGadget(listing.companyId, String(listing.gadgetId || "")),
+          {
+            acquisitionSource: "auction",
+            acquiredAt: Date.now(),
+            lastAuctionPurchaseAt: Date.now(),
+          },
         );
     listing.status = "sold";
     listing.sold = true;
     listing.salePrice = listing.price;
+    if (listing.listingKind === "gadget") {
+      appendEconomyAuditEvent({
+        eventType: "MARKET_GADGET_PURCHASED",
+        userId: buyer.id,
+        companyId: company.id,
+        targetId: String(listing.gadgetId || ""),
+        amount: Number(listing.price || 0),
+        status: "success",
+        metadata: {
+          sellerUserId: listing.sellerUserId,
+          saleType: "fixed",
+          listingId: listing.id,
+        },
+      });
+    }
 
     res.json({ ok: true, fee, netIncome, purchasedItem });
   });
@@ -5093,8 +5672,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ error: "РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ РґР»СЏ СЃС‚Р°РІРєРё" });
     }
 
+    const previousBidderId = String(listing.currentBidderId || "").trim();
+    const previousBid = Number(listing.currentBid || listing.startingPrice || 0);
     listing.currentBid = Number(amount);
     listing.currentBidderId = bidderId;
+    if (listing.auctionDurationHours) {
+      listing.auctionEndsAt = Date.now() + Number(listing.auctionDurationHours) * 60 * 60 * 1000;
+    }
+
+    if (previousBidderId && previousBidderId !== bidderId) {
+      const previousBidderTelegramId = Number(getTelegramIdByUserId(previousBidderId) || 0);
+      if (previousBidderTelegramId) {
+        await sendTelegramBotText(
+          previousBidderTelegramId,
+          [
+            "🔔 Твою ставку перебили",
+            `Лот: ${formatAuctionLotTitle(listing)}`,
+            `Твоя ставка: ${formatMarketAmount(previousBid)} GRM`,
+            `Новая ставка: ${formatMarketAmount(Number(amount))} GRM`,
+            "Таймер аукциона запущен заново.",
+          ].join("\n"),
+        );
+      }
+    }
 
     res.json({ ok: true, listing });
   });
@@ -5157,6 +5757,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const membership = await storage.getMemberByUserId(companyId, userId);
     if (!membership) return res.status(403).json({ error: "РўРѕР»СЊРєРѕ СѓС‡Р°СЃС‚РЅРёРє РєРѕРјРїР°РЅРёРё РјРѕР¶РµС‚ СЃРґР°РІР°С‚СЊ РєРѕРЅС‚СЂР°РєС‚" });
+    await requireCompanyAssetManagerAccess({ company, userId, action: "contract_deliver" });
 
     const contracts = getContractsByCity(company.city);
     const contract = contracts.find((item) => item.id === req.params.contractId);
@@ -5506,6 +6107,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           maxPrice: Number(blueprint.auctionMaxPrice ?? Math.round(basePrice * 1.4)),
           ...gadgetCondition,
           producedAt: Date.now(),
+          acquisitionSource: "company_production",
+          acquiredAt: Date.now(),
+          lastAuctionPurchaseAt: null,
           isExclusive: false,
           exclusiveLevel: 0,
         });

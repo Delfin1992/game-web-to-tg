@@ -58,10 +58,10 @@ export function buildRegistrationSkillsInlineMarkup(input: {
 }) {
   const left = getDraftRegistrationSkillPointsLeft(input);
   const rows = input.skillOrder.map((skill) => [
-    { text: `➖ ${input.skillLabels[skill]}`, callback_data: `reg_skills:sub:${skill}` },
-    { text: `➕ ${input.skillLabels[skill]}`, callback_data: `reg_skills:add:${skill}` },
+    { text: `вћ– ${input.skillLabels[skill]}`, callback_data: `reg_skills:sub:${skill}` },
+    { text: `вћ• ${input.skillLabels[skill]}`, callback_data: `reg_skills:add:${skill}` },
   ]);
-  rows.push([{ text: `✅ Подтвердить (${input.totalPoints - left}/${input.totalPoints})`, callback_data: "reg_skills:confirm" }]);
+  rows.push([{ text: `вњ… РџРѕРґС‚РІРµСЂРґРёС‚СЊ (${input.totalPoints - left}/${input.totalPoints})`, callback_data: "reg_skills:confirm" }]);
   return { inline_keyboard: rows };
 }
 
@@ -75,13 +75,13 @@ export function formatRegistrationSkillsMessage(input: {
   const skills = getDraftRegistrationSkills(input);
   const left = getDraftRegistrationSkillPointsLeft(input);
   return [
-    "5/5. Распредели 10 очков навыков:",
+    "5/5. Р Р°СЃРїСЂРµРґРµР»Рё 10 РѕС‡РєРѕРІ РЅР°РІС‹РєРѕРІ:",
     "",
-    "Эти очки пригодятся в работе компании и в PvP.",
+    "Р­С‚Рё РѕС‡РєРё РїСЂРёРіРѕРґСЏС‚СЃСЏ РІ СЂР°Р±РѕС‚Рµ РєРѕРјРїР°РЅРёРё Рё РІ PvP.",
     "",
-    ...input.skillOrder.map((skill) => `• ${input.skillLabels[skill]}: ${skills[skill]}`),
+    ...input.skillOrder.map((skill) => `вЂў ${input.skillLabels[skill]}: ${skills[skill]}`),
     "",
-    `Осталось очков: ${left}`,
+    `РћСЃС‚Р°Р»РѕСЃСЊ РѕС‡РєРѕРІ: ${left}`,
   ].join("\n");
 }
 
@@ -197,20 +197,20 @@ export async function sendTelegramRegistrationStepPrompt(input: {
       input.token,
       input.chatId,
       [
-        "🧑‍💻 Привет. Добро пожаловать в Gadget Lab.",
+        "рџ§‘вЂЌрџ’» РџСЂРёРІРµС‚. Р”РѕР±СЂРѕ РїРѕР¶Р°Р»РѕРІР°С‚СЊ РІ Gadget Lab.",
         "",
-        "Сделаем всё быстро и по-человечески:",
-        "1. Выберем город стажировки",
-        "2. Придумаем ник",
-        "3. Определим твой рабочий стиль",
-        "4. Пройдём короткое мини-собеседование",
-        "5. Соберём первый прототип",
+        "РЎРґРµР»Р°РµРј РІСЃС‘ Р±С‹СЃС‚СЂРѕ Рё РїРѕ-С‡РµР»РѕРІРµС‡РµСЃРєРё:",
+        "1. Р’С‹Р±РµСЂРµРј РіРѕСЂРѕРґ СЃС‚Р°Р¶РёСЂРѕРІРєРё",
+        "2. РџСЂРёРґСѓРјР°РµРј РЅРёРє",
+        "3. РћРїСЂРµРґРµР»РёРј С‚РІРѕР№ СЂР°Р±РѕС‡РёР№ СЃС‚РёР»СЊ",
+        "4. РџСЂРѕР№РґС‘Рј РєРѕСЂРѕС‚РєРѕРµ РјРёРЅРё-СЃРѕР±РµСЃРµРґРѕРІР°РЅРёРµ",
+        "5. РЎРѕР±РµСЂС‘Рј РїРµСЂРІС‹Р№ РїСЂРѕС‚РѕС‚РёРї",
         "",
-        "После этого откроется вся игра.",
+        "РџРѕСЃР»Рµ СЌС‚РѕРіРѕ РѕС‚РєСЂРѕРµС‚СЃСЏ РІСЃСЏ РёРіСЂР°.",
       ].join("\n"),
       {
         reply_markup: {
-          inline_keyboard: [[{ text: "🚀 Поехали", callback_data: "reg_tutorial:intro:start" }]],
+          inline_keyboard: [[{ text: "рџљЂ РџРѕРµС…Р°Р»Рё", callback_data: "reg_tutorial:intro:start" }]],
         },
       },
     );
@@ -242,15 +242,11 @@ export async function sendTelegramRegistrationStepPrompt(input: {
       input.token,
       input.chatId,
       [
-        "🌍 Шаг 1/5. С чего начнём: выбери город стажировки.",
-        "Это твоя стартовая база. От города зависят экономика, бонусы и общий ритм старта.",
+        "🌍 Шаг 1/5. Выбери город стажировки.",
+        "Это стартовая база персонажа. От города зависят экономика, темп и часть бонусов.",
         input.cityCapacityMessage,
         "",
-        "🌉 San Francisco",
-        "Амбициозный старт: больше денег и темпа, но и требования выше.",
-        "",
-        "Во время тестов открыт только этот город.",
-        "Выбор важный: бонусы города будут работать постоянно.",
+        "Во время тестов открыт только San Francisco.",
       ].join("\n"),
       { reply_markup: input.buildRegistrationCityChoiceMarkup() },
     );
@@ -260,82 +256,135 @@ export async function sendTelegramRegistrationStepPrompt(input: {
   if (input.step === "registration_aptitude") {
     input.pendingActionByChatId.set(input.chatId, { type: "registration_aptitude" });
     if (!user) {
-      await input.sendWithMainKeyboard(input.token, input.chatId, "Профиль не найден. Отправь /start ещё раз.");
+      await input.sendWithMainKeyboard(input.token, input.chatId, "Профиль не найден. Отправь /start.");
       return;
     }
     const question = input.getTelegramRegistrationQuestion(user);
     if (!question) {
-      await input.sendWithMainKeyboard(input.token, input.chatId, "Интервью уже завершено. Переходим к первому прототипу.");
+      await input.sendMessage(
+        input.token,
+        input.chatId,
+        [
+          "✅ Интервью завершено.",
+          "Твои стартовые навыки уже распределены по ответам.",
+        ].join("\n"),
+      );
       return;
     }
-    const answers = input.buildPlayerRegistrationState(user).registrationFlow.answers ?? {};
-    const answeredCount = input.registrationInterviewQuestions.filter((item) => answers[item.id]).length;
-    const sent = await input.sendMessage(
+    const answerRows = (question.options ?? []).map((option: any) => [{
+      text: input.formatInterviewOptionButtonLabel(question.id, option.id),
+      callback_data: `reg_tutorial:answer:${question.id}:${option.id}`,
+    }]);
+    const text = [
+      "🧠 Мини-интервью",
+      "",
+      String(question.prompt || question.text || "Выбери ответ:"),
+      "",
+      ...(question.options ?? []).map((option: any, index: number) => {
+        const hint = input.formatInterviewSkillHint(option.skillWeights);
+        return `${index + 1}. ${String(option.label || option.text || option.id)}\n${hint}`;
+      }),
+    ].join("\n");
+    const message = await input.sendMessage(
       input.token,
       input.chatId,
-      [
-        `🧠 Шаг 4/5. ${question.title}`,
-        ...(answeredCount === 0
-          ? [
-            "Сейчас будет короткое мини-собеседование.",
-            "От твоих ответов зависит стартовый билд для работы, компании и PvP.",
-            "После каждого ответа я сразу покажу, что именно усилилось.",
-            "",
-            question.prompt,
-            "",
-          ]
-          : [question.prompt, ""]),
-        ...question.options.map((option: any, index: number) => `${index + 1}. ${input.formatInterviewOptionButtonLabel(question.id, option.id)} — ${input.formatInterviewSkillHint(option.skillWeights as Record<string, number> | undefined)}`),
-        "",
-        "Выбери один вариант ответа:",
-      ].join("\n"),
-      {
-        reply_markup: {
-          inline_keyboard: question.options.map((option: any) => [{
-            text: input.formatInterviewOptionButtonLabel(question.id, option.id),
-            callback_data: `reg_tutorial:answer:${question.id}:${option.id}`,
-          }]),
-        },
-      },
+      text,
+      { reply_markup: { inline_keyboard: answerRows } },
     );
-    if (Number(sent?.message_id || 0)) {
-      input.registrationInterviewMessageByChatId.set(input.chatId, Number(sent.message_id));
+    if (Number(message?.message_id || 0)) {
+      input.registrationInterviewMessageByChatId.set(input.chatId, Number(message.message_id));
     }
     return;
   }
 
   if (input.step === "registration_first_craft") {
     input.pendingActionByChatId.set(input.chatId, { type: "registration_first_craft" });
-    if (!user) {
-      await input.sendWithMainKeyboard(input.token, input.chatId, "Профиль не найден. Отправь /start ещё раз.");
-      return;
-    }
-    const registration = input.buildPlayerRegistrationState(user);
-    const tutorialCompany = await input.storage.getTutorialCompanyByOwner(user.id);
-    const cityLabel = registration.city ?? user.city;
     await input.sendMessage(
       input.token,
       input.chatId,
       [
-        "🛠 Шаг 5/5. Первый рабочий прототип.",
-        `📍 Город: ${cityLabel}`,
-        `📐 Чертёж выдан: ${input.tutorialDemoBlueprint.name}`,
-        "🧩 Детали для тестовой сборки уже зарезервированы и не тронут твою реальную экономику.",
-        tutorialCompany ? `🏢 Тестовая мастерская: ${tutorialCompany.name}` : "🏢 Подготовим тестовую мастерскую автоматически.",
+        `🧪 Первый прототип: ${input.tutorialDemoBlueprint.name}`,
         "",
-        "Что будет дальше:",
-        "1. Запускаешь разработку чертежа",
-        "2. Видишь живой прогресс по шкале",
-        "3. После готовности собираешь первый гаджет",
-        "4. Гаджет автоматически попадёт в твой инвентарь",
+        "Финальный шаг регистрации: запускаем разработку учебного чертежа, а потом собираем первый гаджет.",
+        "После этого откроется полноценная игра.",
       ].join("\n"),
       {
         reply_markup: {
           inline_keyboard: [
             [{ text: "📐 Запустить чертёж", callback_data: "reg_tutorial:first_craft:start_blueprint" }],
+            [{ text: "⏱ Проверить прогресс", callback_data: "reg_tutorial:bp_check" }],
           ],
         },
       },
     );
+    return;
   }
+}
+
+type RegistrationTelegramModuleDeps = {
+  registrationDraftByChatId: Map<number, any>;
+  pendingActionByChatId: Map<number, any>;
+  buildPlayerRegistrationState: (user: any) => { registrationStep?: string };
+  promptStep: (token: string, chatId: number, step: any) => Promise<void>;
+  handlePendingAction: (input: any) => Promise<boolean>;
+  handleCallback: (input: any) => Promise<any>;
+};
+
+export function createRegistrationTelegramModule(deps: RegistrationTelegramModuleDeps) {
+  const registrationPendingStepSet = new Set([
+    "registration_intro",
+    "register_username",
+    "registration_city",
+    "registration_aptitude",
+    "register_personality",
+    "registration_first_craft",
+  ]);
+
+  return {
+    resolveStep(user: any, chatId: number) {
+      const registration = deps.buildPlayerRegistrationState(user);
+      const actualStep =
+        registration.registrationStep === "intro"
+          ? "registration_intro"
+          : registration.registrationStep === "name"
+            ? "register_username"
+            : registration.registrationStep === "city_selection"
+              ? "registration_city"
+              : registration.registrationStep === "personality"
+                ? "register_personality"
+                : registration.registrationStep === "aptitude_test"
+                  ? "registration_aptitude"
+                  : registration.registrationStep === "first_craft"
+                    ? "registration_first_craft"
+                    : null;
+
+      const pendingAction = deps.pendingActionByChatId.get(chatId);
+      if (registrationPendingStepSet.has(String(pendingAction?.type || ""))) {
+        if (pendingAction.type === actualStep) {
+          return pendingAction.type;
+        }
+        deps.pendingActionByChatId.delete(chatId);
+      }
+
+      return actualStep;
+    },
+
+    async beginRegistration(token: string, chatId: number, user: any, startPayload?: string, step: any = "registration_intro") {
+      const existingDraft = deps.registrationDraftByChatId.get(chatId);
+      const draft = existingDraft && existingDraft.userId === user.id
+        ? { ...existingDraft }
+        : { userId: user.id };
+
+      if (startPayload) {
+        draft.startPayload = startPayload;
+      }
+
+      deps.registrationDraftByChatId.set(chatId, draft);
+      deps.pendingActionByChatId.set(chatId, { type: step });
+      await deps.promptStep(token, chatId, step);
+    },
+
+    handlePendingAction: deps.handlePendingAction,
+    handleCallback: deps.handleCallback,
+  };
 }

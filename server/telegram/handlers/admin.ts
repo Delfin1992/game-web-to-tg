@@ -1,3 +1,16 @@
+import {
+  formatChangelogDateLabel,
+  formatChangelogDetailedMessage,
+  formatChangelogListMessage,
+  formatChangelogRecentMessage,
+  formatChangelogShortMessage,
+  getAllChangelogEntries,
+  getChangelogEntryByDate,
+  getLatestChangelogEntry,
+  getRecentChangelogEntries,
+  normalizeChangelogDateInput,
+} from "../../changelog";
+
 /**
  * Admin command handlers extracted from telegram.ts.
  * Preserves the existing side effects while keeping the password flow readable.
@@ -12,6 +25,7 @@ export async function handleAdminMessage(input: {
   isAdminEnabled: () => boolean;
   adminAuthByChatId: Map<number, boolean>;
   pendingActionByChatId: Map<number, any>;
+  companyListByChatId: Map<number, string[]>;
   sendWithMainKeyboard: (token: string, chatId: number, text: string) => Promise<void>;
   sendWithAdminKeyboard: (token: string, chatId: number, text: string) => Promise<void>;
   resolveOrCreateTelegramPlayer: (from: any) => Promise<any>;
@@ -51,6 +65,7 @@ export async function handleAdminMessage(input: {
     isAdminEnabled,
     adminAuthByChatId,
     pendingActionByChatId,
+    companyListByChatId,
     sendWithMainKeyboard,
     sendWithAdminKeyboard,
     resolveOrCreateTelegramPlayer,
@@ -168,6 +183,78 @@ export async function handleAdminMessage(input: {
       token,
       chatId,
       refreshed ? `✅ Начислено ${gain} XP\n\n${await formatPlayerProfile(refreshed)}` : `✅ Начислено ${gain} XP`,
+    );
+    return true;
+  }
+
+  if (command === "/admin_company_gadget") {
+    if (!(await ensureAuthorized())) return true;
+
+    const companies = await storage.getAllCompanies();
+    if (!companies.length) {
+      await sendWithAdminKeyboard(token, chatId, "Сейчас нет компаний для выдачи гаджета.");
+      return true;
+    }
+
+    companyListByChatId.set(chatId, companies.map((company: any) => String(company.id)));
+    pendingActionByChatId.set(chatId, { type: "admin_company_gadget_company" });
+    const lines = [
+      "🧩 Добавление гаджета в компанию",
+      "Выбери компанию номером из списка:",
+      "",
+      ...companies.map((company: any, index: number) => `${index + 1}. ${String(company.name || "Компания")}`),
+    ];
+    await sendWithAdminKeyboard(token, chatId, lines.join("\n"));
+    return true;
+  }
+
+  if (command === "/admin_updates_latest") {
+    if (!(await ensureAuthorized())) return true;
+
+    const entry = getLatestChangelogEntry();
+    await sendWithAdminKeyboard(
+      token,
+      chatId,
+      entry ? formatChangelogDetailedMessage(entry) : "История обновлений пока пуста.",
+    );
+    return true;
+  }
+
+  if (command === "/admin_updates_history") {
+    if (!(await ensureAuthorized())) return true;
+
+    await sendWithAdminKeyboard(token, chatId, formatChangelogRecentMessage(getRecentChangelogEntries(7), 7));
+    return true;
+  }
+
+  if (command === "/admin_updates_list") {
+    if (!(await ensureAuthorized())) return true;
+
+    await sendWithAdminKeyboard(token, chatId, formatChangelogListMessage(getAllChangelogEntries()));
+    return true;
+  }
+
+  if (command === "/admin_updates_date") {
+    if (!(await ensureAuthorized())) return true;
+
+    const requestedDate = normalizeChangelogDateInput(args.join(" "));
+    if (!requestedDate) {
+      pendingActionByChatId.set(chatId, { type: "admin_updates_date" });
+      await sendWithAdminKeyboard(
+        token,
+        chatId,
+        "Введи дату обновления в формате YYYY-MM-DD. Пример: 2026-03-30",
+      );
+      return true;
+    }
+
+    const entry = getChangelogEntryByDate(requestedDate);
+    await sendWithAdminKeyboard(
+      token,
+      chatId,
+      entry
+        ? formatChangelogDetailedMessage(entry)
+        : `За ${formatChangelogDateLabel(requestedDate)} обновления не найдены.`,
     );
     return true;
   }

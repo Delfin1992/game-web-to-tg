@@ -1,4 +1,3 @@
-import { randomUUID } from "crypto";
 import {
   STOCK_ASSET_CATALOG,
   type FutureIpoWatchView,
@@ -14,6 +13,7 @@ import {
   type StockWeeklyMarketReportView,
 } from "../shared/stock-exchange";
 import { applyGameStatePatch, getUserWithGameState } from "./game-engine";
+import { registerRuntimeSnapshotProvider } from "./storage";
 import { storage } from "./storage";
 
 type StockAssetRuntime = {
@@ -30,7 +30,9 @@ type UserHoldingRuntime = {
 };
 
 const STOCK_TICK_MS = 60_000;
-const STOCK_NEWS_DURATION_MS = 2 * 60 * 60_000;
+const MOSCOW_UTC_OFFSET_MS = 3 * 60 * 60 * 1000;
+const STOCK_NEWS_SWITCH_HOUR_MSK = 8;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const stockAssetsByTicker = new Map<string, StockAssetRuntime>();
@@ -124,6 +126,27 @@ function getWeekStartMs(nowMs: number) {
   return date.getTime();
 }
 
+function getMoscowNewsWindowStartMs(nowMs: number) {
+  const shifted = new Date(nowMs + MOSCOW_UTC_OFFSET_MS);
+  if (shifted.getUTCHours() < STOCK_NEWS_SWITCH_HOUR_MSK) {
+    shifted.setUTCDate(shifted.getUTCDate() - 1);
+  }
+  shifted.setUTCHours(STOCK_NEWS_SWITCH_HOUR_MSK, 0, 0, 0);
+  return shifted.getTime() - MOSCOW_UTC_OFFSET_MS;
+}
+
+function getMoscowNewsWindowEndMs(nowMs: number) {
+  return getMoscowNewsWindowStartMs(nowMs) + DAY_MS;
+}
+
+function getMoscowNewsWindowKey(nowMs: number) {
+  const shifted = new Date(getMoscowNewsWindowStartMs(nowMs) + MOSCOW_UTC_OFFSET_MS);
+  const year = shifted.getUTCFullYear();
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(shifted.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function getWeekKey(nowMs: number) {
   const start = new Date(getWeekStartMs(nowMs));
   const year = start.getUTCFullYear();
@@ -172,17 +195,20 @@ function getCurrentSectorOutlook(sector: StockAssetDefinition["sector"], nowMs: 
 }
 
 function pickNextNews(nowMs: number) {
-  const roll = hashStringToUnit(`${Math.floor(nowMs / STOCK_NEWS_DURATION_MS)}:news`);
+  const windowStartMs = getMoscowNewsWindowStartMs(nowMs);
+  const windowEndMs = getMoscowNewsWindowEndMs(nowMs);
+  const windowKey = getMoscowNewsWindowKey(nowMs);
+  const roll = hashStringToUnit(`${windowKey}:news`);
   const index = Math.floor(roll * STOCK_NEWS_POOL.length) % STOCK_NEWS_POOL.length;
   const template = STOCK_NEWS_POOL[index] ?? STOCK_NEWS_POOL[0];
   activeNews = {
-    id: randomUUID(),
+    id: `stock-news-${windowKey}`,
     title: template.title,
     description: template.description,
     affectedSectors: [...template.affectedSectors],
     mood: template.mood,
-    startedAtMs: nowMs,
-    endsAtMs: nowMs + STOCK_NEWS_DURATION_MS,
+    startedAtMs: windowStartMs,
+    endsAtMs: windowEndMs,
   };
 }
 
@@ -194,7 +220,8 @@ function getNewsImpactForSector(sector: StockAssetDefinition["sector"], nowMs: n
 }
 
 function advanceOneTick(nowMs: number) {
-  if (!activeNews || activeNews.endsAtMs <= nowMs) {
+  const expectedNewsId = `stock-news-${getMoscowNewsWindowKey(nowMs)}`;
+  if (!activeNews || activeNews.endsAtMs <= nowMs || activeNews.id !== expectedNewsId) {
     pickNextNews(nowMs);
   }
 
@@ -234,6 +261,54 @@ export function ensureStockExchangeAdvanced(nowMs: number = Date.now()) {
   }
   lastAdvancedAtMs += ticks * STOCK_TICK_MS;
 }
+
+function exportStockExchangeRuntimeSnapshot() {
+  return {
+    lastAdvancedAtMs,
+    activeNews,
+    lastBroadcastedNewsId,
+  };
+}
+
+function importStockExchangeRuntimeSnapshot(snapshot: unknown) {
+  lastAdvancedAtMs = null;
+  activeNews = null;
+  lastBroadcastedNewsId = null;
+  if (!snapshot || typeof snapshot !== "object") return;
+  const data = snapshot as Partial<{
+    lastAdvancedAtMs: number | null;
+    activeNews: Partial<StockMarketNewsView> | null;
+    lastBroadcastedNewsId: string | null;
+  }>;
+  lastAdvancedAtMs = Number.isFinite(Number(data.lastAdvancedAtMs)) ? Number(data.lastAdvancedAtMs) : null;
+  if (data.activeNews && typeof data.activeNews === "object") {
+    const news = data.activeNews;
+    if (news.id && news.title && news.description && Array.isArray(news.affectedSectors) && news.mood) {
+      activeNews = {
+        id: String(news.id),
+        title: String(news.title),
+        description: String(news.description),
+        affectedSectors: news.affectedSectors as StockMarketNewsView["affectedSectors"],
+        mood: news.mood as StockMarketNewsView["mood"],
+        startedAtMs: Number(news.startedAtMs || Date.now()),
+        endsAtMs: Number(news.endsAtMs || Date.now()),
+      };
+    }
+  }
+  lastBroadcastedNewsId = data.lastBroadcastedNewsId ? String(data.lastBroadcastedNewsId) : null;
+}
+
+function clearStockExchangeRuntimeSnapshot() {
+  lastAdvancedAtMs = null;
+  activeNews = null;
+  lastBroadcastedNewsId = null;
+}
+
+registerRuntimeSnapshotProvider("stock-exchange", {
+  exportSnapshot: exportStockExchangeRuntimeSnapshot,
+  importSnapshot: importStockExchangeRuntimeSnapshot,
+  clear: clearStockExchangeRuntimeSnapshot,
+});
 
 function getUserHoldingMap(userId: string) {
   let map = stockHoldingsByUserId.get(userId);

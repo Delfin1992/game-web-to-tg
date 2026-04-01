@@ -32,6 +32,7 @@ export function buildCompanyReplyMarkup(input: {
   if (section === "warehouse") {
     return buildReplyKeyboard([
       ["📦 Склад компании", "📥 Передать запчасти"],
+      ["💸 Продать запчасти", "🏷 Аукцион компании"],
       ["⬅️ Назад"],
     ]);
   }
@@ -68,7 +69,7 @@ export function buildCompanyReplyMarkup(input: {
   if (section === "management_departments") {
     return buildReplyKeyboard([
       ["🏛 Прокачка отделов", "📦 Прокачка склада"],
-      ["⬆️ Legacy апгрейд", "⬅️ Назад"],
+      ["⬅️ Назад"],
     ]);
   }
 

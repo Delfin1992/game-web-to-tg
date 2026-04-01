@@ -1,6 +1,33 @@
 /**
  * Company contracts, blueprint and exclusive development commands extracted from telegram.ts.
  */
+function getBlueprintRecipeRequirements(blueprint: any) {
+  if (Array.isArray(blueprint?.productionRecipe) && blueprint.productionRecipe.length) {
+    return blueprint.productionRecipe.map((item: any) => ({
+      partType: String(item.partType || item.type || ""),
+      quality: String(item.quality || item.rarity || "Common"),
+      quantity: Math.max(1, Number(item.quantity || 1)),
+    }));
+  }
+  return Object.entries(blueprint?.production?.parts ?? {}).map(([partType, quantity]) => ({
+    partType: String(partType),
+    quality: "Common",
+    quantity: Math.max(1, Number(quantity || 1)),
+  }));
+}
+
+function formatBlueprintRecipeDetails(blueprint: any, quantity = 1) {
+  const requirements = getBlueprintRecipeRequirements(blueprint);
+  if (!requirements.length) return ["Нужно на производство: базовые детали не настроены"];
+  return [
+    "Нужно на производство:",
+    ...requirements.map((requirement: { partType: string; quality: string; quantity: number }) => {
+      const total = Math.max(1, Number(requirement.quantity || 1)) * Math.max(1, quantity);
+      return `• ${String(requirement.quality || "Common")} ${String(requirement.partType || "")} x${total}`;
+    }),
+  ];
+}
+
 export async function handleCompanyDevelopmentMessage(input: {
   command: string;
   args: string[];
@@ -29,7 +56,16 @@ export async function handleCompanyDevelopmentMessage(input: {
   companyExclusiveSelectedPartRefsByChatId: Map<number, any>;
   companyExclusivePartPageByChatId: Map<number, number>;
   pendingActionByChatId: Map<number, any>;
-  sendCompanyExclusivePartsPicker: (token: string, chatId: number, membership: any, playerId: string, gadgetName: string, messageId?: number, prefix?: string) => Promise<void>;
+  sendCompanyExclusivePartsPicker: (
+    token: string,
+    chatId: number,
+    membership: any,
+    playerId: string,
+    gadgetName: string,
+    gadgetCategory?: string,
+    gadgetBatchAvailable?: number,
+    messageId?: number,
+  ) => Promise<void>;
   getCompanyExclusiveSnapshot: (companyId: string) => Promise<any>;
   formatExclusiveProgressLiveText: (project: any) => string;
   storage: any;
@@ -450,11 +486,13 @@ export async function handleCompanyDevelopmentMessage(input: {
       const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
       const departmentEffects = getDepartmentEffects(companyEconomy.departments);
       const warehouseParts = [...getCompanyWarehouseParts(membership.company.id)];
-      const requiredParts = blueprint.production?.parts ?? {};
-      const maxByParts = Object.entries(requiredParts).reduce((limit, [partType, qtyRaw]) => {
-        const perUnit = Math.max(1, Number(qtyRaw || 0));
+      const requiredParts = getBlueprintRecipeRequirements(blueprint);
+      const maxByParts = requiredParts.reduce((limit: number, requirement: { partType: string; quality: string; quantity: number }) => {
+        const perUnit = Math.max(1, Number(requirement.quantity || 0));
         const available = warehouseParts
-          .filter((item: any) => item.type === partType)
+          .filter((item: any) =>
+            String(item.type || item.partType || "") === requirement.partType
+            && String(item.quality || item.rarity || "Common") === requirement.quality)
           .reduce((sum: number, item: any) => sum + Math.max(1, Number(item.quantity || 1)), 0);
         return Math.min(limit, Math.floor(available / perUnit));
       }, 10);
@@ -466,6 +504,20 @@ export async function handleCompanyDevelopmentMessage(input: {
         blueprintName: blueprint.name,
         maxQuantity,
       });
+      await sendMessage(
+        token,
+        chatId,
+        [
+          `🏭 ${blueprint.name}`,
+          `Доступно для партии: до ${maxQuantity} шт.`,
+          `Себестоимость за 1 шт: ${Math.max(1, Math.round(Number(blueprint.production?.costGram || 0) * departmentEffects.productionCostMultiplier))} GRM`,
+          ...formatBlueprintRecipeDetails(blueprint),
+          "",
+          "Введи количество для запуска производства.",
+        ].join("\n"),
+        { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+      );
+      return true;
       await sendMessage(
         token,
         chatId,

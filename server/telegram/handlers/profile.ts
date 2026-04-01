@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Profile and meta/home-adjacent command handler extracted from telegram.ts.
  * Keeps command routing stable while presenting profile/helpful meta screens.
  */
@@ -31,6 +31,7 @@ export async function handleProfileMetaMessage(input: {
   rememberTelegramMenu: (userId: string, state: any) => void;
   formatReferralMenu: (player: any) => Promise<string>;
   sendWithExtrasKeyboard: (token: string, chatId: number, text: string) => Promise<void>;
+  sendWithRatingKeyboard: (token: string, chatId: number, text: string) => Promise<void>;
   formatReputationMenu: (player: any) => string;
   formatWeeklyQuestMenu: (player: any) => any;
   buildQuestInlineButtons: (canClaim: boolean) => any;
@@ -42,7 +43,6 @@ export async function handleProfileMetaMessage(input: {
   isRatingEntityToken: (value?: string) => boolean;
   normalizeRatingEntity: (value?: string) => any;
   formatRatingMenu: (entity: any, sortArg?: any) => Promise<any>;
-  buildRatingInlineButtons: (entity: any, sort: any) => any;
 }) {
   const {
     command,
@@ -73,6 +73,7 @@ export async function handleProfileMetaMessage(input: {
     rememberTelegramMenu,
     formatReferralMenu,
     sendWithExtrasKeyboard,
+    sendWithRatingKeyboard,
     formatReputationMenu,
     formatWeeklyQuestMenu,
     buildQuestInlineButtons,
@@ -84,7 +85,6 @@ export async function handleProfileMetaMessage(input: {
     isRatingEntityToken,
     normalizeRatingEntity,
     formatRatingMenu,
-    buildRatingInlineButtons,
   } = input;
 
   if (command === "/profile" || command === "/me" || command === "/status") {
@@ -92,7 +92,7 @@ export async function handleProfileMetaMessage(input: {
     const activeTravel = playerTravelByUserId.get(player.id);
     if (activeTravel) {
       const secondsLeft = getTravelRemainingSeconds(player.id);
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы уже в пути в ${formatTravelTargetLabel(activeTravel.target)}. Осталось ~${secondsLeft} сек.`);
+      await sendWithMainKeyboard(token, chatId, `рџљ¶ Р’С‹ СѓР¶Рµ РІ РїСѓС‚Рё РІ ${formatTravelTargetLabel(activeTravel.target)}. РћСЃС‚Р°Р»РѕСЃСЊ ~${secondsLeft} СЃРµРє.`);
       return true;
     }
 
@@ -104,7 +104,7 @@ export async function handleProfileMetaMessage(input: {
       const travelMs = currentLocation === "city" ? TRAVEL_TO_CITY_MS : TRAVEL_TO_COMPANY_MS;
       const travelSec = Math.ceil(travelMs / 1000);
       const arrivesAtMs = Date.now() + travelMs;
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы отправились домой. Прибытие через ${travelSec} сек.`);
+      await sendWithMainKeyboard(token, chatId, `рџљ¶ Р’С‹ РѕС‚РїСЂР°РІРёР»РёСЃСЊ РґРѕРјРѕР№. РџСЂРёР±С‹С‚РёРµ С‡РµСЂРµР· ${travelSec} СЃРµРє.`);
       const timer = setTimeout(async () => {
         try {
           const state = playerTravelByUserId.get(player.id);
@@ -114,7 +114,7 @@ export async function handleProfileMetaMessage(input: {
           const snapshot = await resolveTelegramSnapshot(message.from);
           const notices = formatNotices(snapshot.notices);
           const base = await formatPlayerProfile(snapshot);
-          await sendWithMainKeyboard(token, state.chatId, `✅ Вы вернулись домой.\n\n${notices ? `${base}\n\n${notices}` : base}`);
+          await sendWithMainKeyboard(token, state.chatId, `вњ… Р’С‹ РІРµСЂРЅСѓР»РёСЃСЊ РґРѕРјРѕР№.\n\n${notices ? `${base}\n\n${notices}` : base}`);
         } catch (error) {
           console.error("Travel to home completion error:", error);
         }
@@ -137,43 +137,43 @@ export async function handleProfileMetaMessage(input: {
     const currentProfession = getProfessionById(getPlayerProfessionId(player) || "");
     if (currentProfession) {
       const skillLabels: Record<string, string> = {
-        coding: "Кодинг",
-        testing: "Тестирование",
-        analytics: "Аналитика",
-        design: "Дизайн",
-        attention: "Внимание",
-        drawing: "Рисование",
-        modeling: "3D-моделирование",
+        coding: "РљРѕРґРёРЅРі",
+        testing: "РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ",
+        analytics: "РђРЅР°Р»РёС‚РёРєР°",
+        design: "Р”РёР·Р°Р№РЅ",
+        attention: "Р’РЅРёРјР°РЅРёРµ",
+        drawing: "Р РёСЃРѕРІР°РЅРёРµ",
+        modeling: "3D-РјРѕРґРµР»РёСЂРѕРІР°РЅРёРµ",
       };
       const skillBonusLines = Object.entries(currentProfession.pvpBonuses?.skillMultipliers || {})
         .filter(([, multiplier]) => Number(multiplier || 1) > 1)
-        .map(([skill, multiplier]) => `• PvP: ${skillLabels[skill] ?? skill} +${Math.round((Number(multiplier) - 1) * 100)}%`);
+        .map(([skill, multiplier]) => `вЂў PvP: ${skillLabels[skill] ?? skill} +${Math.round((Number(multiplier) - 1) * 100)}%`);
       const roundBonusLines = Object.entries(currentProfession.pvpBonuses?.roundMultipliers || {})
         .filter(([, multiplier]) => Number(multiplier || 1) > 1)
         .map(([round, multiplier]) => {
-          const roundLabel = round === "concept" ? "Проектирование" : round === "core" ? "Разработка" : "Отладка";
-          return `• Раунд «${roundLabel}»: +${Math.round((Number(multiplier) - 1) * 100)}%`;
+          const roundLabel = round === "concept" ? "РџСЂРѕРµРєС‚РёСЂРѕРІР°РЅРёРµ" : round === "core" ? "Р Р°Р·СЂР°Р±РѕС‚РєР°" : "РћС‚Р»Р°РґРєР°";
+          return `вЂў Р Р°СѓРЅРґ В«${roundLabel}В»: +${Math.round((Number(multiplier) - 1) * 100)}%`;
         });
 
       await sendWithMainKeyboard(
         token,
         chatId,
         [
-          `🎓 Текущая профессия: ${currentProfession.emoji} ${currentProfession.name}`,
+          `рџЋ“ РўРµРєСѓС‰Р°СЏ РїСЂРѕС„РµСЃСЃРёСЏ: ${currentProfession.emoji} ${currentProfession.name}`,
           currentProfession.subtitle,
           currentProfession.summary,
           "",
-          "Твои бонусы:",
+          "РўРІРѕРё Р±РѕРЅСѓСЃС‹:",
           ...skillBonusLines,
           ...roundBonusLines,
-          `• Профильный cap: ${skillLabels[currentProfession.skillCapBonus.skill] ?? currentProfession.skillCapBonus.skill} до +${Math.round((Number(currentProfession.skillCapBonus.multiplier) - 1) * 100)}%`,
+          `вЂў РџСЂРѕС„РёР»СЊРЅС‹Р№ cap: ${skillLabels[currentProfession.skillCapBonus.skill] ?? currentProfession.skillCapBonus.skill} РґРѕ +${Math.round((Number(currentProfession.skillCapBonus.multiplier) - 1) * 100)}%`,
         ].join("\n"),
       );
       return true;
     }
 
     if (player.level < PROFESSION_UNLOCK_LEVEL) {
-      await sendWithMainKeyboard(token, chatId, `🎓 Профессия откроется на ${PROFESSION_UNLOCK_LEVEL} уровне.`);
+      await sendWithMainKeyboard(token, chatId, `рџЋ“ РџСЂРѕС„РµСЃСЃРёСЏ РѕС‚РєСЂРѕРµС‚СЃСЏ РЅР° ${PROFESSION_UNLOCK_LEVEL} СѓСЂРѕРІРЅРµ.`);
       return true;
     }
 
@@ -195,7 +195,7 @@ export async function handleProfileMetaMessage(input: {
     await sendMessage(token, chatId, formatReputationMenu(player), {
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🗓 Квесты", callback_data: "quest:refresh" }, { text: "🏆 Рейтинг", callback_data: "quest:rating" }],
+          [{ text: "рџ—“ РљРІРµСЃС‚С‹", callback_data: "quest:refresh" }, { text: "рџЏ† Р РµР№С‚РёРЅРі", callback_data: "quest:rating" }],
         ],
       },
     });
@@ -215,15 +215,13 @@ export async function handleProfileMetaMessage(input: {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     try {
       const claimed = await claimWeeklyQuestReward(player.id);
-      const snapshot = await getUserWithGameState(player.id);
       const questView = formatWeeklyQuestMenu(claimed.user);
       const lines = [
-        "🎃 Награда за недельный квест получена!",
+        "🎁 Награда за еженедельный квест получена!",
         `+${getCurrencySymbol(claimed.user.city)}${claimed.rewardMoney}, +${claimed.rewardExp} XP, +${claimed.rewardReputation} репутации`,
+        "",
+        questView.text,
       ];
-      if (snapshot) {
-        lines.push("", await formatPlayerProfile(snapshot));
-      }
       await sendMessage(token, chatId, lines.join("\n"), {
         reply_markup: buildQuestInlineButtons(questView.canClaim),
       });
@@ -238,7 +236,7 @@ export async function handleProfileMetaMessage(input: {
     try {
       await sendTutorialMenu(token, chatId, player.id);
     } catch (error) {
-      await sendWithMainKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
+      await sendWithMainKeyboard(token, chatId, `вќЊ ${extractErrorMessage(error)}`);
     }
     return true;
   }
@@ -248,11 +246,10 @@ export async function handleProfileMetaMessage(input: {
     const entity = isRatingEntityToken(firstArg) ? normalizeRatingEntity(firstArg) : "players";
     const sortArg = isRatingEntityToken(firstArg) ? args[1] : firstArg;
     const ratingMenu = await formatRatingMenu(entity, sortArg);
-    await sendMessage(token, chatId, ratingMenu.text, {
-      reply_markup: buildRatingInlineButtons(ratingMenu.entity, ratingMenu.sort),
-    });
+    await sendWithRatingKeyboard(token, chatId, ratingMenu.text);
     return true;
   }
 
   return false;
 }
+

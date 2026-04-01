@@ -13,7 +13,7 @@ function formatCompactNumber(value: number) {
     { threshold: 1_000_000, suffix: "m" },
     { threshold: 1_000, suffix: "k" },
   ];
-  const rounded = (input: number) => Number(input.toFixed(1)).toString();
+  const rounded = (input: number) => Math.round(input).toString();
 
   for (const unit of units) {
     if (abs >= unit.threshold) {
@@ -125,19 +125,18 @@ export async function handleInventoryMessage(input: {
         player.id,
         result.item.type === "consumable" ? "first_course_item_bought" : "first_gadget_bought",
       );
-      const questProgress = input.updateWeeklyQuestProgress(result.user, "shop", 1);
+      const weeklyQuestProgress = input.updateWeeklyQuestProgress(result.user, "shop", 1);
       const currency = input.getCurrencySymbol(result.user.city);
       const lines = [
         `✅ Куплено: ${result.item.name}`,
         `-${currency}${formatCompactNumber(result.item.price)}`,
-        `Бонусы: ${input.formatStats(result.item.stats)}`,
+        "",
         `💰 Баланс: ${currency}${formatCompactNumber(result.user.balance)}`,
       ];
-      const questNotice = input.formatWeeklyQuestProgressNotice(questProgress);
-      if (questNotice) lines.push("", questNotice);
+      const weeklyQuestNotice = input.formatWeeklyQuestProgressNotice(weeklyQuestProgress);
+      if (weeklyQuestNotice) lines.push("", weeklyQuestNotice);
       const tutorialNotice = input.formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
       if (tutorialNotice) lines.push("", tutorialNotice);
-      if (result.notices.length) lines.push("", input.formatNotices(result.notices));
       const purchaseMarkup = input.buildShopPurchaseInlineMarkup(result.item);
       if (purchaseMarkup) {
         await input.sendMessage(token, chatId, lines.join("\n"), { reply_markup: purchaseMarkup });
@@ -172,10 +171,16 @@ export async function handleInventoryMessage(input: {
     try {
       const result = await input.useInventoryItem(player.id, ref);
       const tutorialAdvance = await input.tryApplyTutorialEvent(player.id, "first_course_item_used");
+      let weeklyQuestNotice = "";
+      if (result.item?.type === "consumable") {
+        const weeklyQuestProgress = input.updateWeeklyQuestProgress(result.user, "study", 1);
+        weeklyQuestNotice = input.formatWeeklyQuestProgressNotice(weeklyQuestProgress);
+      }
       const lines = [
         `✅ Использовано: ${result.item.name}`,
         `Эффект: ${input.formatStats(result.item.stats)}`,
       ];
+      if (weeklyQuestNotice) lines.push("", weeklyQuestNotice);
       const tutorialNotice = input.formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
       if (tutorialNotice) lines.push("", tutorialNotice);
       if (result.notices.length) lines.push("", input.formatNotices(result.notices));

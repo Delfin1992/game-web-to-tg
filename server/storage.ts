@@ -326,6 +326,7 @@ export class DrizzleStorage implements IStorage {
       userId: ownerId,
       username: ownerUsername,
       role: "owner",
+      createdAt: Math.floor(Date.now() / 1000),
     });
 
     return result[0];
@@ -356,7 +357,10 @@ export class DrizzleStorage implements IStorage {
   }
 
   async addCompanyMember(insertMember: InsertCompanyMember): Promise<CompanyMember> {
-    const result = await db.insert(companyMembers).values(insertMember).returning();
+    const result = await db.insert(companyMembers).values({
+      ...insertMember,
+      createdAt: Number(insertMember.createdAt || Math.floor(Date.now() / 1000)),
+    }).returning();
     return result[0];
   }
 
@@ -745,7 +749,14 @@ export class MemStorage implements IStorage {
       tutorialOwnerId: company.tutorialOwnerId ?? null,
     };
     this.companies.set(created.id, created);
-    const member: CompanyMember = { id: randomUUID(), companyId: created.id, userId: ownerId, username: ownerUsername, role: "owner" };
+    const member: CompanyMember = {
+      id: randomUUID(),
+      companyId: created.id,
+      userId: ownerId,
+      username: ownerUsername,
+      role: "owner",
+      createdAt: Math.floor(Date.now() / 1000),
+    };
     this.members.set(created.id, [member]);
     return created;
   }
@@ -770,7 +781,12 @@ export class MemStorage implements IStorage {
   }
 
   async addCompanyMember(member: InsertCompanyMember) {
-    const created: CompanyMember = { id: randomUUID(), ...member, role: member.role ?? "member" };
+    const created: CompanyMember = {
+      id: randomUUID(),
+      ...member,
+      role: member.role ?? "member",
+      createdAt: Number(member.createdAt || Math.floor(Date.now() / 1000)),
+    };
     const list = this.members.get(member.companyId) ?? [];
     list.push(created);
     this.members.set(member.companyId, list);

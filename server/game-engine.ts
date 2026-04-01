@@ -1,7 +1,7 @@
 ﻿import type { User } from "../shared/schema";
 import { getBlueprintById, type GadgetBranch, type GadgetCategory, type GadgetRoundBonus } from "../shared/gadgets";
 import type { RarityName } from "../client/src/lib/parts";
-import { RARITY_LEVELS, getPartPrice, rollRandomPartDrop } from "../client/src/lib/parts";
+import { RARITY_LEVELS, getPartPrice, resolvePartDefinition, rollRandomPartDrop } from "../client/src/lib/parts";
 import { resolveCity } from "../shared/registration";
 import {
   BALANCE_CONFIG,
@@ -105,6 +105,9 @@ export interface GameInventoryItem {
   incomePerCycle?: number;
   powerCostPerCycle?: number;
   exclusiveLevel?: number;
+  acquisitionSource?: "auction" | "company_production" | "reward" | "other";
+  acquiredAt?: number;
+  lastAuctionPurchaseAt?: number | null;
   repairStatus?: "none" | "queued" | "accepted" | "in_progress" | "completed";
   repairOrderId?: string;
   repairLocked?: boolean;
@@ -707,6 +710,26 @@ function sanitizeSkills(raw: unknown): Skills {
   };
 }
 
+function normalizePartInventoryFields(item: GameInventoryItem): GameInventoryItem {
+  if (item.type !== "part") return item;
+  const definition = resolvePartDefinition({
+    id: item.id,
+    type: item.category,
+    partType: item.category,
+    rarity: item.rarity,
+  });
+  if (!definition) return item;
+  return {
+    ...item,
+    id: definition.id,
+    name: item.name || definition.name,
+    title: item.title ?? definition.title,
+    rarity: definition.rarity,
+    category: definition.partType,
+    stats: Object.keys(item.stats || {}).length ? item.stats : (definition.stats as Record<string, number>),
+  };
+}
+
 function sanitizeInventoryItem(raw: unknown): GameInventoryItem | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Record<string, unknown>;
@@ -716,7 +739,7 @@ function sanitizeInventoryItem(raw: unknown): GameInventoryItem | null {
   if (!id || !name) return null;
   if (!["consumable", "gear", "part", "gadget"].includes(type)) return null;
 
-  return normalizeGadgetInventoryFields({
+  const normalized = normalizeGadgetInventoryFields({
     id,
     name,
     title: source.title !== undefined ? String(source.title) : undefined,
@@ -772,6 +795,7 @@ function sanitizeInventoryItem(raw: unknown): GameInventoryItem | null {
     repairOrderId: source.repairOrderId !== undefined ? String(source.repairOrderId) : undefined,
     repairLocked: source.repairLocked !== undefined ? Boolean(source.repairLocked) : undefined,
   });
+  return type === "part" ? normalizePartInventoryFields(normalized) : normalized;
 }
 
 function getRarityWearMultiplier(rarityRaw: string) {
@@ -1115,7 +1139,7 @@ export async function applyGadgetWear(userId: string, options: GadgetWearOptions
   if (report.affected.length) {
     report.summary = [
       "🛠 Состояние гаджетов:",
-      ...report.affected.map((item) => `• ${item.itemName}: ${Math.round(item.before)} → ${Math.round(item.after)}${item.isBroken ? " (сломано)" : ""}`),
+      ...report.affected.map((item) => `• ${item.itemName}: ${Number(item.before).toFixed(1)} → ${Number(item.after).toFixed(1)}${item.isBroken ? " (сломано)" : ""}`),
       ...report.warnings,
     ].join("\n");
   }
@@ -2010,7 +2034,9 @@ export async function completeJob(userId: string, jobRef: string) {
 
   const baseChance = job.expReward >= 45 ? 50 : job.expReward >= 30 ? 38 : 28;
   const effectiveChance = Math.min(85, baseChance + state.jobDropPity * 15);
-  const droppedPart = rollRandomPartDrop(effectiveChance);
+  const droppedPart = rollRandomPartDrop(effectiveChance, {
+    allowedQualities: ["Common", "Uncommon"],
+  });
 
   if (droppedPart) {
     const partItem = createPartInventoryItem(droppedPart);

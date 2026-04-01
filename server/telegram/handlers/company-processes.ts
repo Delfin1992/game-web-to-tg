@@ -45,6 +45,13 @@ export async function handleCompanyProcessMessage(input: {
   companyPartDepositRefsByChatId: Map<number, string[]>;
   resolveCompanyPartDepositRefFromChat: (chatId: number, ref: string) => string;
   transferCompanyPartToWarehouse: (userId: string, membership: any, partRef: string, qtyRaw?: string) => Promise<any>;
+  formatCompanyPartSellList: (membership: any, chatId: number) => string;
+  buildCompanyPartSellInlineMarkup: (chatId: number) => any;
+  resolveCompanyPartSellRefFromChat: (chatId: number, ref: string) => string;
+  sellCompanyWarehousePart: (membership: any, partRef: string, qtyRaw?: string, actorUserId?: string) => Promise<any>;
+  sendCompanyAuctionSection: (token: string, chatId: number, membership: any, userId: string) => Promise<void>;
+  canManageCompanyAssets: (role?: string | null) => boolean;
+  companyAssetManagerError: string;
 }) {
   const {
     command,
@@ -89,6 +96,13 @@ export async function handleCompanyProcessMessage(input: {
     companyPartDepositRefsByChatId,
     resolveCompanyPartDepositRefFromChat,
     transferCompanyPartToWarehouse,
+    formatCompanyPartSellList,
+    buildCompanyPartSellInlineMarkup,
+    resolveCompanyPartSellRefFromChat,
+    sellCompanyWarehousePart,
+    sendCompanyAuctionSection,
+    canManageCompanyAssets,
+    companyAssetManagerError,
   } = input;
 
   if (command === "/company_mining_start") {
@@ -182,8 +196,8 @@ export async function handleCompanyProcessMessage(input: {
       await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
       return true;
     }
-    if (!["owner", "manager"].includes(String(membership.role || "").toLowerCase())) {
-      await sendMessage(token, chatId, "Только руководящий состав может выставлять лоты компании на аукцион.");
+    if (!canManageCompanyAssets(membership.role)) {
+      await sendMessage(token, chatId, companyAssetManagerError);
       return true;
     }
     const ref = String(args[0] || "").trim();
@@ -212,6 +226,20 @@ export async function handleCompanyProcessMessage(input: {
         reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
       });
     }
+    return true;
+  }
+
+  if (command === "/company_auction") {
+    const player = await resolveOrCreateTelegramPlayer(message.from);
+    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return true;
+    setCompanyMenuSection(chatId, "warehouse");
+    rememberTelegramMenu(player.id, { menu: "company", section: "warehouse" });
+    const membership = await getPlayerCompanyContext(player.id);
+    if (!membership) {
+      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
+      return true;
+    }
+    await sendCompanyAuctionSection(token, chatId, membership, player.id);
     return true;
   }
 
@@ -297,6 +325,52 @@ export async function handleCompanyProcessMessage(input: {
       reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
     });
     await sendCompanyWarehouseSection(token, chatId, membership, player.id);
+    return true;
+  }
+
+  if (command === "/company_part_sell") {
+    const player = await resolveOrCreateTelegramPlayer(message.from);
+    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return true;
+    setCompanyMenuSection(chatId, "warehouse");
+    rememberTelegramMenu(player.id, { menu: "company", section: "warehouse" });
+    const membership = await getPlayerCompanyContext(player.id);
+    if (!membership) {
+      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
+      return true;
+    }
+    if (!canManageCompanyAssets(membership.role)) {
+      await sendMessage(token, chatId, companyAssetManagerError, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return true;
+    }
+
+    const argsText = args.join(" ").trim();
+    if (!argsText) {
+      pendingActionByChatId.set(chatId, { type: "company_part_sell" });
+      await sendMessage(token, chatId, formatCompanyPartSellList(membership, chatId), {
+        reply_markup: buildCompanyPartSellInlineMarkup(chatId),
+      });
+      return true;
+    }
+
+    const [refRaw, qtyRaw] = argsText.split(/\s+/);
+    const partRef = resolveCompanyPartSellRefFromChat(chatId, refRaw);
+    const result = await sellCompanyWarehousePart(membership, partRef, qtyRaw, player.id);
+    if (!result.ok) {
+      await sendMessage(token, chatId, `❌ ${result.error}`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return true;
+    }
+
+    pendingActionByChatId.delete(chatId);
+    await sendMessage(
+      token,
+      chatId,
+      `✅ Со склада компании продано: ${result.partName} x${result.sellQty}\n+${result.earnedGrm} GRM\nКапитал компании: ${result.companyCapitalGrm} GRM`,
+      { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+    );
     return true;
   }
 
