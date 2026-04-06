@@ -12,6 +12,7 @@ export const companyContractPartRefsByChatId = new Map<number, string[]>();
 export const companyContractSelectedPartRefsByChatId = new Map<number, string[]>();
 export const companyContractPartPageByChatId = new Map<number, number>();
 export const companyMemberRefsByChatId = new Map<number, string[]>();
+export const companyStaffTargetUserIdByChatId = new Map<number, string>();
 export const companyBlueprintRefsByChatId = new Map<number, string[]>();
 export const companyPartDepositRefsByChatId = new Map<number, string[]>();
 export const companyPartSellRefsByChatId = new Map<number, string[]>();
@@ -24,6 +25,7 @@ export const companyWarehouseFilterByChatId = new Map<number, string>();
 export const marketListingRefsByChatId = new Map<number, string[]>();
 export const hackathonPartRefsByChatId = new Map<number, string[]>();
 export const hackathonSabotageTargetRefsByChatId = new Map<number, string[]>();
+export const hackathonSelectedSabotageTargetByChatId = new Map<number, string>();
 export const companyBlueprintProgressMessageByChatId = new Map<number, number>();
 export const companyBlueprintProgressTimerByChatId = new Map<number, NodeJS.Timeout>();
 export const companyMiningNotifyTimerByChatId = new Map<number, NodeJS.Timeout>();
@@ -53,6 +55,7 @@ export const companyMenuSectionByChatId = new Map<
   | "bureau_exclusive"
   | "management"
   | "management_hr"
+  | "management_requests"
   | "management_departments"
   | "hackathon"
   | "hackathon_event"

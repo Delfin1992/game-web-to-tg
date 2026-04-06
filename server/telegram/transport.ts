@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { lastInlineMessageByChatId } from "./state";
-import { getTelegramRetryAfterSeconds, repairMojibake, sleep } from "./helpers";
+import { fixEncoding, getTelegramRetryAfterSeconds, sleep } from "./helpers";
 
 function sanitizeTelegramPayload(value: unknown): unknown {
-  if (typeof value === "string") return repairMojibake(value);
+  if (typeof value === "string") return fixEncoding(value);
   if (Array.isArray(value)) return value.map((item) => sanitizeTelegramPayload(item));
   if (value && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>)

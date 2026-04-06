@@ -2,6 +2,14 @@
  * Company operational process commands extracted from telegram.ts.
  * Covers mining, warehouse part deposit and company auction listing.
  */
+import { TUTORIAL_MEDAL_ITEM_ID } from "../../game-engine";
+
+function isTransferableCompanyPartItem(item: any) {
+  if (!item || item.type !== "part") return false;
+  if (item.id === TUTORIAL_MEDAL_ITEM_ID) return false;
+  return !/медал/i.test(String(item.name || ""));
+}
+
 export async function handleCompanyProcessMessage(input: {
   command: string;
   args: string[];
@@ -104,6 +112,93 @@ export async function handleCompanyProcessMessage(input: {
     canManageCompanyAssets,
     companyAssetManagerError,
   } = input;
+
+  if (command === "/company_mining_start") {
+    const player = await resolveOrCreateTelegramPlayer(message.from);
+    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return true;
+    setCompanyMenuSection(chatId, "work");
+    rememberTelegramMenu(player.id, { menu: "company", section: "work" });
+    const membership = await getPlayerCompanyContext(player.id);
+    if (!membership) {
+      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
+      return true;
+    }
+    if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Добыча запчастей"))) {
+      return true;
+    }
+
+    const rawRef = String(args[0] || "").trim();
+    const byIndex = Math.max(0, Number(rawRef) - 1);
+    const plan = COMPANY_MINING_PLANS[byIndex] ?? getCompanyMiningPlan(rawRef);
+    try {
+      const started = await callInternalApi("POST", `/api/companies/${membership.company.id}/mining/start`, {
+        userId: player.id,
+        planId: plan.id,
+      }) as any;
+      if (started.status === "in_progress") {
+        scheduleCompanyMiningReadyNotification(token, chatId, membership, player.id, started.remainingSeconds);
+      }
+      await sendMessage(
+        token,
+        chatId,
+        `⛏ Запущена смена: ${plan.label}\nВремя: ~${started.remainingSeconds} сек.\nОжидаемая добыча: ${plan.minRewardQty}-${plan.maxRewardQty} запчастей`,
+        { reply_markup: buildCompanyMiningInlineButtons(started) },
+      );
+    } catch (error) {
+      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+    }
+    return true;
+  }
+
+  if (command === "/company_mining_claim") {
+    const player = await resolveOrCreateTelegramPlayer(message.from);
+    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return true;
+    setCompanyMenuSection(chatId, "work");
+    rememberTelegramMenu(player.id, { menu: "company", section: "work" });
+    const membership = await getPlayerCompanyContext(player.id);
+    if (!membership) {
+      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
+      return true;
+    }
+    if (!(await ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Забор добычи"))) {
+      return true;
+    }
+
+    try {
+      const currentStatus = await getCompanyMiningStatus(membership.company.id, player.id);
+      if (currentStatus.status !== "ready_to_claim" || !currentStatus.rewardPreview) {
+        await sendMessage(token, chatId, formatMiningPlansMenu(currentStatus), {
+          reply_markup: buildCompanyMiningInlineButtons(currentStatus),
+        });
+        return true;
+      }
+      const warehouseCheck = await ensureCompanyWarehouseCanStoreMiningReward(
+        membership.company,
+        currentStatus.rewardPreview.quantity,
+      );
+      if (!warehouseCheck.ok) {
+        await sendMessage(token, chatId, `⚠️ На складе нет места. Свободно слотов: ${warehouseCheck.free}.`, {
+          reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+        });
+        return true;
+      }
+      const claimed = await claimCompanyMining(membership.company.id, player.id);
+      addPartToCompanyWarehouse(membership.company.id, claimed.reward);
+      await sendMessage(
+        token,
+        chatId,
+        `✅ Добыча завершена: ${claimed.reward.partName} x${claimed.reward.quantity}\nРедкость: ${claimed.reward.rarity}\nДеталь перемещена на склад компании.`,
+        { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+      );
+    } catch (error) {
+      await sendMessage(token, chatId, `❌ ${extractErrorMessage(error)}`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+    }
+    return true;
+  }
 
   if (command === "/company_mining_start") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
@@ -268,7 +363,7 @@ export async function handleCompanyProcessMessage(input: {
     const [refRaw, qtyRaw] = argsText.split(/\s+/);
     const partRef = resolveCompanyPartDepositRefFromChat(chatId, refRaw);
     const inventory = [...(game.inventory ?? [])];
-    const partItem = inventory.find((item: any) => item.type === "part" && item.id === partRef);
+    const partItem = inventory.find((item: any) => isTransferableCompanyPartItem(item) && item.id === partRef);
     if (!partItem) {
       await sendMessage(token, chatId, "❌ На склад компании можно добавлять только запчасти. Открой склад компании и выбери деталь из списка.");
       return true;
@@ -294,7 +389,7 @@ export async function handleCompanyProcessMessage(input: {
     }
 
     const nextInventory = inventory.flatMap((item: any) => {
-      if (item.type !== "part" || item.id !== partItem.id) return [item];
+      if (!isTransferableCompanyPartItem(item) || item.id !== partItem.id) return [item];
       const left = availableQty - moveQty;
       if (left <= 0) return [];
       return [{ ...item, quantity: left }];
@@ -390,7 +485,7 @@ export async function handleCompanyProcessMessage(input: {
 
     const snapshot = await getUserWithGameState(player.id);
     const game = snapshot?.game;
-    const parts = [...(game?.inventory ?? [])].filter((item: any) => item.type === "part");
+    const parts = [...(game?.inventory ?? [])].filter((item: any) => isTransferableCompanyPartItem(item));
     companyPartDepositRefsByChatId.set(chatId, parts.map((item: any) => item.id));
     const partRef = resolveCompanyPartDepositRefFromChat(chatId, refRaw);
     const partItem = parts.find((item: any) => item.id === partRef);

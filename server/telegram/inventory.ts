@@ -61,7 +61,7 @@ export function createInventoryTelegramModule(deps: {
         return { handled: true as const, callbackText: "Инвентарь" };
       }
 
-      const inventoryActionMatch = data.match(/^inv:(inspect|use|equip|service|scrap):(\d+)$/);
+      const inventoryActionMatch = data.match(/^inv:(inspect|use|equip|scrap):(\d+)$/);
       if (inventoryActionMatch) {
         const action = inventoryActionMatch[1];
         const index = inventoryActionMatch[2];
@@ -108,9 +108,7 @@ export function createInventoryTelegramModule(deps: {
           ? `/use ${index}`
           : action === "equip"
             ? `/equip ${index}`
-            : action === "service"
-              ? `/service ${index}`
-              : `/scrap ${index}`;
+            : `/scrap ${index}`;
         await deps.handleIncomingMessage(token, webAppUrl, {
           chat: { id: chatId },
           from: query.from,

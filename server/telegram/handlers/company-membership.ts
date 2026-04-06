@@ -67,12 +67,33 @@ export async function handleCompanyMembershipMessage(input: {
     getTelegramIdByUserId,
   } = input;
 
+  function resolveCompanySelection(companies: any[], refRaw: string) {
+    const trimmed = String(refRaw || "").trim();
+    if (!trimmed) return null;
+
+    const list = companyListByChatId.get(chatId) ?? [];
+    const indexedMatch = trimmed.match(/^(\d+)(?:\.\s*|\s+|$)/);
+    if (indexedMatch) {
+      const index = Number(indexedMatch[1]) - 1;
+      const companyId = index >= 0 && index < list.length ? String(list[index]) : "";
+      const byIndex = companies.find((company: any) => String(company.id) === companyId) ?? null;
+      if (byIndex) return byIndex;
+    }
+
+    const normalizedNamedRef = trimmed.replace(/^\d+\.\s*/, "").trim();
+    return companies.find((company: any) => String(company.id) === trimmed)
+      ?? companies.find((company: any) => String(company.id).startsWith(trimmed))
+      ?? companies.find((company: any) => String(company.name || "").toLowerCase() === trimmed.toLowerCase())
+      ?? companies.find((company: any) => String(company.name || "").toLowerCase() === normalizedNamedRef.toLowerCase())
+      ?? null;
+  }
+
   if (command === "/company_create") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     const companyCreateCost = getCompanyCreateCostForPlayer(player.city);
     const membership = await getPlayerCompanyContext(player.id);
     if (membership) {
-      await sendMessage(token, chatId, "Ты уже состоишь в компании. Используй раздел «🏢 Компания».", {
+      await sendMessage(token, chatId, "Ты уже состоишь в компании. Открой раздел «🏢 Компания».", {
         reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
       });
       return true;
@@ -85,8 +106,8 @@ export async function handleCompanyMembershipMessage(input: {
         token,
         chatId,
         [
-          "Введи название новой компании (3-40 символов).",
-          "После этого бот попросит один эмоджи компании.",
+          "Введи название новой компании: от 3 до 40 символов.",
+          "После этого бот попросит один эмодзи для компании.",
           `Стоимость: ${getCurrencySymbol(player.city)}${companyCreateCost}`,
         ].join("\n"),
         { reply_markup: buildCompanyReplyMarkup(null) },
@@ -113,7 +134,7 @@ export async function handleCompanyMembershipMessage(input: {
     await sendMessage(
       token,
       chatId,
-      "Теперь отправь один эмоджи для компании. Пример: 🚀 или 🏢",
+      "Теперь отправь один эмодзи для компании. Пример: 🚀 или 🏢",
       { reply_markup: buildCompanyReplyMarkup(null) },
     );
     return true;
@@ -132,27 +153,16 @@ export async function handleCompanyMembershipMessage(input: {
     const ref = args.join(" ").trim();
     if (!ref) {
       const companies = (await storage.getAllCompanies()).filter((company: any) => !company.isTutorial);
-      companyListByChatId.set(chatId, getTopCompanies(companies).map((company: any) => company.id));
-      await sendMessage(token, chatId, "Выбери компанию для вступления:", {
+      companyListByChatId.set(chatId, getTopCompanies(companies).map((company: any) => String(company.id)));
+      pendingActionByChatId.set(chatId, { type: "company_join_select" });
+      await sendMessage(token, chatId, "Выбери компанию для вступления кнопкой ниже или просто отправь её номер.", {
         reply_markup: buildCompanyRegistryInlineMarkup(companies),
       });
       return true;
     }
 
     const companies = (await storage.getAllCompanies()).filter((company: any) => !company.isTutorial);
-    let selectedCompany = null as any;
-
-    if (/^\d+$/.test(ref)) {
-      const list = companyListByChatId.get(chatId) ?? [];
-      const index = Number(ref) - 1;
-      const companyId = index >= 0 && index < list.length ? list[index] : "";
-      selectedCompany = companies.find((company: any) => company.id === companyId) ?? null;
-    } else {
-      selectedCompany = companies.find((company: any) => company.id === ref)
-        ?? companies.find((company: any) => company.id.startsWith(ref))
-        ?? companies.find((company: any) => company.name.toLowerCase() === ref.toLowerCase())
-        ?? null;
-    }
+    const selectedCompany = resolveCompanySelection(companies, ref);
 
     if (!selectedCompany) {
       await sendMessage(token, chatId, "Компания не найдена. Открой раздел «🏢 Компания» и выбери компанию из списка.", {
@@ -166,7 +176,8 @@ export async function handleCompanyMembershipMessage(input: {
       (request: any) => request.companyId === selectedCompany.id && request.status === "pending",
     );
     if (existsPending) {
-      await sendMessage(token, chatId, "Заявка уже отправлена и ожидает решения.", {
+      pendingActionByChatId.delete(chatId);
+      await sendMessage(token, chatId, "Заявка уже отправлена и ждёт решения.", {
         reply_markup: buildCompanyReplyMarkup(null),
       });
       return true;
@@ -177,8 +188,17 @@ export async function handleCompanyMembershipMessage(input: {
       userId: player.id,
       username: player.username,
     });
+    console.info("[company_join_request_created]", JSON.stringify({
+      chatId,
+      companyId: String(selectedCompany.id),
+      companyName: String(selectedCompany.name || ""),
+      ownerId: String(selectedCompany.ownerId || ""),
+      userId: String(player.id || ""),
+      username: String(player.username || ""),
+    }));
+    pendingActionByChatId.delete(chatId);
 
-    await sendMessage(token, chatId, `✅ Заявка отправлена в компанию "${selectedCompany.name}".`, {
+    await sendMessage(token, chatId, `✅ Заявка отправлена в компанию «${selectedCompany.name}».`, {
       reply_markup: buildCompanyReplyMarkup(null),
     });
 
@@ -191,7 +211,7 @@ export async function handleCompanyMembershipMessage(input: {
           "📥 Новая заявка в компанию",
           `Компания: ${selectedCompany.name}`,
           `Игрок: ${player.username}`,
-          "Открой раздел «📥 Заявки», чтобы принять или отклонить её.",
+          "Открой раздел «📨 Заявки», чтобы принять или отклонить её.",
         ].join("\n"),
       );
     }
@@ -221,7 +241,7 @@ export async function handleCompanyMembershipMessage(input: {
     }
     stopCompanyBlueprintProgressTicker(chatId);
     companyBlueprintProgressMessageByChatId.delete(chatId);
-    await sendMessage(token, chatId, `✅ Ты вышел из компании "${membership.company.name}".`, {
+    await sendMessage(token, chatId, `✅ Ты вышел из компании «${membership.company.name}».`, {
       reply_markup: buildCompanyReplyMarkup(null),
     });
     return true;
@@ -247,16 +267,24 @@ export async function handleCompanyMembershipMessage(input: {
     }
 
     const requests = await storage.getJoinRequestsByCompany(membership.company.id);
+    console.info("[company_join_requests_command]", JSON.stringify({
+      chatId,
+      companyId: String(membership.company.id || ""),
+      companyName: String(membership.company.name || ""),
+      ownerId: String(membership.company.ownerId || ""),
+      requestsCount: requests.length,
+      requestIds: requests.map((request: any) => String(request.id || "")),
+    }));
     let request = null as any;
 
     if (/^\d+$/.test(ref)) {
       const ids = companyRequestsByChatId.get(chatId) ?? [];
       const index = Number(ref) - 1;
-      const requestId = index >= 0 && index < ids.length ? ids[index] : "";
-      request = requests.find((item: any) => item.id === requestId) ?? null;
+      const requestId = index >= 0 && index < ids.length ? String(ids[index]) : "";
+      request = requests.find((item: any) => String(item.id) === requestId) ?? null;
     } else {
-      request = requests.find((item: any) => item.id === ref)
-        ?? requests.find((item: any) => item.id.startsWith(ref))
+      request = requests.find((item: any) => String(item.id) === ref)
+        ?? requests.find((item: any) => String(item.id).startsWith(ref))
         ?? null;
     }
 
@@ -279,7 +307,7 @@ export async function handleCompanyMembershipMessage(input: {
           await sendMessage(
             token,
             chatId,
-            `❌ Лимит сотрудников достигнут (${currentMembers.length}/${companyEconomy.employeeLimit}). Улучши профильный отдел и расширь компанию.`,
+            `❌ Лимит сотрудников достигнут (${currentMembers.length}/${companyEconomy.employeeLimit}). Сначала расширь компанию.`,
             { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
           );
           return true;
@@ -309,6 +337,42 @@ export async function handleCompanyMembershipMessage(input: {
     return true;
   }
 
+  if (command === "/company_request_accept_menu" || command === "/company_request_decline_menu") {
+    const player = await resolveOrCreateTelegramPlayer(message.from);
+    if (!(await ensureCompanyHubAccess(token, chatId, player, message))) return true;
+    setCompanyMenuSection(chatId, "management_requests");
+    rememberTelegramMenu(player.id, { menu: "company", section: "management_requests" });
+    const membership = await getPlayerCompanyContext(player.id);
+    if (!membership || membership.role !== "owner") {
+      await sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+      return true;
+    }
+    const requests = await storage.getJoinRequestsByCompany(membership.company.id);
+    companyRequestsByChatId.set(chatId, requests.map((request: any) => String(request.id)));
+    if (!requests.length) {
+      await sendMessage(token, chatId, "📥 Входящих заявок пока нет.", {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return true;
+    }
+    pendingActionByChatId.set(chatId, {
+      type: "company_request_pick",
+      action: command === "/company_request_accept_menu" ? "accept" : "decline",
+    });
+    await sendMessage(
+      token,
+      chatId,
+      [
+        command === "/company_request_accept_menu" ? "✅ Какую заявку одобрить?" : "❌ Какую заявку отклонить?",
+        "Отправь номер заявки из списка ниже.",
+        "",
+        ...requests.map((request: any, index: number) => `${index + 1}. ${request.username}`),
+      ].join("\n"),
+      { reply_markup: buildCompanyReplyMarkup(membership.role, chatId) },
+    );
+    return true;
+  }
+
   if (command === "/company_delete") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     const membership = await getPlayerCompanyContext(player.id);
@@ -323,7 +387,7 @@ export async function handleCompanyMembershipMessage(input: {
     companySalaryClaimAtByCompanyId.delete(String(membership.company.id));
     stopCompanyBlueprintProgressTicker(chatId);
     companyBlueprintProgressMessageByChatId.delete(chatId);
-    await sendMessage(token, chatId, `🗑 Компания "${membership.company.name}" удалена.`, {
+    await sendMessage(token, chatId, `🗑 Компания «${membership.company.name}» удалена.`, {
       reply_markup: buildCompanyReplyMarkup(null),
     });
     return true;

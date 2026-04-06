@@ -25,6 +25,7 @@ export async function handleCompanyNavigationMessage(input: {
   storage: any;
   getTopCompanies: (companies: any[]) => any[];
   companyListByChatId: Map<number, string[]>;
+  pendingActionByChatId: Map<number, any>;
   sendMessage: (token: string, chatId: number, text: string, extra?: Record<string, unknown>) => Promise<any>;
   formatCompanyMenuWithoutMembership: (companies: any[], city: string) => string;
   buildCompanyRegistryInlineMarkup: (companies: any[]) => any;
@@ -48,6 +49,7 @@ export async function handleCompanyNavigationMessage(input: {
   sendCompanyBureauSection: (token: string, chatId: number, membership: any, playerId: string) => Promise<void>;
   sendCompanyManagementSection: (token: string, chatId: number, membership: any) => Promise<void>;
   formatCompanySalariesSection: (membership: any, chatId: number) => Promise<string>;
+  buildCompanySalariesInlineMarkup: (membership: any, chatId: number) => any;
   sendCompanyEconomySection: (token: string, chatId: number, membership: any) => Promise<void>;
   sendCompanyDepartmentsSection: (token: string, chatId: number, membership: any) => Promise<void>;
   sendCompanyIpoSection: (token: string, chatId: number, membership: any) => Promise<void>;
@@ -94,7 +96,8 @@ export async function handleCompanyNavigationMessage(input: {
 
           const companies = (await input.storage.getAllCompanies()).filter((company: any) => !company.isTutorial);
           const top = input.getTopCompanies(companies);
-          input.companyListByChatId.set(state.chatId, top.map((company: any) => company.id));
+          input.companyListByChatId.set(state.chatId, top.map((company: any) => String(company.id)));
+          input.pendingActionByChatId.set(state.chatId, { type: "company_join_select" });
           await input.sendMessage(token, state.chatId, `✅ Вы прибыли в компанию.\n\n${input.formatCompanyMenuWithoutMembership(companies, player.city)}`, {
             reply_markup: input.buildCompanyRegistryInlineMarkup(companies),
           });
@@ -117,7 +120,8 @@ export async function handleCompanyNavigationMessage(input: {
 
     const companies = (await input.storage.getAllCompanies()).filter((company: any) => !company.isTutorial);
     const top = input.getTopCompanies(companies);
-    input.companyListByChatId.set(chatId, top.map((company: any) => company.id));
+    input.companyListByChatId.set(chatId, top.map((company: any) => String(company.id)));
+    input.pendingActionByChatId.set(chatId, { type: "company_join_select" });
     await input.sendMessage(token, chatId, input.formatCompanyMenuWithoutMembership(companies, player.city), {
       reply_markup: input.buildCompanyRegistryInlineMarkup(companies),
     });
@@ -322,7 +326,7 @@ export async function handleCompanyNavigationMessage(input: {
       return true;
     }
     await input.sendMessage(token, chatId, await input.formatCompanySalariesSection(membership, chatId), {
-      reply_markup: input.buildCompanyReplyMarkup(membership.role, chatId),
+      reply_markup: input.buildCompanySalariesInlineMarkup(membership, chatId),
     });
     return true;
   }
@@ -369,8 +373,8 @@ export async function handleCompanyNavigationMessage(input: {
   if (command === "/company_requests") {
     const player = await input.resolveOrCreateTelegramPlayer(message.from);
     if (!(await input.ensureCompanyHubAccess(token, chatId, player, message))) return true;
-    input.setCompanyMenuSection(chatId, "management_hr");
-    input.rememberTelegramMenu(player.id, { menu: "company", section: "management_hr" });
+    input.setCompanyMenuSection(chatId, "management_requests");
+    input.rememberTelegramMenu(player.id, { menu: "company", section: "management_requests" });
     const membership = await input.getPlayerCompanyContext(player.id);
     if (!membership || membership.role !== "owner") {
       await input.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");

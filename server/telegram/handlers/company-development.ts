@@ -428,7 +428,7 @@ export async function handleCompanyDevelopmentMessage(input: {
   if (command === "/company_bp_produce") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     setCompanyMenuSection(chatId, "bureau");
-    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "development"))) {
+    if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "company_action"))) {
       return true;
     }
     const membership = await getPlayerCompanyContext(player.id);

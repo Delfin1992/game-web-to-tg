@@ -21,6 +21,15 @@ type HubTelegramModuleDeps = {
   ) => Promise<void>;
 };
 
+function normalizeHousingCallbackId(raw: string) {
+  return String(raw || "").trim().replace(/\s+/g, "_").toLowerCase();
+}
+
+function resolveHousingFromCallback(deps: HubTelegramModuleDeps, rawHouseId: string) {
+  const normalized = normalizeHousingCallbackId(rawHouseId);
+  return deps.getHousingById(rawHouseId) || deps.getHousingById(normalized);
+}
+
 export function createHubTelegramModule(deps: HubTelegramModuleDeps) {
   return {
     async handleMessage(input: { navigationInput: any; cityInput: any }) {
@@ -47,9 +56,9 @@ export function createHubTelegramModule(deps: HubTelegramModuleDeps) {
       const housingViewMatch = data.match(/^housing:view:(.+)$/);
       if (housingViewMatch) {
         const player = await deps.resolveOrCreateTelegramPlayer(query.from);
-        const refreshedUser = await deps.storage.getUser(player.id);
-        const house = deps.getHousingById(housingViewMatch[1]);
-        if (!refreshedUser || !house) {
+        const refreshedUser = (await deps.storage.getUser(player.id)) ?? player;
+        const house = resolveHousingFromCallback(deps, housingViewMatch[1]);
+        if (!house) {
           return { handled: true as const, callbackText: "Дом не найден" };
         }
         await deps.replaceHousingCardMessage(token, chatId, messageId, refreshedUser, house);
@@ -59,8 +68,9 @@ export function createHubTelegramModule(deps: HubTelegramModuleDeps) {
       const housingBuyMatch = data.match(/^housing:buy:(.+)$/);
       if (housingBuyMatch) {
         const player = await deps.resolveOrCreateTelegramPlayer(query.from);
-        const updated = await deps.purchaseHousing(player.id, housingBuyMatch[1]);
-        const house = deps.getHousingById(housingBuyMatch[1]);
+        const houseId = normalizeHousingCallbackId(housingBuyMatch[1]);
+        const updated = await deps.purchaseHousing(player.id, houseId);
+        const house = resolveHousingFromCallback(deps, houseId);
         if (!house) {
           return { handled: true as const, callbackText: "Дом не найден" };
         }
@@ -71,8 +81,9 @@ export function createHubTelegramModule(deps: HubTelegramModuleDeps) {
       const housingActivateMatch = data.match(/^housing:activate:(.+)$/);
       if (housingActivateMatch) {
         const player = await deps.resolveOrCreateTelegramPlayer(query.from);
-        const updated = await deps.setActiveHousing(player.id, housingActivateMatch[1]);
-        const house = deps.getHousingById(housingActivateMatch[1]);
+        const houseId = normalizeHousingCallbackId(housingActivateMatch[1]);
+        const updated = await deps.setActiveHousing(player.id, houseId);
+        const house = resolveHousingFromCallback(deps, houseId);
         if (!house) {
           return { handled: true as const, callbackText: "Дом не найден" };
         }

@@ -29,6 +29,7 @@ export async function handleRepairCallback(input: {
   cancelRepairOrderByPlayer: (playerId: string, orderId: string) => Promise<any>;
   getPlayerCompanyContext: (userId: string) => Promise<any | null>;
   sendWithMainKeyboard: (token: string, chatId: number, text: string) => Promise<void>;
+  pendingActionByChatId: Map<number, any>;
   formatCompanyRepairServiceMenu: (membership: any, chatId: number) => Promise<string>;
   buildCompanyRepairServiceInlineMarkup: (membership: any) => any;
   sendCompanyRootMenu: (token: string, chatId: number, player: any, prefix?: string) => Promise<void>;
@@ -50,6 +51,7 @@ export async function handleRepairCallback(input: {
     }
 
     const [, action, rawValue = ""] = data.split(":");
+
     if (action === "refresh") {
       const text = await input.formatRepairServiceMenu(player.id, chatId);
       if (messageId) {
@@ -94,17 +96,17 @@ export async function handleRepairCallback(input: {
         "🔧 Оценка ремонта",
         `Гаджет: ${gadget.name}`,
         `Состояние: ${Math.round(gadget.condition ?? 0)}/${Math.round(gadget.maxCondition ?? 100)} (${input.getGadgetConditionStatusLabel(gadget)})`,
-        `Стоимость ремонта: ${input.getCurrencySymbol(player.city)}${estimate.minPrice} - ${input.getCurrencySymbol(player.city)}${estimate.maxPrice}`,
+        `Диапазон цены: ${input.getCurrencySymbol(player.city)}${estimate.minPrice} - ${input.getCurrencySymbol(player.city)}${estimate.maxPrice}`,
         `Срок ремонта: ${input.formatRepairDuration(estimate.repairTimeMs)}`,
         "",
         "Нужно для ремонта:",
         ...estimate.requiredParts.map((part: any) => `• ${part.label} x${part.quantity}`),
         "",
-        "Подтвердить отправку в сервис?",
+        "Назначь цену, и заказ появится в городском сервисе.",
       ].join("\n");
-      const reply_markup = {
+      const replyMarkup = {
         inline_keyboard: [
-          [{ text: "✅ Отправить в сервис", callback_data: `repair:confirm:${rawValue}` }],
+          [{ text: "💰 Указать цену", callback_data: `repair:setprice:${rawValue}` }],
           [{ text: "⬅️ Назад к списку", callback_data: "repair:refresh" }],
         ],
       };
@@ -113,12 +115,42 @@ export async function handleRepairCallback(input: {
           chat_id: chatId,
           message_id: messageId,
           text,
-          reply_markup,
+          reply_markup: replyMarkup,
         });
       } else {
-        await input.sendMessage(token, chatId, text, { reply_markup });
+        await input.sendMessage(token, chatId, text, { reply_markup: replyMarkup });
       }
       return { handled: true, callbackText: "Оценка ремонта", shouldClearInlineButtons: false };
+    }
+
+    if (action === "setprice") {
+      const gadgetRefs = input.repairGadgetRefsByChatId.get(chatId) ?? [];
+      const gadgetRef = gadgetRefs[Math.max(0, Number(rawValue) - 1)] ?? rawValue;
+      const gadgets = await input.listRepairableGadgets(player.id);
+      const gadget = gadgets.find((item) => String(item.id) === String(gadgetRef));
+      if (!gadget) {
+        await input.sendRepairServiceMenu(token, chatId, player.id, "Гаджет больше недоступен для ремонта.");
+        return { handled: true, callbackText: "Цена ремонта" };
+      }
+      const estimate = input.calculateRepairEstimate(gadget);
+      input.pendingActionByChatId.set(chatId, {
+        type: "repair_service_price",
+        gadgetRef: String(gadgetRef),
+        gadgetName: gadget.name,
+        minPrice: estimate.minPrice,
+        maxPrice: estimate.maxPrice,
+      });
+      await input.sendMessage(
+        token,
+        chatId,
+        [
+          "💰 Цена ремонта",
+          `Гаджет: ${gadget.name}`,
+          `Укажи цену от ${input.getCurrencySymbol(player.city)}${estimate.minPrice} до ${input.getCurrencySymbol(player.city)}${estimate.maxPrice}.`,
+          "После этого заказ появится в городском сервисе и компания сможет взять его в работу.",
+        ].join("\n"),
+      );
+      return { handled: true, callbackText: "Цена ремонта" };
     }
 
     if (action === "confirm") {
@@ -131,8 +163,8 @@ export async function handleRepairCallback(input: {
           chatId,
           player.id,
           [
-            "✅ Гаджет отправлен в сервис.",
-            `Стоимость ремонта: ${input.getCurrencySymbol(player.city)}${order.minPrice} - ${input.getCurrencySymbol(player.city)}${order.maxPrice}.`,
+            "✅ Заказ на ремонт создан.",
+            `Цена для компании: ${input.getCurrencySymbol(player.city)}${order.finalPrice}`,
             `Срок ремонта: ${input.formatRepairDuration(order.repairTimeMs)}.`,
           ].join("\n"),
         );
@@ -165,6 +197,7 @@ export async function handleRepairCallback(input: {
     }
 
     const [, action, orderId = ""] = data.split(":");
+
     if (action === "refresh") {
       const text = await input.formatCompanyRepairServiceMenu(membership, chatId);
       if (messageId) {
@@ -212,11 +245,16 @@ export async function handleRepairCallback(input: {
 
         const playerChatId = Number(input.getTelegramIdByUserId(order.playerId) || order.playerChatId || 0);
         if (Number.isFinite(playerChatId) && playerChatId > 0) {
-          await input.sendMessage(token, playerChatId, [
-            "✅ Компания приняла заказ.",
-            `Гаджет: ${order.gadgetName}`,
-            `Ремонт уже запущен. Срок: ${input.formatRepairDuration(order.repairTimeMs)}.`,
-          ].join("\n"));
+          await input.sendMessage(
+            token,
+            playerChatId,
+            [
+              "✅ Компания приняла заказ.",
+              `Гаджет: ${order.gadgetName}`,
+              `Цена ремонта: ${input.getCurrencySymbol(order.city)}${order.finalPrice}`,
+              `Ремонт уже запущен. Срок: ${input.formatRepairDuration(order.repairTimeMs)}.`,
+            ].join("\n"),
+          );
         }
         await input.sendCompanyRepairServiceMenu(token, chatId, membership, player.id, "✅ Заказ принят. Запчасти списаны, ремонт запущен.");
       } catch (error) {

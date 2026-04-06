@@ -37,12 +37,12 @@ function buildWarehousePartPool(items: any[], normalizePartRarity: (rarity: stri
 
 function formatBlueprintRecipeDetails(blueprint: any, quantity = 1) {
   const requirements = getBlueprintRecipeRequirements(blueprint);
-  if (!requirements.length) return ["РќСѓР¶РЅРѕ РЅР° РїСЂРѕРёР·РІРѕРґСЃС‚РІРѕ: Р±Р°Р·РѕРІС‹Рµ РґРµС‚Р°Р»Рё РЅРµ РЅР°СЃС‚СЂРѕРµРЅС‹"];
+  if (!requirements.length) return ["Нужно на производство: базовые детали не настроены"];
   return [
-    "РќСѓР¶РЅРѕ РЅР° РїСЂРѕРёР·РІРѕРґСЃС‚РІРѕ:",
+    "Нужно на производство:",
     ...requirements.map((requirement: { partType: string; quality: string; quantity: number }) => {
       const amount = Math.max(1, Number(requirement.quantity || 1)) * Math.max(1, quantity);
-      return `вЂў ${String(requirement.quality || "Common")} ${String(requirement.partType || "")} x${amount}`;
+      return `• ${String(requirement.quality || "Common")} ${String(requirement.partType || "")} x${amount}`;
     }),
   ];
 }
@@ -54,9 +54,9 @@ function formatBlueprintRecipeAvailabilityDetails(
   quantity = 1,
 ) {
   const requirements = getBlueprintRecipeRequirements(blueprint);
-  if (!requirements.length) return ["РќСѓР¶РЅРѕ РЅР° РїСЂРѕРёР·РІРѕРґСЃС‚РІРѕ: Р±Р°Р·РѕРІС‹Рµ РґРµС‚Р°Р»Рё РЅРµ РЅР°СЃС‚СЂРѕРµРЅС‹"];
+  if (!requirements.length) return ["Нужно на производство: базовые детали не настроены"];
   return [
-    "РќСѓР¶РЅРѕ РЅР° РїСЂРѕРёР·РІРѕРґСЃС‚РІРѕ:",
+    "Нужно на производство:",
     ...requirements.map((requirement: { partType: string; quality: string; quantity: number }) => {
       const needed = Math.max(1, Number(requirement.quantity || 1)) * Math.max(1, quantity);
       const available = warehouseParts
@@ -65,7 +65,7 @@ function formatBlueprintRecipeAvailabilityDetails(
           && normalizePartRarity(String(item.quality || item.rarity || "Common")) === normalizePartRarity(requirement.quality),
         )
         .reduce((sum: number, item: any) => sum + Math.max(1, Number(item.quantity || 1)), 0);
-      return `вЂў ${String(requirement.quality || "Common")} ${String(requirement.partType || "")} вЂ” РµСЃС‚СЊ ${available} / РЅР°РґРѕ ${needed}`;
+      return `• ${String(requirement.quality || "Common")} ${String(requirement.partType || "")} — есть ${available} / надо ${needed}`;
     }),
   ];
 }
@@ -84,8 +84,18 @@ function resolveCompanyMemberTarget(
       ?? ""
     )
     : "";
-  const resolvedUserId = byIndex || trimmed;
-  return members.find((member: any) => member.userId === resolvedUserId) ?? null;
+  const resolvedUserId = String(byIndex || trimmed);
+  return members.find((member: any) => String(member?.userId || "") === resolvedUserId) ?? null;
+}
+
+async function getCompanyStaffingMembers(
+  companyId: string,
+  callInternalApi: (method: "GET" | "POST", path: string, body?: Record<string, unknown>) => Promise<any>,
+) {
+  const payload = await callInternalApi("GET", `/api/companies/${companyId}/staffing`) as {
+    staffing?: { members?: any[] };
+  };
+  return Array.isArray(payload?.staffing?.members) ? payload.staffing.members : [];
 }
 
 export async function sendCompanyWorkSection(input: {
@@ -280,36 +290,32 @@ export async function sendCompanyRequestsSection(input: {
   sendMessage: (token: string, chatId: number, text: string, extra?: Record<string, unknown>) => Promise<unknown>;
 }) {
   const requests = await input.storage.getJoinRequestsByCompany(input.membership.company.id);
+  console.info("[company_join_requests_view]", JSON.stringify({
+    chatId: input.chatId,
+    companyId: String(input.membership.company.id || ""),
+    companyName: String(input.membership.company.name || ""),
+    ownerId: String(input.membership.company.ownerId || ""),
+    requestsCount: requests.length,
+    requestIds: requests.map((request) => String(request.id || "")),
+  }));
   if (!requests.length) {
-    await input.sendMessage(input.token, input.chatId, "рџ“Ґ Р’С…РѕРґСЏС‰РёС… Р·Р°СЏРІРѕРє РЅРµС‚.", {
+    input.companyRequestsByChatId.set(input.chatId, []);
+    await input.sendMessage(input.token, input.chatId, "📥 Входящих заявок пока нет.", {
       reply_markup: input.buildCompanyReplyMarkup(input.membership.role, input.chatId),
     });
     return;
   }
 
-  input.companyRequestsByChatId.set(input.chatId, requests.map((request) => request.id));
+  input.companyRequestsByChatId.set(input.chatId, requests.map((request) => String(request.id)));
   await input.sendMessage(
     input.token,
     input.chatId,
     [
-      `рџ“Ґ Р—РђРЇР’РљР Р’ "${input.membership.company.name}"`,
-      "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ",
+      `📥 ЗАЯВКИ В «${input.membership.company.name}»`,
+      "━━━━━━━━━━━━━━",
       ...requests.map((request, index) => `${index + 1}. ${request.username}`),
     ].join("\n"),
-    {
-      reply_markup: {
-        inline_keyboard: [
-          ...requests.flatMap((request, index) => ([
-            [{ text: `${index + 1}. ${request.username}`, callback_data: "company:requests" }],
-            [
-              { text: "вњ… РћРґРѕР±СЂРёС‚СЊ", callback_data: `company:request_accept:${request.id}` },
-              { text: "вќЊ РћС‚РєР»РѕРЅРёС‚СЊ", callback_data: `company:request_decline:${request.id}` },
-            ],
-          ])),
-          ...(((input.buildCompanyReplyMarkup(input.membership.role, input.chatId) as any)?.inline_keyboard) ?? []),
-        ],
-      },
-    },
+    { reply_markup: input.buildCompanyReplyMarkup(input.membership.role, input.chatId) },
   );
 }
 
@@ -386,7 +392,10 @@ type CompanyTelegramModuleDeps = {
   formatCompanyStaffingSection: (membership: any, chatId: number) => Promise<string>;
   buildCompanyStaffingInlineMarkup: (chatId: number, role: string | null) => unknown;
   companyMemberRefsByChatId: Map<number, string[]>;
+  companyStaffTargetUserIdByChatId: Map<number, string>;
   storage: any;
+  companyListByChatId: Map<number, string[]>;
+  companyRequestsByChatId: Map<number, string[]>;
   buildCompanyDepartmentSelectInlineMarkup: (memberRef: string, role: string | null, chatId: number) => unknown;
   formatCompanyDepartmentChoiceHelp: () => string;
   callInternalApi: (method: "GET" | "POST", path: string, body?: Record<string, unknown>) => Promise<any>;
@@ -409,6 +418,7 @@ type CompanyTelegramModuleDeps = {
   sendOrEditCompanyBureauSection: (token: string, chatId: number, membership: any, userId: string, messageId?: number, prefix?: string) => Promise<void>;
   getCompanyBlueprintSnapshot: (companyId: string) => Promise<any>;
   updateCompanyBlueprintProgressMessage: (token: string, chatId: number, companyName: string, companyId: string, userId: string) => Promise<void>;
+  startCompanyBlueprintProgressTicker: (token: string, chatId: number, companyName: string, companyId: string, userId: string) => void;
   ensureCompanyEconomyState: (company: any, membersCount: number) => Promise<any>;
   sendCompanyRequestsSection: (token: string, chatId: number, membership: any) => Promise<void>;
   upgradeDepartment: (company: any, departmentKey: any) => any;
@@ -516,56 +526,97 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
       if (data === "company:create_start") {
         const membership = await deps.getPlayerCompanyContext(player.id);
         if (membership) {
-          await deps.sendMessage(token, chatId, "РўС‹ СѓР¶Рµ СЃРѕСЃС‚РѕРёС€СЊ РІ РєРѕРјРїР°РЅРёРё. РСЃРїРѕР»СЊР·СѓР№ /company.", {
+          await deps.sendMessage(token, chatId, "Ты уже состоишь в компании. Используй /company.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РЎРѕР·РґР°РЅРёРµ РєРѕРјРїР°РЅРёРё" };
+          return { handled: true as const, callbackText: "Создание компании" };
         }
         const companyCreateCost = deps.getCompanyCreateCostForPlayer(player.city);
         deps.pendingActionByChatId.set(chatId, { type: "company_create" });
         await deps.sendMessage(
           token,
           chatId,
-          `Р’РІРµРґРё РЅР°Р·РІР°РЅРёРµ РЅРѕРІРѕР№ РєРѕРјРїР°РЅРёРё (3-40 СЃРёРјРІРѕР»РѕРІ).\nРџРѕСЃР»Рµ СЌС‚РѕРіРѕ Р±РѕС‚ РїРѕРїСЂРѕСЃРёС‚ РѕРґРёРЅ СЌРјРѕРґР¶Рё.\nРЎС‚РѕРёРјРѕСЃС‚СЊ: ${deps.getCurrencySymbol(player.city)}${companyCreateCost}`,
+          `Введи название новой компании: от 3 до 40 символов.\nПосле этого бот попросит один эмодзи.\nСтоимость: ${deps.getCurrencySymbol(player.city)}${companyCreateCost}`,
           { reply_markup: deps.buildCompanyReplyMarkup(null) },
         );
-        return { handled: true as const, callbackText: "РЎРѕР·РґР°РЅРёРµ РєРѕРјРїР°РЅРёРё" };
+        return { handled: true as const, callbackText: "Создание компании" };
       }
 
       const companyJoinMatch = data.match(/^company:join:(.+)$/);
-      if (companyJoinMatch) {
+      const companyJoinRefMatch = data.match(/^company:join_ref:(\d+)$/);
+      if (companyJoinRefMatch) {
         const existingMembership = await deps.getPlayerCompanyContext(player.id);
         if (existingMembership) {
-          await deps.sendMessage(token, chatId, "РўС‹ СѓР¶Рµ СЃРѕСЃС‚РѕРёС€СЊ РІ РєРѕРјРїР°РЅРёРё. РЎРЅР°С‡Р°Р»Р° РІС‹Р№РґРё РёР· С‚РµРєСѓС‰РµР№ РєРѕРјРїР°РЅРёРё.", {
+          await deps.sendMessage(token, chatId, "Ты уже состоишь в компании. Сначала выйди из текущей компании.", {
             reply_markup: deps.buildCompanyReplyMarkup(existingMembership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р’СЃС‚СѓРїР»РµРЅРёРµ РІ РєРѕРјРїР°РЅРёСЋ" };
+          return { handled: true as const, callbackText: "Вступление в компанию" };
         }
         const companies = (await deps.storage.getAllCompanies()).filter((company: any) => !company.isTutorial);
-        const selectedCompany = companies.find((company: any) => String(company.id) === String(companyJoinMatch[1])) ?? null;
+        const companyRefs = deps.companyListByChatId.get(chatId) ?? [];
+        const index = Number(companyJoinRefMatch[1]) - 1;
+        const companyId = index >= 0 && index < companyRefs.length ? String(companyRefs[index]) : "";
+        const selectedCompany = companies.find((company: any) => String(company.id) === companyId) ?? null;
         if (!selectedCompany) {
-          await deps.sendMessage(token, chatId, "РљРѕРјРїР°РЅРёСЏ РЅРµ РЅР°Р№РґРµРЅР°. РћС‚РєСЂРѕР№ СЂР°Р·РґРµР» В«рџЏў РљРѕРјРїР°РЅРёСЏВ» Рё РІС‹Р±РµСЂРё РєРѕРјРїР°РЅРёСЋ РёР· СЃРїРёСЃРєР°.", {
+          await deps.sendMessage(token, chatId, "Компания не найдена. Открой раздел «🏢 Компания» и выбери компанию из списка.", {
             reply_markup: deps.buildCompanyReplyMarkup(null),
           });
-          return { handled: true as const, callbackText: "Р’СЃС‚СѓРїР»РµРЅРёРµ РІ РєРѕРјРїР°РЅРёСЋ" };
+          return { handled: true as const, callbackText: "Вступление в компанию" };
         }
         const pendingRequests = await deps.storage.getJoinRequestsByUser(player.id);
         const existsPending = pendingRequests.some((request: any) => request.companyId === selectedCompany.id && request.status === "pending");
         if (existsPending) {
-          await deps.sendMessage(token, chatId, "Р—Р°СЏРІРєР° СѓР¶Рµ РѕС‚РїСЂР°РІР»РµРЅР° Рё РѕР¶РёРґР°РµС‚ СЂРµС€РµРЅРёСЏ.", {
+          await deps.sendMessage(token, chatId, "Заявка уже отправлена и ждёт решения.", {
             reply_markup: deps.buildCompanyReplyMarkup(null),
           });
-          return { handled: true as const, callbackText: "Р’СЃС‚СѓРїР»РµРЅРёРµ РІ РєРѕРјРїР°РЅРёСЋ" };
+          return { handled: true as const, callbackText: "Вступление в компанию" };
         }
         await deps.storage.createJoinRequest({
           companyId: selectedCompany.id,
           userId: player.id,
           username: player.username,
         });
-        await deps.sendMessage(token, chatId, `вњ… Р—Р°СЏРІРєР° РѕС‚РїСЂР°РІР»РµРЅР° РІ РєРѕРјРїР°РЅРёСЋ "${selectedCompany.name}".`, {
+        await deps.sendMessage(token, chatId, `✅ Заявка отправлена в компанию «${selectedCompany.name}».`, {
           reply_markup: deps.buildCompanyReplyMarkup(null),
         });
-        return { handled: true as const, callbackText: "Р’СЃС‚СѓРїР»РµРЅРёРµ РІ РєРѕРјРїР°РЅРёСЋ" };
+        return { handled: true as const, callbackText: "Вступление в компанию" };
+      }
+
+      if (companyJoinMatch) {
+        const existingMembership = await deps.getPlayerCompanyContext(player.id);
+        if (existingMembership) {
+          await deps.sendMessage(token, chatId, "Ты уже состоишь в компании. Сначала выйди из текущей компании.", {
+            reply_markup: deps.buildCompanyReplyMarkup(existingMembership.role, chatId),
+          });
+          return { handled: true as const, callbackText: "Вступление в компанию" };
+        }
+        const companies = (await deps.storage.getAllCompanies()).filter((company: any) => !company.isTutorial);
+        const selectedCompany = companies.find((company: any) => String(company.id) === String(companyJoinMatch[1]))
+          ?? companies.find((company: any) => String(company.id).startsWith(String(companyJoinMatch[1])))
+          ?? null;
+        if (!selectedCompany) {
+          await deps.sendMessage(token, chatId, "Компания не найдена. Открой раздел «🏢 Компания» и выбери компанию из списка.", {
+            reply_markup: deps.buildCompanyReplyMarkup(null),
+          });
+          return { handled: true as const, callbackText: "Вступление в компанию" };
+        }
+        const pendingRequests = await deps.storage.getJoinRequestsByUser(player.id);
+        const existsPending = pendingRequests.some((request: any) => request.companyId === selectedCompany.id && request.status === "pending");
+        if (existsPending) {
+          await deps.sendMessage(token, chatId, "Заявка уже отправлена и ждёт решения.", {
+            reply_markup: deps.buildCompanyReplyMarkup(null),
+          });
+          return { handled: true as const, callbackText: "Вступление в компанию" };
+        }
+        await deps.storage.createJoinRequest({
+          companyId: selectedCompany.id,
+          userId: player.id,
+          username: player.username,
+        });
+        await deps.sendMessage(token, chatId, `✅ Заявка отправлена в компанию «${selectedCompany.name}».`, {
+          reply_markup: deps.buildCompanyReplyMarkup(null),
+        });
+        return { handled: true as const, callbackText: "Вступление в компанию" };
       }
 
       const allowInsideExclusive =
@@ -598,7 +649,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           await deps.sendMessage(token, chatId, deps.companyAssetManagerError, {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РџСЂРѕРґР°Р¶Р° Р·Р°РїС‡Р°СЃС‚РµР№" };
+          return { handled: true as const, callbackText: "Продажа запчастей" };
         }
         const partRef = deps.resolveCompanyPartSellRefFromChat(chatId, companyPartSellPickMatch[1]);
         const warehouseParts = deps.getCompanyWarehouseParts(membership.company.id);
@@ -607,7 +658,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           await deps.sendMessage(token, chatId, "Р—Р°РїС‡Р°СЃС‚СЊ РЅРµ РЅР°Р№РґРµРЅР° РЅР° СЃРєР»Р°РґРµ РєРѕРјРїР°РЅРёРё.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РџСЂРѕРґР°Р¶Р° Р·Р°РїС‡Р°СЃС‚РµР№" };
+          return { handled: true as const, callbackText: "Продажа запчастей" };
         }
         const availableQty = Math.max(1, Number(partItem.quantity) || 1);
         if (availableQty > 1) {
@@ -615,10 +666,10 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           await deps.sendMessage(
             token,
             chatId,
-            `рџ’ё Р’С‹Р±СЂР°РЅРѕ: ${partItem.name}\nРќР° СЃРєР»Р°РґРµ: ${availableQty}\n\nР’РІРµРґРё РєРѕР»РёС‡РµСЃС‚РІРѕ РґР»СЏ РїСЂРѕРґР°Р¶Рё (1-${availableQty}) РёР»Рё all.`,
+            `💸 Выбрано: ${partItem.name}\nНа складе: ${availableQty}\n\nВведи количество для продажи (1-${availableQty}) или all.`,
             { reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId) },
           );
-          return { handled: true as const, callbackText: "РџСЂРѕРґР°Р¶Р° Р·Р°РїС‡Р°СЃС‚РµР№" };
+          return { handled: true as const, callbackText: "Продажа запчастей" };
         }
         const result = await deps.sellCompanyWarehousePart(membership, String(partItem.id), "1", player.id);
         await deps.sendMessage(
@@ -626,11 +677,11 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           chatId,
           result.ok
             ? `вњ… РЎРѕ СЃРєР»Р°РґР° РєРѕРјРїР°РЅРёРё РїСЂРѕРґР°РЅРѕ: ${result.partName} x${result.sellQty}\n+${deps.formatNumber(result.earnedGrm)} GRM\nРљР°РїРёС‚Р°Р» РєРѕРјРїР°РЅРёРё: ${deps.formatNumber(result.companyCapitalGrm)} GRM`
-            : `вќЊ ${result.error}`,
+            : `❌ ${result.error}`,
           { reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId) },
         );
         await deps.sendCompanyWarehouseSection(token, chatId, membership, player.id);
-        return { handled: true as const, callbackText: "РџСЂРѕРґР°Р¶Р° Р·Р°РїС‡Р°СЃС‚РµР№" };
+        return { handled: true as const, callbackText: "Продажа запчастей" };
       }
 
       const warehouseFilterMatch = data.match(/^company:warehouse_filter:(all|smartphone|smartwatch|tablet|laptop|asic)$/);
@@ -661,7 +712,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           if (started.status === "in_progress") {
             deps.scheduleCompanyMiningReadyNotification(token, chatId, membership, player.id, started.remainingSeconds);
           }
-          const text = `в›Џ Р—Р°РїСѓС‰РµРЅР° СЃРјРµРЅР°: ${plan.label}\nР’СЂРµРјСЏ: ~${started.remainingSeconds} СЃРµРє.\nРћР¶РёРґР°РµРјР°СЏ РґРѕР±С‹С‡Р°: ${plan.minRewardQty}-${plan.maxRewardQty} Р·Р°РїС‡Р°СЃС‚РµР№`;
+          const text = `⛏ Запущена смена: ${plan.label}\nВремя: ~${started.remainingSeconds} сек.\nОжидаемая добыча: ${plan.minRewardQty}-${plan.maxRewardQty} запчастей`;
           if (messageId) {
             await deps.callTelegramApi(token, "editMessageText", {
               chat_id: chatId,
@@ -675,7 +726,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             });
           }
         } catch (error) {
-          await deps.sendMessage(token, chatId, `вќЊ ${deps.extractErrorMessage(error)}`, {
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`, {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
         }
@@ -727,17 +778,17 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             reply_markup: deps.buildCompanyMiningInlineButtons(status),
           });
         }
-        return { handled: true as const, callbackText: "Р”РѕР±С‹С‡Р°", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Добыча", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:bureau") {
         await deps.sendOrEditCompanyBureauSection(token, chatId, membership, player.id, messageId);
-        return { handled: true as const, callbackText: "Р Р°Р·РґРµР»: Р‘СЋСЂРѕ", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Раздел: Бюро", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:management") {
         await deps.sendCompanyManagementSection(token, chatId, membership);
-        return { handled: true as const, callbackText: "Р Р°Р·РґРµР»: РЈРїСЂР°РІР»РµРЅРёРµ" };
+        return { handled: true as const, callbackText: "Раздел: Управление" };
       }
 
       if (data === "company:departments") {
@@ -751,7 +802,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         } else {
           await deps.sendMessage(token, chatId, view.text);
         }
-        return { handled: true as const, callbackText: "Р Р°Р·РґРµР»: РћС‚РґРµР»С‹" };
+        return { handled: true as const, callbackText: "Раздел: Отделы" };
       }
 
       if (data === "company:topup") {
@@ -761,13 +812,13 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           token,
           chatId,
           [
-            "рџ’± РџРѕРїРѕР»РЅРµРЅРёРµ РєРѕРјРїР°РЅРёРё РІ GRM",
-            `РўРІРѕР№ РєСѓСЂСЃ: 1 Р»РѕРєР°Р»СЊРЅР°СЏ РµРґРёРЅРёС†Р° = ${deps.formatRate(rate)} GRM`,
-            `Р‘Р°Р»Р°РЅСЃ РёРіСЂРѕРєР°: ${deps.getCurrencySymbol(player.city)}${player.balance}`,
-            "Р’РІРµРґРё СЃСѓРјРјСѓ РІ Р»РѕРєР°Р»СЊРЅРѕР№ РІР°Р»СЋС‚Рµ.",
+            "💱 Пополнение компании в GRM",
+            `Твой курс: 1 локальная единица = ${deps.formatRate(rate)} GRM`,
+            `Баланс игрока: ${deps.getCurrencySymbol(player.city)}${player.balance}`,
+            "Введи сумму в локальной валюте.",
           ].join("\n"),
         );
-        return { handled: true as const, callbackText: "РџРѕРїРѕР»РЅРµРЅРёРµ РєРѕРјРїР°РЅРёРё" };
+        return { handled: true as const, callbackText: "Пополнение компании" };
       }
 
       if (data === "company:ipo") {
@@ -781,7 +832,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         } else {
           await deps.sendMessage(token, chatId, view.text);
         }
-        return { handled: true as const, callbackText: "Р Р°Р·РґРµР»: IPO" };
+        return { handled: true as const, callbackText: "Раздел: IPO" };
       }
 
       if (data === "company:requests") {
@@ -790,7 +841,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           from: query.from,
           text: "/company_requests",
         });
-        return { handled: true as const, callbackText: "Р—Р°СЏРІРєРё" };
+        return { handled: true as const, callbackText: "Заявки" };
       }
 
       if (data === "company:salary_claim") {
@@ -799,12 +850,12 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           from: query.from,
           text: "/company_salary_claim",
         });
-        return { handled: true as const, callbackText: "РџРѕР»СѓС‡РµРЅРёРµ Р·Р°СЂРїР»Р°С‚С‹" };
+        return { handled: true as const, callbackText: "Получение зарплаты" };
       }
 
       if (data === "company:staffing") {
         if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "Р Р°Р·РґРµР» РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
+          await deps.sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
           return { handled: true as const, callbackText: "HR" };
         }
         await deps.sendMessage(token, chatId, await deps.formatCompanyStaffingSection(membership, chatId), {
@@ -816,79 +867,84 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
       const staffPickMatch = data.match(/^company:staff_pick(?:_ref)?:([^:]+)$/);
       if (staffPickMatch) {
         if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "Р Р°Р·РґРµР» РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ СЃРѕС‚СЂСѓРґРЅРёРєР°" };
+          await deps.sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
+          return { handled: true as const, callbackText: "Выбор сотрудника" };
         }
-        const members = await deps.storage.getCompanyMembers(membership.company.id);
+        const members = await getCompanyStaffingMembers(membership.company.id, deps.callInternalApi);
         const memberRefs = deps.companyMemberRefsByChatId.get(chatId) ?? [];
         const targetMember = resolveCompanyMemberTarget(members, memberRefs, staffPickMatch[1]);
         if (!targetMember) {
-          await deps.sendMessage(token, chatId, "РЎРѕС‚СЂСѓРґРЅРёРє РЅРµ РЅР°Р№РґРµРЅ.", {
+          await deps.sendMessage(token, chatId, "Сотрудник не найден.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ СЃРѕС‚СЂСѓРґРЅРёРєР°" };
+          return { handled: true as const, callbackText: "Выбор сотрудника" };
         }
+        deps.companyStaffTargetUserIdByChatId.set(chatId, String(targetMember.userId));
         await deps.sendMessage(
           token,
           chatId,
-          [`Р’С‹Р±РµСЂРё РѕС‚РґРµР» РґР»СЏ ${targetMember.username}:`, "", deps.formatCompanyDepartmentChoiceHelp()].join("\n"),
+          [`Выбери отдел для ${targetMember.username}:`, "", deps.formatCompanyDepartmentChoiceHelp()].join("\n"),
           { reply_markup: deps.buildCompanyDepartmentSelectInlineMarkup(String(targetMember.userId), membership.role, chatId) },
         );
-        return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ СЃРѕС‚СЂСѓРґРЅРёРєР°" };
+        return { handled: true as const, callbackText: "Выбор сотрудника" };
       }
 
-      const staffAssignMatch = data.match(/^company:staff_assign(?:_ref)?:([^:]+):(researchAndDevelopment|production|marketing|finance|infrastructure)$/);
+      const staffAssignMatch = data.match(/^company:staff_assign(?::(researchAndDevelopment|production|marketing|finance|infrastructure)|(?:_ref)?:([^:]+):(researchAndDevelopment|production|marketing|finance|infrastructure))$/);
       if (staffAssignMatch) {
         if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "Р Р°Р·РґРµР» РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "РќР°Р·РЅР°С‡РµРЅРёРµ РІ РѕС‚РґРµР»" };
+          await deps.sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
+          return { handled: true as const, callbackText: "Назначение в отдел" };
         }
-        const targetMembers = await deps.storage.getCompanyMembers(membership.company.id);
+        const targetMembers = await getCompanyStaffingMembers(membership.company.id, deps.callInternalApi);
+        const departmentKey = staffAssignMatch[1] || staffAssignMatch[3];
+        const explicitRef = staffAssignMatch[2] || "";
         const memberRefs = deps.companyMemberRefsByChatId.get(chatId) ?? [];
-        const targetMember = resolveCompanyMemberTarget(targetMembers, memberRefs, staffAssignMatch[1]);
+        const selectedUserId = explicitRef || deps.companyStaffTargetUserIdByChatId.get(chatId) || "";
+        const targetMember = resolveCompanyMemberTarget(targetMembers, memberRefs, selectedUserId);
         if (!targetMember) {
-          await deps.sendMessage(token, chatId, "Р РЋР С•РЎвЂљРЎР‚РЎС“Р Т‘Р Р…Р С‘Р С” Р Р…Р Вµ Р Р…Р В°Р в„–Р Т‘Р ВµР Р….", {
+          await deps.sendMessage(token, chatId, "Сотрудник не найден.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р СњР В°Р В·Р Р…Р В°РЎвЂЎР ВµР Р…Р С‘Р Вµ Р Р† Р С•РЎвЂљР Т‘Р ВµР В»" };
+          return { handled: true as const, callbackText: "Назначение в отдел" };
         }
         try {
           await deps.callInternalApi("POST", `/api/companies/${membership.company.id}/staffing/assign`, {
             actorUserId: player.id,
             targetUserId: String(targetMember.userId),
-            department: staffAssignMatch[2],
+            department: departmentKey,
           });
-          await deps.sendMessage(token, chatId, "вњ… РЎРѕС‚СЂСѓРґРЅРёРє РЅР°Р·РЅР°С‡РµРЅ РІ РѕС‚РґРµР».");
+          deps.companyStaffTargetUserIdByChatId.delete(chatId);
+          await deps.sendMessage(token, chatId, "✅ Отдел сотрудника обновлён.");
         } catch (error) {
-          await deps.sendMessage(token, chatId, `вќЊ ${deps.extractErrorMessage(error)}`);
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`);
         }
         await deps.sendMessage(token, chatId, await deps.formatCompanyStaffingSection(membership, chatId), {
           reply_markup: deps.buildCompanyStaffingInlineMarkup(chatId, membership.role),
         });
-        return { handled: true as const, callbackText: "РќР°Р·РЅР°С‡РµРЅРёРµ РІ РѕС‚РґРµР»" };
+        return { handled: true as const, callbackText: "Назначение в отдел" };
       }
 
       if (data === "company:salary_setup") {
         await deps.sendMessage(token, chatId, await deps.formatCompanySalariesSection(membership, chatId), {
           reply_markup: deps.buildCompanySalariesInlineMarkup(membership, chatId),
         });
-        return { handled: true as const, callbackText: "Р—Р°СЂРїР»Р°С‚С‹" };
+        return { handled: true as const, callbackText: "Зарплаты" };
       }
 
       const salaryPickMatch = data.match(/^company:salary_pick(?:_ref)?:([^:]+)$/);
       if (salaryPickMatch) {
         if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ Р·Р°СЂРїР»Р°С‚С‹" };
+          await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+          return { handled: true as const, callbackText: "Выбор зарплаты" };
         }
-        const members = await deps.storage.getCompanyMembers(membership.company.id);
+        const members = await getCompanyStaffingMembers(membership.company.id, deps.callInternalApi);
         const memberRefs = deps.companyMemberRefsByChatId.get(chatId) ?? [];
         const targetMember = resolveCompanyMemberTarget(members, memberRefs, salaryPickMatch[1]);
         if (!targetMember) {
-          await deps.sendMessage(token, chatId, "РЎРѕС‚СЂСѓРґРЅРёРє РЅРµ РЅР°Р№РґРµРЅ.", {
+          await deps.sendMessage(token, chatId, "Сотрудник не найден.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ Р·Р°СЂРїР»Р°С‚С‹" };
+          return { handled: true as const, callbackText: "Выбор зарплаты" };
         }
         deps.pendingActionByChatId.set(chatId, {
           type: "company_set_salary_amount",
@@ -899,10 +955,10 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         await deps.sendMessage(
           token,
           chatId,
-          `Р’РІРµРґРё Р·Р°СЂРїР»Р°С‚Сѓ РґР»СЏ ${targetMember.username} РІ GRM.\nРўРµРєСѓС‰РµРµ РѕРіСЂР°РЅРёС‡РµРЅРёРµ: 0-5000.`,
+          `Введи зарплату для ${targetMember.username} в GRM.\nТекущее ограничение: 0-5000.`,
           { reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId) },
         );
-        return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ Р·Р°СЂРїР»Р°С‚С‹" };
+        return { handled: true as const, callbackText: "Выбор зарплаты" };
       }
 
       if (data === "company:warehouse_expand_preview") {
@@ -919,13 +975,13 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             reply_markup: deps.buildCompanyWarehouseExpandInlineButtons(preview.canUpgrade),
           });
         }
-        return { handled: true as const, callbackText: "РџСЂРѕРєР°С‡РєР° СЃРєР»Р°РґР°" };
+        return { handled: true as const, callbackText: "Прокачка склада" };
       }
 
       if (data === "company:warehouse_expand_confirm") {
         if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "РџРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ РїСЂРѕРєР°С‡РєРё СЃРєР»Р°РґР°" };
+          await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+          return { handled: true as const, callbackText: "Подтверждение прокачки склада" };
         }
         try {
           await deps.callInternalApi("POST", `/api/company/${membership.company.id}/expand-warehouse`, {});
@@ -936,16 +992,16 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             await deps.sendMessage(
               token,
               chatId,
-              `вњ… РЎРєР»Р°Рґ РєРѕРјРїР°РЅРёРё РѕР±РЅРѕРІР»С‘РЅ: ${previousCapacity} в†’ ${nextCapacity} СЃР»РѕС‚РѕРІ.`,
+              `✅ Склад компании обновлён: ${previousCapacity} → ${nextCapacity} слотов.`,
               { reply_markup: deps.buildCompanyReplyMarkup(refreshed.role, chatId) },
             );
           } else {
-            await deps.sendMessage(token, chatId, "вњ… РЎРєР»Р°Рґ РєРѕРјРїР°РЅРёРё РѕР±РЅРѕРІР»С‘РЅ.");
+            await deps.sendMessage(token, chatId, "✅ Склад компании обновлён.");
           }
         } catch (error) {
-          await deps.sendMessage(token, chatId, `вќЊ ${deps.extractErrorMessage(error)}`);
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`);
         }
-        return { handled: true as const, callbackText: "РџРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ РїСЂРѕРєР°С‡РєРё СЃРєР»Р°РґР°" };
+        return { handled: true as const, callbackText: "Подтверждение прокачки склада" };
       }
 
       if (data === "company:bp_join") {
@@ -958,20 +1014,10 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         const joined = await deps.callInternalApi("POST", `/api/companies/${membership.company.id}/blueprints/join`, {
           userId: player.id,
         });
-        const updatedActive = joined?.project ?? active;
-        await deps.sendMessage(
-          token,
-          chatId,
-          [
-            joined?.alreadyJoined
-              ? "в„№пёЏ Р’С‹ СѓР¶Рµ СѓС‡Р°СЃС‚РІСѓРµС‚Рµ РІ СЌС‚РѕР№ СЂР°Р·СЂР°Р±РѕС‚РєРµ."
-              : "вњ… Р’С‹ РїСЂРёСЃРѕРµРґРёРЅРёР»РёСЃСЊ Рє СЂР°Р·СЂР°Р±РѕС‚РєРµ. Р’Р°С€Рё РЅР°РІС‹РєРё С‚РµРїРµСЂСЊ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РІРєР»Р°РґС‹РІР°СЋС‚СЃСЏ РєР°Р¶РґС‹Рµ 5 СЃРµРєСѓРЅРґ.",
-            Array.isArray(updatedActive?.participantNames) && updatedActive.participantNames.length
-              ? `рџ‘Ґ РЈС‡Р°СЃС‚РЅРёРєРё: ${updatedActive.participantNames.join(", ")}`
-              : "",
-          ].filter(Boolean).join("\n"),
-        );
         await deps.updateCompanyBlueprintProgressMessage(token, chatId, membership.company.name, membership.company.id, player.id);
+        if ((joined?.project ?? active)?.status === "in_progress") {
+          deps.startCompanyBlueprintProgressTicker(token, chatId, membership.company.name, membership.company.id, player.id);
+        }
         return { handled: true as const, callbackText: "РЈС‡Р°СЃС‚РёРµ РІ СЂР°Р·СЂР°Р±РѕС‚РєРµ" };
       }
 
@@ -1025,7 +1071,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           from: query.from,
           text: "/company_bp_produce",
         });
-        return { handled: true as const, callbackText: "РџСЂРѕРёР·РІРѕРґСЃС‚РІРѕ" };
+        return { handled: true as const, callbackText: "Производство" };
       }
 
       const exclusivePickMatch = data.match(/^company:exclusive_pick:(.+)$/);
@@ -1072,7 +1118,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
       if (data === "company:bp_confirm_back") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_bp_produce_confirm") {
-          await deps.sendMessage(token, chatId, "РћС‚РєСЂРѕР№ В«РџСЂРѕРёР·РІРѕРґСЃС‚РІРѕ РіР°РґР¶РµС‚РѕРІВ» РµС‰С‘ СЂР°Р·.", {
+          await deps.sendMessage(token, chatId, "Открой «Производство гаджетов» ещё раз.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
           return { handled: true as const, callbackText: "РР·РјРµРЅРёС‚СЊ РєРѕР»РёС‡РµСЃС‚РІРѕ" };
@@ -1110,12 +1156,12 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           1,
         );
         await deps.sendMessage(token, chatId, [
-          `рџЏ­ ${blueprint.name}`,
-          `Р”РѕСЃС‚СѓРїРЅРѕ РґР»СЏ РїР°СЂС‚РёРё: РґРѕ ${maxQuantity} С€С‚.`,
-          unitCost > 0 ? `РЎРµР±РµСЃС‚РѕРёРјРѕСЃС‚СЊ Р·Р° 1 С€С‚: ${deps.formatNumber(unitCost)} GRM` : "",
+          `🏭 ${blueprint.name}`,
+          `Доступно для партии: до ${maxQuantity} шт.`,
+          unitCost > 0 ? `Себестоимость за 1 шт: ${deps.formatNumber(unitCost)} GRM` : "",
           ...recipeLines,
           "",
-          `Р’РІРµРґРё РєРѕР»РёС‡РµСЃС‚РІРѕ РґР»СЏ Р·Р°РїСѓСЃРєР° РїСЂРѕРёР·РІРѕРґСЃС‚РІР° (1-${maxQuantity}).`,
+          `Введи количество для запуска производства (1-${maxQuantity}).`,
         ].filter(Boolean).join("\n"), {
           reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
         });
@@ -1135,7 +1181,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           const blueprint = blueprintSnapshot.available.find((item: any) => item.id === pendingAction.blueprintId);
           if (!blueprint) {
             deps.pendingActionByChatId.delete(chatId);
-            await deps.sendMessage(token, chatId, "вќЊ РђРєС‚РёРІРЅС‹Р№ С‡РµСЂС‚С‘Р¶ Р±РѕР»СЊС€Рµ РЅРµ РЅР°Р№РґРµРЅ.", {
+            await deps.sendMessage(token, chatId, "❌ Активный чертёж больше не найден.", {
               reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
             });
             return { handled: true as const, callbackText: "Р—Р°РїСѓСЃРє РїР°СЂС‚РёРё" };
@@ -1178,38 +1224,55 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             token,
             chatId,
             [
-              `рџЏ­ РџР°СЂС‚РёСЏ Р·Р°РїСѓС‰РµРЅР°: ${pendingAction.blueprintName} x${pendingAction.quantity}`,
-              `Р“РѕС‚РѕРІРЅРѕСЃС‚СЊ С‡РµСЂРµР·: ${deps.formatProductionOrderRemaining((result as any).order)}`,
-              Number.isFinite(Number((result as any).gramSpent)) ? `РЎРїРёСЃР°РЅРѕ: ${deps.formatNumber(Number((result as any).gramSpent))} GRM` : "",
-              Number.isFinite(Number((result as any).companyBalance)) ? `Р‘Р°Р»Р°РЅСЃ РєРѕРјРїР°РЅРёРё: ${deps.formatNumber(Number((result as any).companyBalance))} GRM` : "",
+              `🏭 Партия запущена: ${pendingAction.blueprintName} x${pendingAction.quantity}`,
+              `Готовность через: ${deps.formatProductionOrderRemaining((result as any).order)}`,
+              Number.isFinite(Number((result as any).gramSpent)) ? `Списано: ${deps.formatNumber(Number((result as any).gramSpent))} GRM` : "",
+              Number.isFinite(Number((result as any).companyBalance)) ? `Баланс компании: ${deps.formatNumber(Number((result as any).companyBalance))} GRM` : "",
               (result as any).gadgetWear?.summary ? String((result as any).gadgetWear.summary) : "",
-              "РљРѕРіРґР° РїР°СЂС‚РёСЏ Р±СѓРґРµС‚ РіРѕС‚РѕРІР°, РѕС‚РєСЂРѕР№ В«РџСЂРѕРёР·РІРѕРґСЃС‚РІРѕ РіР°РґР¶РµС‚РѕРІВ» РµС‰С‘ СЂР°Р·.",
+              "Когда партия будет готова, открой «Производство гаджетов» ещё раз.",
             ].filter(Boolean).join("\n"),
             { reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId) },
           );
         } catch (error) {
-          await deps.sendMessage(token, chatId, `вќЊ ${deps.extractErrorMessage(error)}`, {
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`, {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
         }
-        return { handled: true as const, callbackText: "Р—Р°РїСѓСЃРє РїР°СЂС‚РёРё" };
+        return { handled: true as const, callbackText: "Запуск партии" };
       }
 
+      const requestAcceptRefMatch = data.match(/^company:request_accept_ref:(\d+)$/);
       const requestAcceptMatch = data.match(/^company:request_accept:(.+)$/);
-      if (requestAcceptMatch) {
+      if (requestAcceptRefMatch || requestAcceptMatch) {
         if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "РћРґРѕР±СЂРµРЅРёРµ Р·Р°СЏРІРєРё" };
+          await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+          return { handled: true as const, callbackText: "Одобрение заявки" };
         }
         const requests = await deps.storage.getJoinRequestsByCompany(membership.company.id);
-        const request = requests.find((item: any) => item.id === requestAcceptMatch[1])
-          ?? requests.find((item: any) => item.id.startsWith(requestAcceptMatch[1]))
-          ?? null;
+        const refs = deps.companyRequestsByChatId.get(chatId) ?? [];
+        console.info("[company_join_request_accept_attempt]", JSON.stringify({
+          chatId,
+          companyId: String(membership.company.id || ""),
+          companyName: String(membership.company.name || ""),
+          refs,
+          requestIds: requests.map((item: any) => String(item.id || "")),
+          refMode: requestAcceptRefMatch ? "short_ref" : "legacy_id",
+          refValue: requestAcceptRefMatch ? String(requestAcceptRefMatch[1]) : String(requestAcceptMatch?.[1] || ""),
+        }));
+        const request = requestAcceptRefMatch
+          ? (() => {
+            const index = Number(requestAcceptRefMatch[1]) - 1;
+            const requestId = index >= 0 && index < refs.length ? String(refs[index]) : "";
+            return requests.find((item: any) => String(item.id) === requestId) ?? null;
+          })()
+          : requests.find((item: any) => String(item.id) === String(requestAcceptMatch?.[1] || ""))
+            ?? requests.find((item: any) => String(item.id).startsWith(String(requestAcceptMatch?.[1] || "")))
+            ?? null;
         if (!request) {
-          await deps.sendMessage(token, chatId, "Р—Р°СЏРІРєР° РЅРµ РЅР°Р№РґРµРЅР°. РћС‚РєСЂРѕР№ СЂР°Р·РґРµР» Р·Р°СЏРІРѕРє РµС‰С‘ СЂР°Р·.", {
+          await deps.sendMessage(token, chatId, "Заявка не найдена. Открой раздел заявок ещё раз.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РћРґРѕР±СЂРµРЅРёРµ Р·Р°СЏРІРєРё" };
+          return { handled: true as const, callbackText: "Одобрение заявки" };
         }
         const existingMember = await deps.storage.getMemberByUserId(membership.company.id, request.userId);
         if (!existingMember) {
@@ -1219,10 +1282,10 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             await deps.sendMessage(
               token,
               chatId,
-              `вќЊ Р›РёРјРёС‚ СЃРѕС‚СЂСѓРґРЅРёРєРѕРІ РґРѕСЃС‚РёРіРЅСѓС‚ (${currentMembers.length}/${companyEconomy.employeeLimit}). РЈР»СѓС‡С€Рё РїСЂРѕС„РёР»СЊРЅС‹Р№ РѕС‚РґРµР» Рё СЂР°СЃС€РёСЂСЊ РєРѕРјРїР°РЅРёСЋ.`,
+              `❌ Лимит сотрудников достигнут (${currentMembers.length}/${companyEconomy.employeeLimit}). Сначала расширь компанию.`,
               { reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId) },
             );
-            return { handled: true as const, callbackText: "РћРґРѕР±СЂРµРЅРёРµ Р·Р°СЏРІРєРё" };
+            return { handled: true as const, callbackText: "Одобрение заявки" };
           }
           await deps.storage.addCompanyMember({
             companyId: membership.company.id,
@@ -1234,62 +1297,79 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           await deps.ensureCompanyEconomyState(membership.company, updatedMembers.length);
         }
         await deps.storage.updateJoinRequestStatus(request.id, "accepted");
-        await deps.sendMessage(token, chatId, `вњ… Р—Р°СЏРІРєР° ${request.username} РѕРґРѕР±СЂРµРЅР°.`, {
+        await deps.sendMessage(token, chatId, `✅ Заявка ${request.username} одобрена.`, {
           reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
         });
         await deps.sendCompanyRequestsSection(token, chatId, membership);
-        return { handled: true as const, callbackText: "РћРґРѕР±СЂРµРЅРёРµ Р·Р°СЏРІРєРё" };
+        return { handled: true as const, callbackText: "Одобрение заявки" };
       }
 
+      const requestDeclineRefMatch = data.match(/^company:request_decline_ref:(\d+)$/);
       const requestDeclineMatch = data.match(/^company:request_decline:(.+)$/);
-      if (requestDeclineMatch) {
+      if (requestDeclineRefMatch || requestDeclineMatch) {
         if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "РћС‚РєР»РѕРЅРµРЅРёРµ Р·Р°СЏРІРєРё" };
+          await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+          return { handled: true as const, callbackText: "Отклонение заявки" };
         }
         const requests = await deps.storage.getJoinRequestsByCompany(membership.company.id);
-        const request = requests.find((item: any) => item.id === requestDeclineMatch[1])
-          ?? requests.find((item: any) => item.id.startsWith(requestDeclineMatch[1]))
-          ?? null;
+        const refs = deps.companyRequestsByChatId.get(chatId) ?? [];
+        console.info("[company_join_request_decline_attempt]", JSON.stringify({
+          chatId,
+          companyId: String(membership.company.id || ""),
+          companyName: String(membership.company.name || ""),
+          refs,
+          requestIds: requests.map((item: any) => String(item.id || "")),
+          refMode: requestDeclineRefMatch ? "short_ref" : "legacy_id",
+          refValue: requestDeclineRefMatch ? String(requestDeclineRefMatch[1]) : String(requestDeclineMatch?.[1] || ""),
+        }));
+        const request = requestDeclineRefMatch
+          ? (() => {
+            const index = Number(requestDeclineRefMatch[1]) - 1;
+            const requestId = index >= 0 && index < refs.length ? String(refs[index]) : "";
+            return requests.find((item: any) => String(item.id) === requestId) ?? null;
+          })()
+          : requests.find((item: any) => String(item.id) === String(requestDeclineMatch?.[1] || ""))
+            ?? requests.find((item: any) => String(item.id).startsWith(String(requestDeclineMatch?.[1] || "")))
+            ?? null;
         if (!request) {
-          await deps.sendMessage(token, chatId, "Р—Р°СЏРІРєР° РЅРµ РЅР°Р№РґРµРЅР°. РћС‚РєСЂРѕР№ СЂР°Р·РґРµР» Р·Р°СЏРІРѕРє РµС‰С‘ СЂР°Р·.", {
+          await deps.sendMessage(token, chatId, "Заявка не найдена. Открой раздел заявок ещё раз.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РћС‚РєР»РѕРЅРµРЅРёРµ Р·Р°СЏРІРєРё" };
+          return { handled: true as const, callbackText: "Отклонение заявки" };
         }
         await deps.storage.updateJoinRequestStatus(request.id, "rejected");
-        await deps.sendMessage(token, chatId, `вњ… Р—Р°СЏРІРєР° ${request.username} РѕС‚РєР»РѕРЅРµРЅР°.`, {
+        await deps.sendMessage(token, chatId, `✅ Заявка ${request.username} отклонена.`, {
           reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
         });
         await deps.sendCompanyRequestsSection(token, chatId, membership);
-        return { handled: true as const, callbackText: "РћС‚РєР»РѕРЅРµРЅРёРµ Р·Р°СЏРІРєРё" };
+        return { handled: true as const, callbackText: "Отклонение заявки" };
       }
 
       const departmentUpgradeMatch = data.match(/^company:dept_upgrade:(researchAndDevelopment|production|marketing|finance|infrastructure)$/);
       if (departmentUpgradeMatch) {
         if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "РЈР»СѓС‡С€РµРЅРёРµ РѕС‚РґРµР»Р°" };
+          await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+          return { handled: true as const, callbackText: "Улучшение отдела" };
         }
         const departmentKey = departmentUpgradeMatch[1];
         const companyEconomy = await deps.ensureCompanyEconomyState(membership.company, membership.membersCount);
         const result = deps.upgradeDepartment(companyEconomy, departmentKey);
         if (!result.ok) {
-          await deps.sendWithMainKeyboard(token, chatId, `вќЊ ${result.reason ?? "РЈР»СѓС‡С€РµРЅРёРµ РЅРµРґРѕСЃС‚СѓРїРЅРѕ"}`);
+          await deps.sendWithMainKeyboard(token, chatId, `❌ ${result.reason ?? "Улучшение недоступно"}`);
           await deps.sendCompanyDepartmentsSection(token, chatId, membership);
-          return { handled: true as const, callbackText: "РЈР»СѓС‡С€РµРЅРёРµ РѕС‚РґРµР»Р°" };
+          return { handled: true as const, callbackText: "Улучшение отдела" };
         }
         await deps.saveCompanyEconomyState(membership.company, result.company);
         await deps.sendMessage(
           token,
           chatId,
-          `вњ… РћС‚РґРµР» ${deps.departmentLabels[departmentKey]} СѓР»СѓС‡С€РµРЅ РґРѕ СѓСЂРѕРІРЅСЏ ${result.company.departments[departmentKey]} (-${deps.formatNumber(result.spentGRM ?? 0)} GRM)`,
+          `✅ Отдел ${deps.departmentLabels[departmentKey]} улучшен до уровня ${result.company.departments[departmentKey]} (-${deps.formatNumber(result.spentGRM ?? 0)} GRM)`,
         );
         const refreshed = await deps.getPlayerCompanyContext(player.id);
         if (refreshed) {
           await deps.sendCompanyDepartmentsSection(token, chatId, refreshed);
         }
-        return { handled: true as const, callbackText: "РЈР»СѓС‡С€РµРЅРёРµ РѕС‚РґРµР»Р°" };
+        return { handled: true as const, callbackText: "Улучшение отдела" };
       }
 
       const exclusiveToggleMatch = data.match(/^company:exclusive_part_toggle:(\d+)$/);
@@ -1368,7 +1448,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° Р·Р°РїСѓСЃС‚Рё СЂР°Р·СЂР°Р±РѕС‚РєСѓ СЌРєСЃРєР»СЋР·РёРІРЅРѕРіРѕ РіР°РґР¶РµС‚Р° С‡РµСЂРµР· В«РЎС‚Р°СЂС‚В».", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РџСЂРµРґРїСЂРѕСЃРјРѕС‚СЂ", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Предпросмотр", shouldClearInlineButtons: false as const };
         }
         const refs = deps.getCompanyWarehouseParts(membership.company.id).map((item: any) => `${item.id}::${item.rarity}`);
         deps.companyExclusivePartRefsByChatId.set(chatId, refs);
@@ -1377,7 +1457,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         if (selectedRefs.length !== deps.EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
           await deps.answerCallbackQuery(token, input.callbackId, `РќСѓР¶РЅРѕ РІС‹Р±СЂР°С‚СЊ ${deps.EXCLUSIVE_UPGRADE_REQUIRED_PARTS} РґРµС‚Р°Р»РµР№`);
           await deps.sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, pendingAction.gadgetName, pendingAction.gadgetCategory, pendingAction.gadgetBatchAvailable, messageId);
-          return { handled: true as const, callbackText: "РџСЂРµРґРїСЂРѕСЃРјРѕС‚СЂ", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Предпросмотр", shouldClearInlineButtons: false as const };
         }
         const pickedParts = deps.getCompanyWarehouseParts(membership.company.id)
           .map((item: any) => ({ ...item, ref: `${item.id}::${item.rarity}` }))
@@ -1402,33 +1482,33 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             token,
             chatId,
             [
-              `рџЊџ EX-Р°РїРіСЂРµР№Рґ: ${pendingAction.gadgetName}`,
-              `Р¦РµР»СЊ: EX+${Math.max(1, Number(preview.blueprint?.upgradeLevel || 1))}`,
-              `РџР°СЂС‚РёСЏ РіР°РґР¶РµС‚РѕРІ: ${Math.max(1, Number(preview.blueprint?.requiredGadgetCount || deps.EXCLUSIVE_UPGRADE_REQUIRED_GADGETS))}`,
-              `РЁР°РЅСЃ СѓСЃРїРµС…Р°: ${Math.round(Number(preview.blueprint?.successChance || 0) * 100)}%`,
-              `РЎС‚РѕРёРјРѕСЃС‚СЊ Р·Р°РїСѓСЃРєР°: ${deps.formatNumber(Number(preview.blueprint?.developmentCostGrm || 0))} GRM`,
-              `Р’СЂРµРјСЏ Р°РїРіСЂРµР№РґР°: ${deps.formatDurationShort(Number(preview.blueprint?.developmentHoursRequired || 0) * 60 * 60 * 1000)}`,
-              preview.companyBalanceAfterStart !== undefined ? `Р‘Р°Р»Р°РЅСЃ РєРѕРјРїР°РЅРёРё РїРѕСЃР»Рµ СЃС‚Р°СЂС‚Р°: ${deps.formatNumber(Number(preview.companyBalanceAfterStart || 0))} GRM` : "",
+              `🌟 EX-апгрейд: ${pendingAction.gadgetName}`,
+              `Цель: EX+${Math.max(1, Number(preview.blueprint?.upgradeLevel || 1))}`,
+              `Партия гаджетов: ${Math.max(1, Number(preview.blueprint?.requiredGadgetCount || deps.EXCLUSIVE_UPGRADE_REQUIRED_GADGETS))}`,
+              `Шанс успеха: ${Math.round(Number(preview.blueprint?.successChance || 0) * 100)}%`,
+              `Стоимость запуска: ${deps.formatNumber(Number(preview.blueprint?.developmentCostGrm || 0))} GRM`,
+              `Время апгрейда: ${deps.formatDurationShort(Number(preview.blueprint?.developmentHoursRequired || 0) * 60 * 60 * 1000)}`,
+              preview.companyBalanceAfterStart !== undefined ? `Баланс компании после старта: ${deps.formatNumber(Number(preview.companyBalanceAfterStart || 0))} GRM` : "",
               "",
-              "РџРѕРґС‚РІРµСЂРґРё Р·Р°РїСѓСЃРє РёР»Рё РІРµСЂРЅРёСЃСЊ Рє РїРѕРґР±РѕСЂСѓ РґРµС‚Р°Р»РµР№.",
+              "Подтверди запуск или вернись к подбору деталей.",
             ].filter(Boolean).join("\n"),
             { reply_markup: deps.buildCompanyExclusiveUpgradeConfirmInlineMarkup() },
           );
         } catch (error) {
-          await deps.sendMessage(token, chatId, `вќЊ ${deps.extractErrorMessage(error)}`, {
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`, {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
         }
-        return { handled: true as const, callbackText: "РџСЂРµРґРїСЂРѕСЃРјРѕС‚СЂ", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Предпросмотр", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:exclusive_upgrade_back") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_exclusive_confirm") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° РІС‹Р±РµСЂРё РіР°РґР¶РµС‚ Рё РґРµС‚Р°Р»Рё РґР»СЏ EX-Р°РїРіСЂРµР№РґР°.", {
+          await deps.sendMessage(token, chatId, "Сначала выбери гаджет и детали для EX-апгрейда.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Рљ РґРµС‚Р°Р»СЏРј", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "К деталям", shouldClearInlineButtons: false as const };
         }
         deps.pendingActionByChatId.set(chatId, {
           type: "company_exclusive_parts",
@@ -1439,47 +1519,47 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         });
         deps.companyExclusiveSelectedPartRefsByChatId.set(chatId, [...pendingAction.partRefs]);
         await deps.sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, pendingAction.gadgetName, pendingAction.gadgetCategory, pendingAction.gadgetBatchAvailable, messageId);
-        return { handled: true as const, callbackText: "Рљ РґРµС‚Р°Р»СЏРј", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "К деталям", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:exclusive_upgrade_start") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_exclusive_confirm") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° РІС‹Р±РµСЂРё РіР°РґР¶РµС‚ Рё РґРµС‚Р°Р»Рё РґР»СЏ EX-Р°РїРіСЂРµР№РґР°.", {
+          await deps.sendMessage(token, chatId, "Сначала выбери гаджет и детали для EX-апгрейда.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р—Р°РїСѓСЃРє EX-Р°РїРіСЂРµР№РґР°", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Запуск EX-апгрейда", shouldClearInlineButtons: false as const };
         }
         await deps.startCompanyExclusiveDevelopment(token, chatId, membership, player.id, pendingAction.gadgetName, pendingAction.partRefs, pendingAction.gadgetId);
-        return { handled: true as const, callbackText: "Р—Р°РїСѓСЃРє EX-Р°РїРіСЂРµР№РґР°", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Запуск EX-апгрейда", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:exclusive_confirm_back") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_exclusive_produce_confirm") {
-          await deps.sendMessage(token, chatId, "РћС‚РєСЂРѕР№ В«Р’С‹РїСѓСЃРєВ» РµС‰С‘ СЂР°Р·.", {
+          await deps.sendMessage(token, chatId, "Открой «Выпуск» ещё раз.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РР·РјРµРЅРёС‚СЊ РєРѕР»РёС‡РµСЃС‚РІРѕ" };
+          return { handled: true as const, callbackText: "Изменить количество" };
         }
         deps.pendingActionByChatId.set(chatId, {
           type: "company_exclusive_produce_qty",
           blueprintId: pendingAction.blueprintId,
           blueprintName: pendingAction.blueprintName,
         });
-        await deps.sendMessage(token, chatId, `рџЏ­ ${pendingAction.blueprintName}\nР’РІРµРґРё РєРѕР»РёС‡РµСЃС‚РІРѕ РґР»СЏ РІС‹РїСѓСЃРєР°.`, {
+        await deps.sendMessage(token, chatId, `🏭 ${pendingAction.blueprintName}\nВведи количество для выпуска.`, {
           reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
         });
-        return { handled: true as const, callbackText: "РР·РјРµРЅРёС‚СЊ РєРѕР»РёС‡РµСЃС‚РІРѕ" };
+        return { handled: true as const, callbackText: "Изменить количество" };
       }
 
       if (data === "company:exclusive_confirm_start") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_exclusive_produce_confirm") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° РІС‹Р±РµСЂРё С‡РµСЂС‚С‘Р¶ Рё РєРѕР»РёС‡РµСЃС‚РІРѕ РїР°СЂС‚РёРё.", {
+          await deps.sendMessage(token, chatId, "Сначала выбери чертёж и количество партии.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р—Р°РїСѓСЃРє СЌРєСЃРєР»СЋР·РёРІРЅРѕР№ РїР°СЂС‚РёРё" };
+          return { handled: true as const, callbackText: "Запуск эксклюзивной партии" };
         }
         try {
           const result = await deps.callInternalApi("POST", `/api/companies/${membership.company.id}/exclusive/produce`, {
@@ -1492,20 +1572,20 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             token,
             chatId,
             [
-              `рџЏ­ РџР°СЂС‚РёСЏ Р·Р°РїСѓС‰РµРЅР°: ${pendingAction.blueprintName} x${pendingAction.quantity}`,
-              `Р“РѕС‚РѕРІРЅРѕСЃС‚СЊ С‡РµСЂРµР·: ${deps.formatProductionOrderRemaining((result as any).order)}`,
-              Number.isFinite(Number((result as any).companyBalance)) ? `Р‘Р°Р»Р°РЅСЃ РєРѕРјРїР°РЅРёРё: ${deps.formatNumber(Number((result as any).companyBalance))} GRM` : "",
+              `🏭 Партия запущена: ${pendingAction.blueprintName} x${pendingAction.quantity}`,
+              `Готовность через: ${deps.formatProductionOrderRemaining((result as any).order)}`,
+              Number.isFinite(Number((result as any).companyBalance)) ? `Баланс компании: ${deps.formatNumber(Number((result as any).companyBalance))} GRM` : "",
               (result as any).gadgetWear?.summary ? String((result as any).gadgetWear.summary) : "",
-              "РљРѕРіРґР° РїР°СЂС‚РёСЏ Р±СѓРґРµС‚ РіРѕС‚РѕРІР°, РѕС‚РєСЂРѕР№ В«Р’С‹РїСѓСЃРєВ» РµС‰С‘ СЂР°Р·.",
+              "Когда партия будет готова, открой «Выпуск» ещё раз.",
             ].filter(Boolean).join("\n"),
             { reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId) },
           );
         } catch (error) {
-          await deps.sendMessage(token, chatId, `вќЊ ${deps.extractErrorMessage(error)}`, {
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`, {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
         }
-        return { handled: true as const, callbackText: "Р—Р°РїСѓСЃРє СЌРєСЃРєР»СЋР·РёРІРЅРѕР№ РїР°СЂС‚РёРё" };
+        return { handled: true as const, callbackText: "Запуск эксклюзивной партии" };
       }
 
       const companyExclusiveProducePickMatch = data.match(/^company:exclusive_produce_pick:(.+)$/);
@@ -1527,7 +1607,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           blueprintId: target.id,
           blueprintName: target.name,
         });
-        await deps.sendMessage(token, chatId, `рџЏ­ ${target.name}\nР’РІРµРґРё РєРѕР»РёС‡РµСЃС‚РІРѕ РґР»СЏ РІС‹РїСѓСЃРєР° (1-${Math.max(1, target.remainingUnits)}).`, {
+        await deps.sendMessage(token, chatId, `🏭 ${target.name}\nВведи количество для выпуска (1-${Math.max(1, target.remainingUnits)}).`, {
           reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
         });
         return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РІС‹РїСѓСЃРєР°" };
@@ -1540,7 +1620,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           from: query.from,
           text: `/company_contract_accept ${contractAcceptMatch[1]}`,
         });
-        return { handled: true as const, callbackText: "РџСЂРёРЅСЏС‚РёРµ РєРѕРЅС‚СЂР°РєС‚Р°" };
+        return { handled: true as const, callbackText: "Принятие контракта" };
       }
 
       const contractPartToggleMatch = data.match(/^company:contract_part_toggle:(\d+)$/);
@@ -1664,7 +1744,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           await deps.completeCompanyContractDelivery(token, chatId, membership, contract, player.id, { partRefs: selectedRefs });
           deps.clearPendingActionRuntimeState(chatId, pendingAction);
         } catch (error) {
-          await deps.sendMessage(token, chatId, `вќЊ ${deps.extractErrorMessage(error)}`);
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`);
         }
         await deps.sendCompanyWorkSection(token, chatId, membership);
         return { handled: true as const, callbackText: "РЎРґР°С‡Р° РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
@@ -1689,7 +1769,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             await deps.sendCompanyWorkSection(token, chatId, membership);
           }
         } catch (error) {
-          await deps.sendMessage(token, chatId, `вќЊ ${deps.extractErrorMessage(error)}`);
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`);
         }
         return { handled: true as const, callbackText: "РЎРґР°С‡Р° РєРѕРЅС‚СЂР°РєС‚Р°" };
       }

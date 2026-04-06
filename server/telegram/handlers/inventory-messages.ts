@@ -57,8 +57,8 @@ export async function handleInventoryMessage(input: {
   sendWithCurrentHubKeyboard: (token: string, chatId: number, userId: string, text: string) => Promise<void>;
   useInventoryItem: (userId: string, ref: string) => Promise<any>;
   toggleGearItem: (userId: string, ref: string) => Promise<any>;
-  serviceGadgetItem: (userId: string, ref: string) => Promise<any>;
   scrapBrokenGadgetItem: (userId: string, ref: string) => Promise<any>;
+  sendRepairServiceMenu: (token: string, chatId: number, userId: string, prefix?: string) => Promise<void>;
 }) {
   const { command, args, token, chatId, message } = input;
 
@@ -218,25 +218,14 @@ export async function handleInventoryMessage(input: {
   }
 
   if (command === "/service") {
-    const ref = input.resolveInventoryRefFromChat(chatId, args.join(" ").trim());
     const player = await input.resolveOrCreateTelegramPlayer(message.from);
-    if (!ref) {
-      await input.sendWithCurrentHubKeyboard(token, chatId, player.id, "Использование: /service <номер предмета>");
-      return true;
-    }
-    try {
-      const result = await input.serviceGadgetItem(player.id, ref);
-      const currency = input.getCurrencySymbol(result.user.city);
-      const lines = [
-        `🔧 Гаджет обслужен: ${result.item.name}`,
-        `Стоимость: ${currency}${formatCompactNumber(result.serviceCost)}`,
-        `💰 Баланс: ${currency}${formatCompactNumber(result.user.balance)}`,
-      ];
-      if (result.notices.length) lines.push("", input.formatNotices(result.notices));
-      await input.sendWithCurrentHubKeyboard(token, chatId, player.id, lines.join("\n"));
-    } catch (error) {
-      await input.sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${input.extractErrorMessage(error)}`);
-    }
+    if (!(await input.ensureCityHubAccess(token, chatId, player, message))) return true;
+    await input.sendRepairServiceMenu(
+      token,
+      chatId,
+      player.id,
+      "🔧 Прямой ремонт из инвентаря отключён. Выстави гаджет в городской сервис и укажи цену заказа.",
+    );
     return true;
   }
 

@@ -26,7 +26,7 @@ export async function formatRepairServiceMenu(input: {
   getCurrencySymbol: (city: string) => string;
 }) {
   const user = await input.storage.getUser(input.userId);
-  if (!user) return "🔧 Сервис\nИгрок не найден.";
+  if (!user) return "🔧 Сервис города\nИгрок не найден.";
 
   const gadgets = await input.listRepairableGadgets(input.userId);
   const activeOrders = input.listRepairOrdersForCity(user.city)
@@ -38,8 +38,8 @@ export async function formatRepairServiceMenu(input: {
   if (!gadgets.length && !activeOrders.length) {
     return [
       "🔧 Сервис города",
-      "Повреждённых гаджетов сейчас нет.",
-      "Когда у гаджета падает состояние, его можно отправить сюда на ремонт.",
+      "Сейчас нечего отправлять в ремонт.",
+      "Когда у гаджета падает состояние, его можно выставить сюда и назначить цену заказа для компаний.",
     ].join("\n\n");
   }
 
@@ -47,8 +47,8 @@ export async function formatRepairServiceMenu(input: {
     "🔧 Сервис города",
     activeOrders.length
       ? [
-        "Активные заказы:",
-        ...activeOrders.map((order, index) => `#${index + 1}. ${order.gadgetName} — ${order.statusLabel ?? order.status}`),
+        "Твои активные заказы:",
+        ...activeOrders.map((order, index) => `#${index + 1}. ${order.gadgetName} — ${order.statusLabel ?? order.status} • ${input.getCurrencySymbol(user.city)}${order.finalPrice}`),
       ].join("\n")
       : "",
     gadgets.length
@@ -60,15 +60,15 @@ export async function formatRepairServiceMenu(input: {
           return [
             `${index + 1}. ${item.name}`,
             `Состояние: ${Math.round(item.condition ?? 0)}/${Math.round(item.maxCondition ?? 100)} (${input.getGadgetConditionStatusLabel(item)})`,
-            `Стоимость ремонта: ${symbol}${estimate.minPrice} - ${symbol}${estimate.maxPrice}`,
+            `Диапазон цены: ${symbol}${estimate.minPrice} - ${symbol}${estimate.maxPrice}`,
             `Время ремонта: ${formatRepairDuration(estimate.repairTimeMs)}`,
-            "Открой оценку кнопкой ниже.",
+            "Открой оценку кнопкой ниже и укажи цену заказа.",
           ].join("\n");
         }),
       ].join("\n\n")
       : "",
     activeOrders.some((order) => order.status === "queued")
-      ? "Очередь можно отменить кнопкой внизу."
+      ? "Очередь можно отменить кнопкой ниже."
       : "",
   ].filter(Boolean).join("\n\n");
 }
@@ -77,12 +77,15 @@ export function buildRepairServiceInlineMarkup(chatId: number, repairGadgetRefsB
   const gadgets = repairGadgetRefsByChatId.get(chatId) ?? [];
   const orderIds = repairOrderRefsByChatId.get(chatId) ?? [];
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
   for (let index = 0; index < Math.min(gadgets.length, 8); index += 1) {
     rows.push([{ text: `🔍 Оценка #${index + 1}`, callback_data: `repair:preview:${index + 1}` }]);
   }
+
   for (let index = 0; index < Math.min(orderIds.length, 6); index += 1) {
     rows.push([{ text: `❌ Отменить заказ #${index + 1}`, callback_data: `repair:cancel:${orderIds[index]}` }]);
   }
+
   rows.push([{ text: "🔄 Обновить сервис", callback_data: "repair:refresh" }]);
   rows.push([{ text: "⬅️ Назад в город", callback_data: "repair:back" }]);
   return { inline_keyboard: rows };
@@ -131,7 +134,7 @@ export async function formatCompanyRepairServiceMenu(input: {
         ...queued.map((order, index) => [
           `${index + 1}. ${order.gadgetName} [${order.rarity}]`,
           `Состояние: ${order.condition}/${order.maxCondition}`,
-          `Оплата клиента: ${input.getCurrencySymbol(input.membership.company.city)}${order.finalPrice} (${order.minPrice}-${order.maxPrice})`,
+          `Цена клиента: ${input.getCurrencySymbol(input.membership.company.city)}${order.finalPrice} (${order.minPrice}-${order.maxPrice})`,
           `Награда компании: ${Math.max(40, Math.round(Number(order.finalPrice || 0) / 8))} GRM`,
           `Время: ${formatRepairDuration(order.repairTimeMs)}`,
           input.formatRepairPartsAvailability(input.membership.company.id, order.requiredParts),
@@ -163,11 +166,13 @@ export function buildCompanyRepairServiceInlineMarkup(input: {
 }) {
   const queued = input.listRepairOrdersForCity(input.membership.company.city).filter((order) => order.status === "queued");
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
   for (const order of queued.slice(0, 6)) {
     if (input.hasCompanyRepairParts(input.membership.company.id, order.requiredParts)) {
       rows.push([{ text: `✅ Принять: ${order.gadgetName}`, callback_data: `repairco:accept:${order.id}` }]);
     }
   }
+
   rows.push([{ text: "🔄 Обновить сервис", callback_data: "repairco:refresh" }]);
   rows.push([{ text: "⬅️ Назад в компанию", callback_data: "repairco:back" }]);
   return { inline_keyboard: rows };

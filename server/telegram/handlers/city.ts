@@ -33,7 +33,7 @@ export async function handleCityMessage(input: {
   resolveEducationLevel: (raw: string, level: number) => any;
   sendMessage: (token: string, chatId: number, text: string, options?: Record<string, unknown>) => Promise<any>;
   formatEducationCoursesMenu: (player: any, levelKey: any) => string;
-  buildEducationCoursesReplyMarkup: (levelKey: any) => any;
+  buildEducationCoursesReplyMarkup: (levelKey: any, professionId?: any) => any;
   formatEducationLevelsMenu: (player: any) => string;
   buildEducationLevelsReplyMarkup: (level: number) => any;
   resolveTelegramSnapshot: (from: any) => Promise<any>;
@@ -90,7 +90,7 @@ export async function handleCityMessage(input: {
     const activeTravel = playerTravelByUserId.get(player.id);
     if (activeTravel) {
       const secondsLeft = getTravelRemainingSeconds(player.id);
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы уже в пути в ${formatTravelTargetLabel(activeTravel.target)}. Осталось ~${secondsLeft} сек.`);
+      await sendWithMainKeyboard(token, chatId, `🚶 Ты уже в пути в ${formatTravelTargetLabel(activeTravel.target)}. Осталось примерно ${secondsLeft} сек.`);
       return true;
     }
     if (!(await ensureExclusiveActionAllowed(token, chatId, player.id, "travel"))) {
@@ -99,21 +99,21 @@ export async function handleCityMessage(input: {
 
     const currentLocation = getPlayerHubLocation(player.id);
     if (currentLocation === "company") {
-      await forceReturnHome(token, chatId, player, message, "⛔ Из компании нельзя сразу перейти в город.");
+      await forceReturnHome(token, chatId, player, message, "⛔ Из компании нельзя сразу перейти в городские разделы.");
       return true;
     }
 
     if (currentLocation === "home") {
       const travelMs = getHousingTravelDurationMs(player, TRAVEL_TO_CITY_MS);
       const arrivesAtMs = Date.now() + travelMs;
-      await sendWithMainKeyboard(token, chatId, `🚶 Вы вышли из дома в город. Прибытие через ${Math.ceil(travelMs / 1000)} сек.`);
+      await sendWithMainKeyboard(token, chatId, `🚶 Ты вышел из дома в город. Прибытие примерно через ${Math.ceil(travelMs / 1000)} сек.`);
       const timer = setTimeout(async () => {
         try {
           const state = playerTravelByUserId.get(player.id);
           if (!state || state.arrivesAtMs !== arrivesAtMs || state.target !== "city") return;
           playerTravelByUserId.delete(player.id);
           setPlayerHubLocation(player.id, "city");
-          await sendCityHubSummary(token, state.chatId, player.id, "✅ Вы прибыли в город.");
+          await sendCityHubSummary(token, state.chatId, player.id, "✅ Ты в городе. Можно заниматься делами.");
         } catch (error) {
           console.error("Travel to city completion error:", error);
         }
@@ -134,7 +134,7 @@ export async function handleCityMessage(input: {
     const activeHouse = getActiveHousing(refreshedUser) ?? getStarterHousingForCity(refreshedUser.city);
     rememberTelegramMenu(player.id, { menu: "housing" });
     if (!activeHouse) {
-      await sendWithCityHubKeyboard(token, chatId, "🏘 Недвижимость в этом городе пока закрыта.");
+      await sendWithCityHubKeyboard(token, chatId, "🏘 В этом городе рынок жилья пока ещё не открыт. Чуть позже здесь появятся варианты.");
       return true;
     }
     await sendHousingCard(token, chatId, refreshedUser, activeHouse, formatHousingMenuText(refreshedUser));
@@ -151,13 +151,13 @@ export async function handleCityMessage(input: {
     if (requestedLevel) {
       const levelKey = resolveEducationLevel(requestedLevel, player.level);
       if (!levelKey) {
-        await sendWithCurrentHubKeyboard(token, chatId, player.id, "❌ Этот уровень обучения недоступен.");
+        await sendWithCurrentHubKeyboard(token, chatId, player.id, "❌ Этот уровень обучения пока недоступен. Выбери другой из списка.");
         return true;
       }
       pendingActionByChatId.set(chatId, { type: "study_course_select", levelKey });
       rememberTelegramMenu(player.id, { menu: "study_courses", levelKey });
       await sendMessage(token, chatId, formatEducationCoursesMenu(player, levelKey), {
-        reply_markup: buildEducationCoursesReplyMarkup(levelKey),
+        reply_markup: buildEducationCoursesReplyMarkup(levelKey, getPlayerProfessionId(player)),
       });
       return true;
     }
@@ -180,7 +180,7 @@ export async function handleCityMessage(input: {
     const jobsCount = listJobsByCity(snapshot.user.city, getPlayerProfessionId(snapshot.user), snapshot.user.level).length;
     if (jobsCount <= 0) {
       pendingActionByChatId.delete(chatId);
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, "В вашем городе нет вакансий.");
+      await sendWithCurrentHubKeyboard(token, chatId, player.id, "Сейчас в твоём городе подходящих вакансий нет. Загляни чуть позже.");
       return true;
     }
     pendingActionByChatId.set(chatId, { type: "job_select" });
@@ -196,7 +196,7 @@ export async function handleCityMessage(input: {
       const snapshot = await resolveTelegramSnapshot(message.from);
       const jobsCount = listJobsByCity(snapshot.user.city, getPlayerProfessionId(snapshot.user), snapshot.user.level).length;
       if (jobsCount <= 0) {
-        await sendWithCurrentHubKeyboard(token, chatId, player.id, "В вашем городе нет вакансий.");
+        await sendWithCurrentHubKeyboard(token, chatId, player.id, "Сейчас в твоём городе подходящих вакансий нет. Загляни чуть позже.");
         return true;
       }
       pendingActionByChatId.set(chatId, { type: "job_select" });
@@ -211,7 +211,7 @@ export async function handleCityMessage(input: {
     }
     const result = await runJobSelection(token, chatId, player, ref);
     if (!result.ok) {
-      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${result.message}\nОткрой вакансии ещё раз и выбери подходящую кнопку.`);
+      await sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${result.message}\nОткрой вакансии ещё раз и спокойно выбери нужную кнопку.`);
     }
     return true;
   }

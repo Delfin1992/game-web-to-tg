@@ -7,12 +7,18 @@ export function buildMainMenuReplyMarkup(showTutorialButton: boolean) {
   const keyboard: Array<Array<{ text: string }>> = [
     [{ text: "👤 Профиль" }, { text: "🎒 Инвентарь" }],
     [{ text: "🧩 Допы" }, { text: "🏙 Город" }],
-    [{ text: "⚔️ PvP Arena" }],
+    showTutorialButton
+      ? [{ text: "⚔️ PvP Arena" }]
+      : [{ text: "⚔️ PvP Arena" }, { text: "🏢 Компания" }],
     showTutorialButton
       ? [{ text: "🏢 Компания" }, { text: "🎓 Обучение" }]
-      : [{ text: "🏢 Компания" }],
-    [{ text: "🛠 Админ" }],
+      : [{ text: "🛠 Админ" }],
   ];
+
+  if (showTutorialButton) {
+    keyboard.push([{ text: "🛠 Админ" }]);
+  }
+
   return {
     keyboard,
     resize_keyboard: true,

@@ -53,7 +53,16 @@ export function createEconomyTelegramModule(deps: {
         const type = command === "/credit" ? "credit" : "deposit";
         try {
           const result = await deps.openBankProduct(player.id, type, parsed.programRef, parsed.amount, parsed.days);
-          await deps.sendWithBankKeyboard(token, chatId, [type === "credit" ? `✅ РљСЂРµРґРёС‚ РѕС„РѕСЂРјР»РµРЅ: ${result.program.name}` : `✅ Р’РєР»Р°Рґ РѕС‚РєСЂС‹С‚: ${result.program.name}`, ...result.notices, "", await deps.formatLiveProfile(result.user, result.state)].join("\n"));
+          await deps.sendWithBankKeyboard(
+            token,
+            chatId,
+            [
+              type === "credit" ? `✅ Кредит оформлен: ${result.program.name}` : `✅ Вклад открыт: ${result.program.name}`,
+              ...result.notices,
+              "",
+              await deps.formatLiveProfile(result.user, result.state),
+            ].join("\n"),
+          );
         } catch (error) {
           await deps.sendWithBankKeyboard(token, chatId, `❌ ${deps.extractErrorMessage(error)}`);
         }
@@ -67,7 +76,18 @@ export function createEconomyTelegramModule(deps: {
         try {
           const result = await deps.closeBankProduct(player.id, action);
           const symbol = deps.getCurrencySymbol(result.user.city);
-          await deps.sendWithBankKeyboard(token, chatId, [action === "repay" ? `✅ РљСЂРµРґРёС‚ РїРѕРіР°С€РµРЅ: -${symbol}${Math.round(result.amount)}` : `✅ Р’РєР»Р°Рґ СЃРЅСЏС‚: +${symbol}${Math.round(result.amount)}`, ...result.notices, "", await deps.formatLiveProfile(result.user, result.state)].join("\n"));
+          await deps.sendWithBankKeyboard(
+            token,
+            chatId,
+            [
+              action === "repay"
+                ? `✅ Кредит погашен: -${symbol}${Math.round(result.amount)}`
+                : `✅ Вклад снят: +${symbol}${Math.round(result.amount)}`,
+              ...result.notices,
+              "",
+              await deps.formatLiveProfile(result.user, result.state),
+            ].join("\n"),
+          );
         } catch (error) {
           await deps.sendWithBankKeyboard(token, chatId, `❌ ${deps.extractErrorMessage(error)}`);
         }

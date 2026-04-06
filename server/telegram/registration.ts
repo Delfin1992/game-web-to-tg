@@ -58,10 +58,10 @@ export function buildRegistrationSkillsInlineMarkup(input: {
 }) {
   const left = getDraftRegistrationSkillPointsLeft(input);
   const rows = input.skillOrder.map((skill) => [
-    { text: `вћ– ${input.skillLabels[skill]}`, callback_data: `reg_skills:sub:${skill}` },
-    { text: `вћ• ${input.skillLabels[skill]}`, callback_data: `reg_skills:add:${skill}` },
+    { text: `➖ ${input.skillLabels[skill]}`, callback_data: `reg_skills:sub:${skill}` },
+    { text: `➕ ${input.skillLabels[skill]}`, callback_data: `reg_skills:add:${skill}` },
   ]);
-  rows.push([{ text: `вњ… РџРѕРґС‚РІРµСЂРґРёС‚СЊ (${input.totalPoints - left}/${input.totalPoints})`, callback_data: "reg_skills:confirm" }]);
+  rows.push([{ text: `✅ Подтвердить (${input.totalPoints - left}/${input.totalPoints})`, callback_data: "reg_skills:confirm" }]);
   return { inline_keyboard: rows };
 }
 
@@ -75,13 +75,13 @@ export function formatRegistrationSkillsMessage(input: {
   const skills = getDraftRegistrationSkills(input);
   const left = getDraftRegistrationSkillPointsLeft(input);
   return [
-    "5/5. Р Р°СЃРїСЂРµРґРµР»Рё 10 РѕС‡РєРѕРІ РЅР°РІС‹РєРѕРІ:",
+    "5/5. Распредели 10 очков навыков:",
     "",
-    "Р­С‚Рё РѕС‡РєРё РїСЂРёРіРѕРґСЏС‚СЃСЏ РІ СЂР°Р±РѕС‚Рµ РєРѕРјРїР°РЅРёРё Рё РІ PvP.",
+    "Эти очки пригодятся в работе, компании и PvP.",
     "",
-    ...input.skillOrder.map((skill) => `вЂў ${input.skillLabels[skill]}: ${skills[skill]}`),
+    ...input.skillOrder.map((skill) => `• ${input.skillLabels[skill]}: ${skills[skill]}`),
     "",
-    `РћСЃС‚Р°Р»РѕСЃСЊ РѕС‡РєРѕРІ: ${left}`,
+    `Осталось очков: ${left}`,
   ].join("\n");
 }
 
@@ -197,20 +197,20 @@ export async function sendTelegramRegistrationStepPrompt(input: {
       input.token,
       input.chatId,
       [
-        "рџ§‘вЂЌрџ’» РџСЂРёРІРµС‚. Р”РѕР±СЂРѕ РїРѕР¶Р°Р»РѕРІР°С‚СЊ РІ Gadget Lab.",
+        "👩‍💻 Привет. Добро пожаловать в Gadget Lab.",
         "",
-        "РЎРґРµР»Р°РµРј РІСЃС‘ Р±С‹СЃС‚СЂРѕ Рё РїРѕ-С‡РµР»РѕРІРµС‡РµСЃРєРё:",
-        "1. Р’С‹Р±РµСЂРµРј РіРѕСЂРѕРґ СЃС‚Р°Р¶РёСЂРѕРІРєРё",
-        "2. РџСЂРёРґСѓРјР°РµРј РЅРёРє",
-        "3. РћРїСЂРµРґРµР»РёРј С‚РІРѕР№ СЂР°Р±РѕС‡РёР№ СЃС‚РёР»СЊ",
-        "4. РџСЂРѕР№РґС‘Рј РєРѕСЂРѕС‚РєРѕРµ РјРёРЅРё-СЃРѕР±РµСЃРµРґРѕРІР°РЅРёРµ",
-        "5. РЎРѕР±РµСЂС‘Рј РїРµСЂРІС‹Р№ РїСЂРѕС‚РѕС‚РёРї",
+        "Сделаем всё быстро и по-человечески:",
+        "1. Выберем город стажировки",
+        "2. Придумаем ник",
+        "3. Определим твой рабочий стиль",
+        "4. Пройдём короткое мини-собеседование",
+        "5. Соберём первый прототип",
         "",
-        "РџРѕСЃР»Рµ СЌС‚РѕРіРѕ РѕС‚РєСЂРѕРµС‚СЃСЏ РІСЃСЏ РёРіСЂР°.",
+        "После этого откроется вся игра.",
       ].join("\n"),
       {
         reply_markup: {
-          inline_keyboard: [[{ text: "рџљЂ РџРѕРµС…Р°Р»Рё", callback_data: "reg_tutorial:intro:start" }]],
+          inline_keyboard: [[{ text: "🚀 Поехали", callback_data: "reg_tutorial:intro:start" }]],
         },
       },
     );

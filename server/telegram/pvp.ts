@@ -22,6 +22,11 @@ type PvpTelegramModuleDeps = {
 };
 
 export function createPvpTelegramModule(deps: PvpTelegramModuleDeps) {
+  function isIgnorableTelegramEditError(error: unknown) {
+    const message = String((error as any)?.message || error || "");
+    return message.includes("message is not modified") || message.includes("message to edit not found");
+  }
+
   function stopQueuePolling(chatId: number) {
     const timer = deps.pvpQueuePollTimerByChatId.get(chatId);
     if (timer) {
@@ -42,12 +47,21 @@ export function createPvpTelegramModule(deps: PvpTelegramModuleDeps) {
       !progressMessageId || (!activeDuel?.awaitingStart && previousStageKey && previousStageKey !== stageKey);
 
     if (progressMessageId && !shouldCreateNewStageMessage) {
-      await deps.callTelegramApi(token, "editMessageText", {
-        chat_id: chatId,
-        message_id: progressMessageId,
-        text: logText,
-        ...extra,
-      });
+      try {
+        await deps.callTelegramApi(token, "editMessageText", {
+          chat_id: chatId,
+          message_id: progressMessageId,
+          text: logText,
+          ...extra,
+        });
+      } catch (error) {
+        if (!isIgnorableTelegramEditError(error)) throw error;
+        deps.pvpDuelProgressMessageByChatId.delete(chatId);
+        const message = await deps.sendMessage(token, chatId, logText, extra);
+        if (Number(message?.message_id)) {
+          deps.pvpDuelProgressMessageByChatId.set(chatId, Number(message.message_id));
+        }
+      }
     } else {
       if (progressMessageId) {
         await deps.callTelegramApi(token, "deleteMessage", {
@@ -150,17 +164,47 @@ export function createPvpTelegramModule(deps: PvpTelegramModuleDeps) {
         const [, stageKey, tacticId] = data.split(":");
         await deps.callInternalApi("POST", "/api/pvp/tactics/select", { userId: actor.id, stageKey, tacticId });
       } else {
-        await deps.callInternalApi("POST", "/api/pvp/duel/start", { userId: actor.id });
+        try {
+          await deps.callInternalApi("POST", "/api/pvp/duel/start", { userId: actor.id });
+        } catch (error: any) {
+          const message = String(error?.message || "");
+          if (message.includes("Активная дуэль не найдена")) {
+            const claim = await deps.callInternalApi("POST", "/api/pvp/result/claim", { userId: actor.id }).catch(() => null) as any;
+            if (claim?.result) {
+              claim.result.userId = actor.id;
+              claim.result.userName = "Ты";
+              await deps.sendMessage(token, chatId, deps.formatPvpResultText(claim.result), {
+                reply_markup: deps.pvpMenuReplyMarkup,
+              });
+            }
+            return {
+              handled: true as const,
+              callbackText: "Эта дуэль уже завершена",
+              shouldClearInlineButtons: true,
+            };
+          }
+          throw error;
+        }
       }
 
       const status = await deps.callInternalApi("GET", `/api/pvp/status?userId=${encodeURIComponent(actor.id)}`);
       if (messageId && status?.activeDuel) {
-        await deps.callTelegramApi(token, "editMessageText", {
-          chat_id: chatId,
-          message_id: messageId,
-          text: deps.formatPvpActiveDuelText(status.activeDuel),
-          reply_markup: deps.getPvpInlineMarkup(status.activeDuel),
-        });
+        try {
+          await deps.callTelegramApi(token, "editMessageText", {
+            chat_id: chatId,
+            message_id: messageId,
+            text: deps.formatPvpActiveDuelText(status.activeDuel),
+            reply_markup: deps.getPvpInlineMarkup(status.activeDuel),
+          });
+        } catch (error) {
+          if (!isIgnorableTelegramEditError(error)) throw error;
+          const message = await deps.sendMessage(token, chatId, deps.formatPvpActiveDuelText(status.activeDuel), {
+            reply_markup: deps.getPvpInlineMarkup(status.activeDuel),
+          });
+          if (Number(message?.message_id)) {
+            deps.pvpDuelProgressMessageByChatId.set(chatId, Number(message.message_id));
+          }
+        }
       }
 
       return {

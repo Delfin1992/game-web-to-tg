@@ -92,7 +92,7 @@ export async function handleProfileMetaMessage(input: {
     const activeTravel = playerTravelByUserId.get(player.id);
     if (activeTravel) {
       const secondsLeft = getTravelRemainingSeconds(player.id);
-      await sendWithMainKeyboard(token, chatId, `рџљ¶ Р’С‹ СѓР¶Рµ РІ РїСѓС‚Рё РІ ${formatTravelTargetLabel(activeTravel.target)}. РћСЃС‚Р°Р»РѕСЃСЊ ~${secondsLeft} СЃРµРє.`);
+      await sendWithMainKeyboard(token, chatId, `🚶 Ты уже в пути в ${formatTravelTargetLabel(activeTravel.target)}. Осталось примерно ${secondsLeft} сек.`);
       return true;
     }
 
@@ -104,7 +104,7 @@ export async function handleProfileMetaMessage(input: {
       const travelMs = currentLocation === "city" ? TRAVEL_TO_CITY_MS : TRAVEL_TO_COMPANY_MS;
       const travelSec = Math.ceil(travelMs / 1000);
       const arrivesAtMs = Date.now() + travelMs;
-      await sendWithMainKeyboard(token, chatId, `рџљ¶ Р’С‹ РѕС‚РїСЂР°РІРёР»РёСЃСЊ РґРѕРјРѕР№. РџСЂРёР±С‹С‚РёРµ С‡РµСЂРµР· ${travelSec} СЃРµРє.`);
+      await sendWithMainKeyboard(token, chatId, `🚶 Возвращаемся домой. Будешь на месте примерно через ${travelSec} сек.`);
       const timer = setTimeout(async () => {
         try {
           const state = playerTravelByUserId.get(player.id);
@@ -114,7 +114,7 @@ export async function handleProfileMetaMessage(input: {
           const snapshot = await resolveTelegramSnapshot(message.from);
           const notices = formatNotices(snapshot.notices);
           const base = await formatPlayerProfile(snapshot);
-          await sendWithMainKeyboard(token, state.chatId, `вњ… Р’С‹ РІРµСЂРЅСѓР»РёСЃСЊ РґРѕРјРѕР№.\n\n${notices ? `${base}\n\n${notices}` : base}`);
+          await sendWithMainKeyboard(token, state.chatId, `✅ Ты снова дома.\n\n${notices ? `${base}\n\n${notices}` : base}`);
         } catch (error) {
           console.error("Travel to home completion error:", error);
         }
@@ -137,43 +137,43 @@ export async function handleProfileMetaMessage(input: {
     const currentProfession = getProfessionById(getPlayerProfessionId(player) || "");
     if (currentProfession) {
       const skillLabels: Record<string, string> = {
-        coding: "РљРѕРґРёРЅРі",
-        testing: "РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ",
-        analytics: "РђРЅР°Р»РёС‚РёРєР°",
-        design: "Р”РёР·Р°Р№РЅ",
-        attention: "Р’РЅРёРјР°РЅРёРµ",
-        drawing: "Р РёСЃРѕРІР°РЅРёРµ",
-        modeling: "3D-РјРѕРґРµР»РёСЂРѕРІР°РЅРёРµ",
+        coding: "Кодинг",
+        testing: "Тестирование",
+        analytics: "Аналитика",
+        design: "Дизайн",
+        attention: "Внимание",
+        drawing: "Рисование",
+        modeling: "3D-моделирование",
       };
       const skillBonusLines = Object.entries(currentProfession.pvpBonuses?.skillMultipliers || {})
         .filter(([, multiplier]) => Number(multiplier || 1) > 1)
-        .map(([skill, multiplier]) => `вЂў PvP: ${skillLabels[skill] ?? skill} +${Math.round((Number(multiplier) - 1) * 100)}%`);
+        .map(([skill, multiplier]) => `• PvP: ${skillLabels[skill] ?? skill} +${Math.round((Number(multiplier) - 1) * 100)}%`);
       const roundBonusLines = Object.entries(currentProfession.pvpBonuses?.roundMultipliers || {})
         .filter(([, multiplier]) => Number(multiplier || 1) > 1)
         .map(([round, multiplier]) => {
-          const roundLabel = round === "concept" ? "РџСЂРѕРµРєС‚РёСЂРѕРІР°РЅРёРµ" : round === "core" ? "Р Р°Р·СЂР°Р±РѕС‚РєР°" : "РћС‚Р»Р°РґРєР°";
-          return `вЂў Р Р°СѓРЅРґ В«${roundLabel}В»: +${Math.round((Number(multiplier) - 1) * 100)}%`;
+          const roundLabel = round === "concept" ? "Проектирование" : round === "core" ? "Разработка" : "Отладка";
+          return `• Раунд «${roundLabel}»: +${Math.round((Number(multiplier) - 1) * 100)}%`;
         });
 
       await sendWithMainKeyboard(
         token,
         chatId,
         [
-          `рџЋ“ РўРµРєСѓС‰Р°СЏ РїСЂРѕС„РµСЃСЃРёСЏ: ${currentProfession.emoji} ${currentProfession.name}`,
+          `🎓 Текущая профессия: ${currentProfession.emoji} ${currentProfession.name}`,
           currentProfession.subtitle,
           currentProfession.summary,
           "",
-          "РўРІРѕРё Р±РѕРЅСѓСЃС‹:",
+          "Твои бонусы:",
           ...skillBonusLines,
           ...roundBonusLines,
-          `вЂў РџСЂРѕС„РёР»СЊРЅС‹Р№ cap: ${skillLabels[currentProfession.skillCapBonus.skill] ?? currentProfession.skillCapBonus.skill} РґРѕ +${Math.round((Number(currentProfession.skillCapBonus.multiplier) - 1) * 100)}%`,
+          `• Профильный предел: ${skillLabels[currentProfession.skillCapBonus.skill] ?? currentProfession.skillCapBonus.skill} до +${Math.round((Number(currentProfession.skillCapBonus.multiplier) - 1) * 100)}%`,
         ].join("\n"),
       );
       return true;
     }
 
     if (player.level < PROFESSION_UNLOCK_LEVEL) {
-      await sendWithMainKeyboard(token, chatId, `рџЋ“ РџСЂРѕС„РµСЃСЃРёСЏ РѕС‚РєСЂРѕРµС‚СЃСЏ РЅР° ${PROFESSION_UNLOCK_LEVEL} СѓСЂРѕРІРЅРµ.`);
+      await sendWithMainKeyboard(token, chatId, `🎓 Профессия откроется на ${PROFESSION_UNLOCK_LEVEL} уровне.`);
       return true;
     }
 
@@ -195,7 +195,7 @@ export async function handleProfileMetaMessage(input: {
     await sendMessage(token, chatId, formatReputationMenu(player), {
       reply_markup: {
         inline_keyboard: [
-          [{ text: "рџ—“ РљРІРµСЃС‚С‹", callback_data: "quest:refresh" }, { text: "рџЏ† Р РµР№С‚РёРЅРі", callback_data: "quest:rating" }],
+          [{ text: "🗓 Квесты", callback_data: "quest:refresh" }, { text: "🏆 Рейтинг", callback_data: "quest:rating" }],
         ],
       },
     });
@@ -217,7 +217,7 @@ export async function handleProfileMetaMessage(input: {
       const claimed = await claimWeeklyQuestReward(player.id);
       const questView = formatWeeklyQuestMenu(claimed.user);
       const lines = [
-        "🎁 Награда за еженедельный квест получена!",
+        "🎁 Отлично, награда уже у тебя!",
         `+${getCurrencySymbol(claimed.user.city)}${claimed.rewardMoney}, +${claimed.rewardExp} XP, +${claimed.rewardReputation} репутации`,
         "",
         questView.text,
@@ -236,7 +236,7 @@ export async function handleProfileMetaMessage(input: {
     try {
       await sendTutorialMenu(token, chatId, player.id);
     } catch (error) {
-      await sendWithMainKeyboard(token, chatId, `вќЊ ${extractErrorMessage(error)}`);
+      await sendWithMainKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
     }
     return true;
   }

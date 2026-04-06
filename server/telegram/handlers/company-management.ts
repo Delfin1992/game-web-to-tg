@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Company management commands extracted from telegram.ts.
  * Covers staffing, salaries, topups, departments and IPO flows.
  */
@@ -44,7 +44,7 @@ export async function handleCompanyManagementMessage(input: {
   DEPARTMENT_LABELS: Record<string, string>;
   sendCompanyDepartmentsSection: (token: string, chatId: number, membership: any) => Promise<void>;
   sendWithCurrentHubKeyboard: (token: string, chatId: number, userId: string, text: string) => Promise<void>;
-  runIPO: (companyEconomy: any) => any;
+  runIPO: (companyEconomy: any, membership: any) => Promise<any> | any;
   sendCompanyIpoSection: (token: string, chatId: number, membership: any) => Promise<void>;
 }) {
   const {
@@ -316,7 +316,7 @@ export async function handleCompanyManagementMessage(input: {
           "💱 Пополнение компании в GRM",
           `Твой курс: 1 локальная единица = ${formatRate(rate)} GRM`,
           `Баланс игрока: ${getCurrencySymbol(player.city)}${player.balance}`,
-          "Введи сумму в локальной валюте (например: 1000).",
+          "Введи сумму в локальной валюте, например: 1000.",
         ].join("\n"),
       );
       return true;
@@ -404,7 +404,7 @@ export async function handleCompanyManagementMessage(input: {
     }
 
     const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
-    const ipoResult = runIPO(companyEconomy);
+    const ipoResult = await runIPO(companyEconomy, membership);
     if (!ipoResult.ok) {
       await sendWithMainKeyboard(token, chatId, `❌ ${ipoResult.reason ?? "IPO пока недоступно"}`);
       await sendCompanyIpoSection(token, chatId, membership);

@@ -34,6 +34,7 @@ export function createRepairTelegramModule(deps: {
   formatCompanyRepairServiceMenu: (...args: any[]) => any;
   buildCompanyRepairServiceInlineMarkup: (...args: any[]) => any;
   sendCompanyRootMenu: (...args: any[]) => any;
+  pendingActionByChatId: Map<number, any>;
 }) {
   return {
     async handleMessage(input: any) {
@@ -76,6 +77,7 @@ export function createRepairTelegramModule(deps: {
         formatCompanyRepairServiceMenu: deps.formatCompanyRepairServiceMenu,
         buildCompanyRepairServiceInlineMarkup: deps.buildCompanyRepairServiceInlineMarkup,
         sendCompanyRootMenu: deps.sendCompanyRootMenu,
+        pendingActionByChatId: deps.pendingActionByChatId,
         getRepairOrder: deps.getRepairOrder,
         sendCompanyRepairServiceMenu: deps.sendCompanyRepairServiceMenu,
         hasCompanyRepairParts: deps.hasCompanyRepairParts,

@@ -53,8 +53,7 @@ export function buildCompanyReplyMarkup(input: {
 
   if (section === "hackathon_event") {
     return buildReplyKeyboard([
-      ["✅ Присоединиться", "🧠 Вложить навыки"],
-      ["💰 Вложить GRM", "🧩 Вложить запчасти"],
+      ["✅ Присоединиться", "📊 Статус хакатона"],
       ["⬅️ Назад"],
     ]);
   }
@@ -62,6 +61,13 @@ export function buildCompanyReplyMarkup(input: {
   if (section === "management_hr") {
     return buildReplyKeyboard([
       ["🧑‍💼 Назначение сотрудников на должности", "📥 Заявки на вступление"],
+      ["⬅️ Назад"],
+    ]);
+  }
+
+  if (section === "management_requests") {
+    return buildReplyKeyboard([
+      ["✅ Одобрить заявку", "❌ Отклонить заявку"],
       ["⬅️ Назад"],
     ]);
   }
@@ -75,15 +81,15 @@ export function buildCompanyReplyMarkup(input: {
 
   if (section === "hackathon_sabotage") {
     return buildReplyKeyboard([
-      ["🎯 Атака", "🛡 Security"],
-      ["📨 Офферы", "⬅️ Назад"],
+      ["🏁 Хакатон", "💣 Саботаж"],
+      ["🛡 Защита", "⬅️ Назад"],
     ]);
   }
 
   if (section === "hackathon") {
     return buildReplyKeyboard([
-      ["🏁 Хакатон", "🕶 Саботаж"],
-      ["⬅️ Назад"],
+      ["🏁 Хакатон", "💣 Саботаж"],
+      ["🛡 Защита", "⬅️ Назад"],
     ]);
   }
 
@@ -95,11 +101,17 @@ export function buildCompanyReplyMarkup(input: {
     ]);
   }
 
-  return buildReplyKeyboard([
+  const rootRows = [
     ["🏢 Профиль", "💼 Работа"],
     ["📦 Склад", "🧪 Бюро"],
     ["🛠 Сервис", "🛠 Управление"],
     ["🏁 Хакатон"],
-    ["🏠 Домой"],
-  ]);
+  ];
+
+  if (role !== "owner") {
+    rootRows.push(["🚪 Выйти из компании"]);
+  }
+
+  rootRows.push(["🏠 Домой"]);
+  return buildReplyKeyboard(rootRows);
 }
