@@ -298,13 +298,18 @@ function buildActiveDuelView(duel: EngineActiveDuel, userId: string, nowMs: numb
 }
 
 function computeRatingDelta(selfRating: number, opponentRating: number, didWin: boolean, isDraw: boolean, isBotFight: boolean) {
-  if (isDraw || isBotFight) return PVP_DUEL_CONFIG.rating.drawDelta;
+  if (isDraw) return PVP_DUEL_CONFIG.rating.drawDelta;
   const expected = 1 / (1 + Math.pow(10, (opponentRating - selfRating) / 400));
   const adjustment = PVP_DUEL_CONFIG.rating.maxAdjustment;
-  if (didWin) {
-    return Math.round(PVP_DUEL_CONFIG.rating.winDelta + (1 - expected) * adjustment);
-  }
-  return -Math.round(Math.abs(PVP_DUEL_CONFIG.rating.loseDelta) + expected * adjustment);
+  const baseDelta = didWin
+    ? Math.round(PVP_DUEL_CONFIG.rating.winDelta + (1 - expected) * adjustment)
+    : -Math.round(Math.abs(PVP_DUEL_CONFIG.rating.loseDelta) + expected * adjustment);
+
+  if (!isBotFight) return baseDelta;
+
+  // Bot fights should still move rating, but a bit softer than full PvP.
+  if (didWin) return Math.max(5, Math.round(baseDelta * 0.6));
+  return Math.min(-4, Math.round(baseDelta * 0.6));
 }
 
 function finalizeDuelResult(duel: EngineActiveDuel): PvpDuelResult {

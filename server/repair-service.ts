@@ -234,6 +234,7 @@ export async function createRepairOrder(input: {
   userId: string;
   gadgetRef: string;
   playerChatId?: number | null;
+  requestedPrice?: number | null;
 }) {
   const snapshot = await getUserWithGameState(input.userId);
   if (!snapshot) throw new Error("Игрок не найден");
@@ -241,7 +242,9 @@ export async function createRepairOrder(input: {
   const trimmed = String(input.gadgetRef || "").trim();
   const gadget = (snapshot.game.inventory || [])
     .find((item, index) => String(item.id) === trimmed || String(index + 1) === trimmed);
-  if (!gadget || gadget.type !== "gadget") throw new Error("Гаджет не найден");
+  if (!gadget || (gadget.type !== "gadget" && gadget.type !== "gear")) {
+    throw new Error("Гаджет не найден");
+  }
 
   const normalized = normalizeGadget(gadget);
   if (!(normalized.condition < normalized.maxCondition || normalized.isBroken)) {
@@ -256,6 +259,16 @@ export async function createRepairOrder(input: {
     throw new Error(`Для отправки в сервис нужно минимум ${getCurrencySymbol(user.city)}${estimate.maxPrice}`);
   }
 
+  const requestedPrice = input.requestedPrice == null
+    ? estimate.finalPrice
+    : Math.round(Number(input.requestedPrice));
+  if (!Number.isFinite(requestedPrice)) {
+    throw new Error("Укажи корректную цену ремонта");
+  }
+  if (requestedPrice < estimate.minPrice || requestedPrice > estimate.maxPrice) {
+    throw new Error(`Цена ремонта должна быть в диапазоне ${getCurrencySymbol(user.city)}${estimate.minPrice}-${estimate.maxPrice}`);
+  }
+
   const order: RepairOrder = {
     id: randomUUID(),
     city: user.city,
@@ -267,7 +280,7 @@ export async function createRepairOrder(input: {
     maxCondition: normalized.maxCondition,
     minPrice: estimate.minPrice,
     maxPrice: estimate.maxPrice,
-    finalPrice: estimate.finalPrice,
+    finalPrice: requestedPrice,
     requiredParts: estimate.requiredParts,
     repairTimeMs: estimate.repairTimeMs,
     status: "queued",
@@ -356,7 +369,9 @@ export async function completeRepairOrder(orderId: string) {
   const snapshot = await getUserWithGameState(order.playerId);
   if (!snapshot) throw new Error("Игрок не найден");
   const gadget = snapshot.game.inventory.find((item) => String(item.id) === String(order.gadgetId));
-  if (!gadget || gadget.type !== "gadget") throw new Error("Связанный гаджет не найден");
+  if (!gadget || (gadget.type !== "gadget" && gadget.type !== "gear")) {
+    throw new Error("Связанный гаджет не найден");
+  }
   const normalized = normalizeGadget(gadget);
 
   const payable = Math.max(0, Number(order.finalPrice || 0));

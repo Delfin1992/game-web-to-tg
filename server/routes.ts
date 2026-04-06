@@ -40,6 +40,7 @@ import {
 import {
   companyBlueprintGlobalOwnerByBlueprintId,
   companyBlueprintWarehouseByCompanyId,
+  companyEconomyByCompanyId,
   companyWarehousePartsByCompanyId,
 } from "./telegram/state";
 import {
@@ -60,6 +61,7 @@ import {
   type CompanyMiningStatus,
   type CompanyMiningPlanId,
 } from "../shared/company-mining";
+import { fixEncoding } from "./telegram/helpers";
 import {
   TELEGRAM_PENDING_PASSWORD_PREFIX,
   buildPlayerRegistrationState,
@@ -103,6 +105,8 @@ import {
 } from "../shared/weekly-hackathon";
 import {
   applyWeeklyHackathonRewards,
+  applyWeeklyHackathonDefense,
+  applyWeeklyHackathonSabotage,
   applyWinnerRewardsToCompanies,
   contributeGrmToWeeklyHackathon,
   contributePartToWeeklyHackathon,
@@ -110,19 +114,21 @@ import {
   endWeeklyHackathon,
   formatWeeklyHackathonTop,
   getHackathonRoundView,
+  getAvailableHackathonDefenseTypes,
+  getAvailableHackathonSabotageTypes,
+  getRegisteredHackathonCompany,
   getWeeklyHackathonCompanyScore,
   getWeeklyHackathonPlayerStats,
   getWeeklyHackathonSabotageState,
   getWeeklyHackathonState,
   joinPlayerToWeeklyHackathonTeam,
-  launchWeeklyHackathonSabotage,
-  resolveHackathonPoachOffer,
   getWinnerBoostForCompany,
-  setHackathonCompanySecurityLevel,
   registerCompanyForWeeklyHackathon,
   resetWeeklyHackathon,
   startWeeklyHackathon,
   startWeeklyHackathonScheduler,
+  upgradeWeeklyHackathonDefenseLevel,
+  upgradeWeeklyHackathonSabotageLevel,
   validateHackathonEligibility,
 } from "./weekly-hackathon";
 import {
@@ -192,6 +198,21 @@ import {
   type ExclusiveSeedPart,
 } from "../shared/exclusive-gadgets";
 import { getAdminPassword, warnIfAdminPasswordMissing } from "./shared/env";
+import { registerRegistrationRoutes } from "./routes/registration";
+import { registerPlayerRoutes } from "./routes/player";
+import { registerPvpRoutes } from "./routes/pvp";
+import { registerHackathonRoutes } from "./routes/hackathon";
+import {
+  buildCompanyIpoEligibility,
+  buildCompanyStockPreview,
+  launchCompanyIpo,
+  recordCompanyBlueprintCompleted,
+  recordCompanyHackathonParticipation,
+  recordCompanyHackathonPlacement,
+  recordCompanyProductionClaim,
+  setCompanyEconomyRuntimeState,
+  startCompanyStockDailyScheduler,
+} from "./services/company-stock-service";
 
 type CompanyBlueprintState = {
   id?: string;
@@ -402,6 +423,8 @@ type MarketListing = {
   createdAt: number;
   sold: boolean;
 };
+
+const AUCTION_POST_BID_EXTENSION_MINUTES = 15;
 
 type CityContractStatus = "open" | "in_progress" | "completed";
 type CityContractKind = "gadget_delivery" | "parts_supply" | "skill_research";
@@ -898,13 +921,15 @@ async function sendTelegramBotText(chatId: number, text: string, replyMarkup?: R
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken || !Number.isFinite(chatId) || chatId <= 0) return;
   try {
+    const safeText = fixEncoding(text);
+    const safeReplyMarkup = replyMarkup ? JSON.parse(JSON.stringify(replyMarkup, (_key, value) => (typeof value === "string" ? fixEncoding(value) : value))) : undefined;
     await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text,
-        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        text: safeText,
+        ...(safeReplyMarkup ? { reply_markup: safeReplyMarkup } : {}),
       }),
     });
   } catch (error) {
@@ -955,6 +980,7 @@ async function notifyCompanyBlueprintResearchStarted(company: any, blueprint: an
 }
 
 async function notifyCompanyBlueprintResearchCompleted(company: any, state: CompanyBlueprintState, blueprint: any) {
+  recordCompanyBlueprintCompleted(company.id);
   const notified = new Set<string>([company.ownerId, ...(state.participantUserIds ?? [])]);
   for (const userId of notified) {
     const telegramId = Number(getTelegramIdByUserId(userId) || 0);
@@ -1836,11 +1862,29 @@ function removeProducedGadget(companyId: string, gadgetId: string): ProducedGadg
   return removed;
 }
 
+function getProducedGadget(companyId: string, gadgetId: string) {
+  const produced = companyGadgets.get(companyId) ?? [];
+  return produced.find((gadget) => gadget.id === gadgetId) ?? null;
+}
+
 function getProducedGadgetUpgradeGroupKey(gadget: ProducedGadget) {
   const baseName = String(gadget.baseName || gadget.name || "").trim().toLowerCase();
   const category = normalizeProducedCategory(gadget.category);
   const blueprintId = String(gadget.blueprintId || "").trim().toLowerCase();
   return `${baseName}::${category}::${blueprintId}`;
+}
+
+function getMarketGadgetBatchKey(gadget: Partial<ProducedGadget> | null | undefined) {
+  if (!gadget) return "";
+  return JSON.stringify({
+    baseName: String(gadget.baseName || gadget.name || "").trim().toLowerCase(),
+    category: normalizeProducedCategory(String(gadget.category || "")),
+    blueprintId: String(gadget.blueprintId || "").trim().toLowerCase(),
+    quality: Number(gadget.quality || 0).toFixed(2),
+    stats: gadget.stats || {},
+    exclusiveLevel: Number(gadget.exclusiveLevel || 0),
+    bonus: String(gadget.exclusiveBonusLabel || ""),
+  });
 }
 
 function getExclusiveUpgradeCandidates(companyId: string) {
@@ -1971,14 +2015,14 @@ async function transferMarketPartToPlayerInventory(
 function rollPvpRewardPart(input: { isWinner: boolean; isDraw: boolean }) {
   if (input.isDraw) return null;
   if (input.isWinner) {
-    const epic = rollRandomPartDrop(1, { allowedQualities: ["Epic"] });
+    const epic = rollRandomPartDrop(10, { allowedQualities: ["Epic"] });
     if (epic) return epic;
-    const rare = rollRandomPartDrop(1.5, { allowedQualities: ["Rare"] });
+    const rare = rollRandomPartDrop(22, { allowedQualities: ["Rare"] });
     return rare;
   }
-  const uncommon = rollRandomPartDrop(5, { allowedQualities: ["Uncommon"] });
+  const uncommon = rollRandomPartDrop(20, { allowedQualities: ["Uncommon"] });
   if (uncommon) return uncommon;
-  const common = rollRandomPartDrop(10, { allowedQualities: ["Common"] });
+  const common = rollRandomPartDrop(35, { allowedQualities: ["Common"] });
   return common;
 }
 
@@ -2110,9 +2154,12 @@ async function resolvePlayerCompanyMembership(userId: string) {
   return null;
 }
 
-function canLaunchHackathonSabotageByRole(role: string) {
-  const normalized = String(role || "").toLowerCase();
-  return normalized === "owner" || normalized === "cto" || normalized === "security_lead";
+function isCompanyHackathonManagerRole(role: string, ownerId: string | null | undefined, actorUserId: string) {
+  return canManageCompanyAssets({
+    actorUserId,
+    companyOwnerId: ownerId,
+    role,
+  });
 }
 
 function buildTutorialBlueprintView() {
@@ -2278,11 +2325,23 @@ async function syncTutorialBlueprintState(company: any, state: CompanyBlueprintS
   }
 
   state.status = "production_ready";
+  state.projectStatus = "completed";
+  state.estimatedFinishAt = Date.now();
   state.completedAt = Date.now();
   const tutorialOwnerId = String(company.tutorialOwnerId || company.ownerId);
   await applyTutorialEvent(tutorialOwnerId, "demo_blueprint_done");
 
   return state;
+}
+
+async function syncBlueprintStateForCompany(company: any) {
+  const current = companyBlueprints.get(company.id);
+  if (isTutorialCompany(company)) {
+    const synced = await syncTutorialBlueprintState(company, current);
+    if (synced) companyBlueprints.set(company.id, synced);
+    return synced ?? null;
+  }
+  return await syncCompanyBlueprintResearchProject(company);
 }
 
 function calculateStandardProductionDurationSeconds(input: {
@@ -2423,8 +2482,10 @@ async function settleExpiredAuctions() {
     if (sellerAdvanced === "strategist") {
       netIncome = Math.max(1, Math.floor(netIncome * 1.08));
     }
+    const nextCompanyBalance = Number(company.balance || 0) + netIncome;
     await storage.updateUser(buyer.id, { balance: buyer.balance - listing.currentBid });
-    await storage.updateCompany(company.id, { balance: company.balance + netIncome });
+    await storage.updateCompany(company.id, { balance: nextCompanyBalance });
+    await applyCompanyMarketIncomeToRuntime(company, nextCompanyBalance, netIncome);
     const soldGadget = listing.listingKind === "gadget"
       ? removeProducedGadget(listing.companyId, String(listing.gadgetId || ""))
       : null;
@@ -2493,10 +2554,41 @@ async function settleExpiredAuctions() {
   }
 }
 
+async function applyCompanyMarketIncomeToRuntime(company: any, nextBalance: number, incomeGrm: number) {
+  const safeIncome = Math.max(0, Number(incomeGrm || 0));
+  const members = await storage.getCompanyMembers(String(company.id));
+  const currentRuntime = companyEconomyByCompanyId.get(String(company.id));
+  const baseEconomy = reconcileCompanyEconomy({
+    ...(company as CompanyEconomyLike),
+    ...(currentRuntime ?? {}),
+    balance: nextBalance,
+    capitalGRM: nextBalance,
+    profitGRM: Number(currentRuntime?.profitGRM ?? (company as any).profitGRM ?? 0),
+    employeeCount: Math.max(1, members.length),
+  } as CompanyEconomyLike);
+
+  const updatedEconomy = reconcileCompanyEconomy({
+    ...baseEconomy,
+    balance: nextBalance,
+    capitalGRM: nextBalance,
+    profitGRM: Number(baseEconomy.profitGRM || 0) + safeIncome,
+    employeeCount: Math.max(1, members.length),
+  } as CompanyEconomyLike);
+
+  setCompanyEconomyRuntimeState(
+    {
+      ...company,
+      balance: nextBalance,
+    },
+    updatedEconomy,
+  );
+}
+
 const LEVEL_REQUIREMENTS = BALANCE_CONFIG.company.levelRequirements;
 
 async function applyHackathonRewards() {
-  await applyWeeklyHackathonRewards({
+  const beforeState = getWeeklyHackathonState();
+  const result = await applyWeeklyHackathonRewards({
     updateCompanyBalance: async (companyId, addGrm) => {
       const company = await storage.getCompany(companyId);
       if (!company) return;
@@ -2545,6 +2637,31 @@ async function applyHackathonRewards() {
       });
     },
   });
+  if (!result.applied) return;
+  if (result.mvpPlayerId) {
+    const telegramId = Number(getTelegramIdByUserId(result.mvpPlayerId) || 0);
+    if (telegramId) {
+      await sendTelegramBotText(
+        telegramId,
+        [
+          "🎯 Награда MVP хакатона",
+          `+${Number(result.mvpRewardGrm || 0)} GRM`,
+          "Ты стал самым полезным участником хакатона по суммарному вкладу.",
+        ].join("\n"),
+      );
+    }
+  }
+  const winners = result.winners ?? [];
+  const winnerPlaces = new Map<string, number>();
+  for (const [index, winner] of winners.entries()) {
+    winnerPlaces.set(String(winner.companyId), index + 1);
+  }
+  const registeredCompanies = Array.isArray(beforeState?.registeredCompanies) ? beforeState.registeredCompanies : [];
+  for (const company of registeredCompanies) {
+    const companyId = String(company?.companyId || "");
+    if (!companyId) continue;
+    recordCompanyHackathonPlacement(companyId, winnerPlaces.get(companyId) ?? null);
+  }
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -2585,6 +2702,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await applyHackathonRewards();
     },
   });
+  await startCompanyStockDailyScheduler({
+    onCompanyUpdated: async ({ company, historyEntry, summary }) => {
+      const members = await storage.getCompanyMembers(company.companyId);
+      const text = [
+        "📊 Дневное изменение акций компании",
+        `🏢 ${company.companyName}`,
+        `Цена: ${historyEntry.previousPrice} → ${historyEntry.newPrice} GRM`,
+        `Изменение: ${historyEntry.deltaPercent > 0 ? "+" : ""}${historyEntry.deltaPercent}%`,
+        summary.length ? `Факторы: ${summary.join(", ")}` : "Факторы: без сильных изменений",
+      ].join("\n");
+      for (const member of members) {
+        const telegramId = Number(getTelegramIdByUserId(member.userId) || 0);
+        if (!telegramId) continue;
+        await sendTelegramBotText(telegramId, text);
+      }
+    },
+  });
   setInterval(() => {
     void (async () => {
       const companies = await storage.getAllCompanies();
@@ -2604,161 +2738,154 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   }, 15 * 1000);
 
-  // вњ… Р Р•Р“РРЎРўР РђР¦РРЇ РџРћР›Р¬Р—РћР’РђРўР•Р›РЇ
-  app.post("/api/register", async (req, res) => {
-    try {
-      const { referralCode, deviceFingerprint, telegramId } = req.body ?? {};
-      const ip = req.ip || req.socket.remoteAddress || "unknown";
-      const now = Date.now();
-
-      if (typeof telegramId === "string" && telegramId.trim().length > 0) {
-        if (getUserIdByTelegramId(telegramId)) {
-          return res.status(409).json({ error: "Этот Telegram аккаунт уже зарегистрирован" });
-        }
-      }
-
-      if (typeof deviceFingerprint === "string" && deviceFingerprint.trim().length > 0) {
-        const existing = cleanupOldTimestamps(deviceRegistrationTimestamps.get(deviceFingerprint) ?? [], now);
-        if (existing.length >= 1) {
-          return res.status(429).json({ error: "С этого устройства уже создан аккаунт за последние 24 часа" });
-        }
-        if ((deviceRegistrationTimestamps.get(deviceFingerprint) ?? []).length >= 2) {
-          return res.status(429).json({ error: "Превышен лимит аккаунтов для устройства" });
-        }
-      }
-
-      const ipHistory = cleanupOldTimestamps(ipRegistrationTimestamps.get(ip) ?? [], now);
-      if (ipHistory.length >= 3) {
-        return res.status(429).json({ error: "Слишком много регистраций с этого IP за сутки" });
-      }
-
-      const parsed = insertUserSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ error: "Invalid data" });
-      }
-      const registrationSkills = normalizeRegistrationSkillsAllocation(req.body?.skills);
-      if (!isValidRegistrationSkillsAllocation(registrationSkills)) {
-        return res.status(400).json({
-          error: `Распредели все ${REGISTRATION_INITIAL_SKILL_POINTS} очков навыков`,
-          details: { total: countRegistrationSkillPoints(registrationSkills) },
-        });
-      }
-
-      const resolvedCity = resolveRegistrationCityName(parsed.data.city);
-      const resolvedPersonality = resolveRegistrationPersonalityId(parsed.data.personality);
-      if (!resolvedCity || !resolvedPersonality) {
-        return res.status(400).json({ error: "Invalid registration data" });
-      }
-
-      const exists = await storage.usernameExists(parsed.data.username);
-      if (exists) {
-        return res.status(409).json({ error: "Username already exists" });
-      }
-
-      const user = await storage.createUser({
-        ...parsed.data,
-        city: resolvedCity,
-        personality: resolvedPersonality,
-      });
-      applyGameStatePatch(user.id, { skills: registrationSkills });
-
-      const code = generateReferralCode(user.username);
-      userReferralCodes.set(user.id, code);
-      referralCodeToUserId.set(code, user.id);
-
-      if (typeof referralCode === "string" && referralCode.trim().length > 0) {
-        const referrerId = referralCodeToUserId.get(referralCode.trim());
-        if (referrerId && referrerId !== user.id) {
-          referredByUserId.set(user.id, referrerId);
-          const children = referralChildrenByUserId.get(referrerId) ?? new Set<string>();
-          children.add(user.id);
-          referralChildrenByUserId.set(referrerId, children);
-
-          const referrer = await storage.getUser(referrerId);
-          if (referrer) {
-            await storage.updateUser(referrer.id, { balance: referrer.balance + 200 });
-          }
-          await storage.updateUser(user.id, { balance: user.balance + 100 });
-          user.balance += 100;
-        }
-      }
-
-      if (typeof telegramId === "string" && telegramId.trim().length > 0) {
-        bindTelegramIdToUser(telegramId, user.id);
-      }
-      if (typeof deviceFingerprint === "string" && deviceFingerprint.trim().length > 0) {
-        const history = deviceRegistrationTimestamps.get(deviceFingerprint) ?? [];
-        history.push(now);
-        deviceRegistrationTimestamps.set(deviceFingerprint, history);
-      }
-      ipHistory.push(now);
-      ipRegistrationTimestamps.set(ip, ipHistory);
-
-      res.status(201).json({ ...serializeSafeUser(user), referralCode: code });
-    } catch (error) {
-      console.error("Registration error:", error);
-      res.status(500).json({ error: "Registration failed" });
-    }
+  registerRegistrationRoutes(app, {
+    storage,
+    insertUserSchema,
+    cleanupOldTimestamps,
+    deviceRegistrationTimestamps,
+    ipRegistrationTimestamps,
+    getUserIdByTelegramId,
+    bindTelegramIdToUser,
+    isValidRegistrationSkillsAllocation,
+    normalizeRegistrationSkillsAllocation,
+    countRegistrationSkillPoints,
+    REGISTRATION_INITIAL_SKILL_POINTS,
+    resolveRegistrationCityName,
+    resolveRegistrationPersonalityId,
+    applyGameStatePatch,
+    generateReferralCode,
+    userReferralCodes,
+    referralCodeToUserId,
+    referredByUserId,
+    referralChildrenByUserId,
+    serializeSafeUser,
+    buildRegistrationOptions,
+    submitRegistrationAnswer,
+    buildPlayerRegistrationState,
+    ensureRegistrationTutorialCompany,
+    getUserWithGameState,
+    getTutorialState,
+    getCurrentInterviewQuestion,
+    saveRegistrationProgress,
+    completeRegistration,
   });
 
-  // вњ… РџР РћР’Р•Р РљРђ РќРРљРђ
-  app.get("/api/check-username/:username", async (req, res) => {
-    const exists = await storage.usernameExists(req.params.username);
-    res.json({ exists, available: !exists });
+  registerPlayerRoutes(app, {
+    storage,
+    getUserWithGameState,
+    getTutorialState,
+    buildPlayerRegistrationState,
+    getCurrentInterviewQuestion,
+    serializeSafeUser,
+    applyGameStatePatch,
+    assertFeatureEnabled,
+    getStockMarketSnapshot,
+    buyStockAsset,
+    sellStockAsset,
+    applyTutorialEvent,
+    getTutorialActiveStep,
+    getTutorialProgressText,
+    TUTORIAL_STEP_CONTENT,
+    startTutorial,
+    isTutorialCompany,
+    TUTORIAL_DEMO_COMPANY_NAME,
+    assignTutorialDemoCompany,
+    removeProducedGadget,
+    companyGadgets,
+    companyBlueprints,
+    clearTutorialDemoCompany,
+    completeTutorial,
+    TUTORIAL_DEMO_BLUEPRINT,
+    TutorialEventTypes: [
+      "first_job_done",
+      "first_course_item_bought",
+      "first_course_item_used",
+      "first_gadget_bought",
+      "first_gadget_equipped",
+      "first_stock_bought",
+      "first_education_started",
+      "demo_company_created",
+      "demo_blueprint_done",
+      "demo_gadget_produced",
+      "demo_gadget_sold",
+    ] as const,
+    PLAYABLE_PROFESSIONS,
+    PROFESSION_UNLOCK_LEVEL,
+    getPlayerProfessionId,
+    getProfessionById,
+    canSelectProfession,
+    isProfessionId,
+    setPlayerProfession,
+    resolvePlayerCompanyMembership,
   });
 
-  app.get("/api/registration/options", async (_req, res) => {
-    try {
-      res.json(await buildRegistrationOptions());
-    } catch (error) {
-      console.error("Failed to load registration options:", error);
-      res.status(500).json({ error: "Failed to load registration options" });
-    }
+  registerPvpRoutes(app, {
+    storage,
+    assertFeatureEnabled,
+    isPvpBotUsername,
+    isTutorialCompany,
+    getPvpQueueState,
+    updatePvpHeartbeat,
+    flushCompletedPvpDuels,
+    canEnterPvp,
+    getPvpAccessMessage,
+    getUtcDayStamp,
+    getPvpBoostCatalog,
+    getPvpShopRotation,
+    PVP_DUEL_CONFIG,
+    spendGram,
+    purchasePvpBoost,
+    startActivePvpDuelNow,
+    selectPvpTactic,
+    getUserWithGameState,
+    resolvePlayerCompanyMembership,
+    getContractsByCity,
+    readDuelSkills,
+    readEquippedPvpGadget,
+    computePvpPowerScore,
+    queuePlayerForPvp,
+    runPvpMatchmaking,
+    leavePvpQueue,
+    clearPendingPvpBoosts,
+    clearPendingPvpTactics,
+    consumePendingPvpResult,
+    rollPvpRewardPart,
+    transferMarketPartToPlayerInventory,
+    applyGadgetWear,
+    getCurrencySymbol,
   });
 
-  app.post("/api/registration/submit-answer", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "").trim();
-      const questionId = String(req.body?.questionId || "").trim();
-      const answerId = String(req.body?.answerId || "").trim();
-      if (!userId || !questionId || !answerId) {
-        return res.status(400).json({ error: "userId, questionId and answerId are required" });
-      }
-
-      const user = await storage.getUser(userId);
-      if (!user) return res.status(404).json({ error: "User not found" });
-
-      const updated = await submitRegistrationAnswer(user.id, { questionId: questionId as any, answerId });
-      const registrationState = buildPlayerRegistrationState(updated);
-      let tutorialCompany = null as Awaited<ReturnType<typeof storage.getCompany>> | null;
-
-      if (registrationState.registrationStep === "first_craft") {
-        tutorialCompany = await ensureRegistrationTutorialCompany(updated.id);
-      }
-
-      const snapshot = await getUserWithGameState(updated.id);
-      if (!snapshot) return res.status(404).json({ error: "User not found" });
-
-      const { user: refreshedUser, game, notices } = snapshot;
-      const refreshedRegistration = buildPlayerRegistrationState(refreshedUser);
-      res.json({
-        ...serializeSafeUser(refreshedUser),
-        registration: refreshedRegistration,
-        skills: game.skills,
-        inventory: game.inventory,
-        workTime: Math.round(game.workTime * 100),
-        studyTime: Math.round(game.studyTime * 100),
-        gramBalance: game.gramBalance,
-        activeBankProduct: game.activeBankProduct,
-        jobDropPity: game.jobDropPity,
-        tutorial: await getTutorialState(refreshedUser.id),
-        notices,
-        currentInterviewQuestion: getCurrentInterviewQuestion(refreshedUser),
-        tutorialCompany,
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to submit registration answer" });
-    }
+  registerHackathonRoutes(app, {
+    storage,
+    getWeeklyHackathonState,
+    formatWeeklyHackathonTop,
+    getHackathonRoundView,
+    getWeeklyHackathonPlayerStats,
+    getWeeklyHackathonCompanyScore,
+    getWeeklyHackathonSabotageState,
+    WEEKLY_HACKATHON_CONFIG,
+    registerCompanyForWeeklyHackathon,
+    resolvePlayerCompanyMembership,
+    validateHackathonEligibility,
+    joinPlayerToWeeklyHackathonTeam,
+    getUserWithGameState,
+    getEffectiveCompanyDepartmentEffects,
+    applyGameStatePatch,
+    contributeSkillToWeeklyHackathon,
+    spendGram,
+    contributeGrmToWeeklyHackathon,
+    ALL_PARTS,
+    HACKATHON_ALLOWED_PART_TYPES,
+    contributePartToWeeklyHackathon,
+    isCompanyHackathonManagerRole,
+    getRegisteredHackathonCompany,
+    upgradeWeeklyHackathonSabotageLevel,
+    upgradeWeeklyHackathonDefenseLevel,
+    getAvailableHackathonSabotageTypes,
+    getAvailableHackathonDefenseTypes,
+    applyWeeklyHackathonSabotage,
+    applyWeeklyHackathonDefense,
+    recordCompanyHackathonParticipation,
   });
 
   app.get("/api/game-settings", async (_req, res) => {
@@ -3002,745 +3129,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true, payout, tier, user: safeUser });
   });
 
-  // вњ… РџРћР›РЈР§Р•РќРР• РџРћР›Р¬Р—РћР’РђРўР•Р›РЇ
-  app.get("/api/users/:id", async (req, res) => {
-    const snapshot = await getUserWithGameState(req.params.id);
-    if (!snapshot) return res.status(404).json({ error: "User not found" });
-
-    const { user, game, notices } = snapshot;
-    const tutorial = await getTutorialState(user.id);
-    const registrationState = buildPlayerRegistrationState(user);
-    const tutorialCompany = registrationState.registrationStep === "first_craft"
-      ? await storage.getTutorialCompanyByOwner(user.id)
-      : null;
-    res.json({
-      ...serializeSafeUser(user),
-      skills: game.skills,
-      inventory: game.inventory,
-      workTime: Math.round(game.workTime * 100),
-      studyTime: Math.round(game.studyTime * 100),
-      gramBalance: game.gramBalance,
-      activeBankProduct: game.activeBankProduct,
-      activePvpBankBoost: (game as any).activePvpBankBoost ?? null,
-      jobDropPity: game.jobDropPity,
-      tutorial,
-      notices,
-      currentInterviewQuestion: getCurrentInterviewQuestion(user),
-      tutorialCompany,
-    });
-  });
-
-  // вњ… РЎРћРҐР РђРќР•РќРР• РџР РћР“Р Р•РЎРЎРђ РџРћР›Р¬Р—РћР’РђРўР•Р›РЇ
-  app.patch("/api/users/:id", async (req, res) => {
-    try {
-      const updates = req.body ?? {};
-      const userPatch: Record<string, unknown> = {};
-      if (typeof updates.level === "number") userPatch.level = updates.level;
-      if (typeof updates.experience === "number") userPatch.experience = updates.experience;
-      if (typeof updates.balance === "number") userPatch.balance = updates.balance;
-      if (typeof updates.reputation === "number") userPatch.reputation = updates.reputation;
-      if (typeof updates.city === "string") userPatch.city = updates.city;
-      if (typeof updates.personality === "string") userPatch.personality = updates.personality;
-      if (typeof updates.gender === "string") userPatch.gender = updates.gender;
-
-      await storage.updateUser(req.params.id, userPatch as any);
-
-      applyGameStatePatch(req.params.id, {
-        skills: updates.skills,
-        inventory: updates.inventory,
-        workTime: updates.workTime,
-        studyTime: updates.studyTime,
-        gramBalance: updates.gramBalance,
-        activeBankProduct: updates.activeBankProduct,
-        activePvpBankBoost: updates.activePvpBankBoost,
-      });
-
-      const snapshot = await getUserWithGameState(req.params.id);
-      if (!snapshot) return res.status(404).json({ error: "User not found" });
-
-      const { user, game, notices } = snapshot;
-      const tutorial = await getTutorialState(user.id);
-      const registrationState = buildPlayerRegistrationState(user);
-      const tutorialCompany = registrationState.registrationStep === "first_craft"
-        ? await storage.getTutorialCompanyByOwner(user.id)
-        : null;
-      res.json({
-        ...serializeSafeUser(user),
-        skills: game.skills,
-        inventory: game.inventory,
-        workTime: Math.round(game.workTime * 100),
-        studyTime: Math.round(game.studyTime * 100),
-        gramBalance: game.gramBalance,
-        activeBankProduct: game.activeBankProduct,
-        activePvpBankBoost: (game as any).activePvpBankBoost ?? null,
-        jobDropPity: game.jobDropPity,
-        tutorial,
-        notices,
-        currentInterviewQuestion: getCurrentInterviewQuestion(user),
-        tutorialCompany,
-      });
-    } catch (error) {
-      console.error("Failed to update user:", error);
-      res.status(500).json({ error: "Failed to update user" });
-    }
-  });
-
-  app.patch("/api/users/:id/registration", async (req, res) => {
-    try {
-      const user = await storage.getUser(req.params.id);
-      if (!user) return res.status(404).json({ error: "User not found" });
-
-      const payload = {
-        username: typeof req.body?.username === "string" ? req.body.username : undefined,
-        cityId: typeof req.body?.cityId === "string" ? req.body.cityId : undefined,
-        city: typeof req.body?.city === "string" ? req.body.city : undefined,
-        personalityId: typeof req.body?.personalityId === "string" ? req.body.personalityId : undefined,
-        personality: typeof req.body?.personality === "string" ? req.body.personality : undefined,
-        gender: typeof req.body?.gender === "string" ? req.body.gender : undefined,
-        skills: typeof req.body?.skills === "object" && req.body?.skills !== null ? req.body.skills : undefined,
-      };
-
-      const updated = req.body?.action === "complete"
-        ? await completeRegistration(user.id, payload)
-        : await saveRegistrationProgress(user.id, payload);
-
-      const snapshot = await getUserWithGameState(updated.id);
-      if (!snapshot) return res.status(404).json({ error: "User not found" });
-
-      const { user: refreshedUser, game, notices } = snapshot;
-      const tutorial = await getTutorialState(refreshedUser.id);
-      const registrationState = buildPlayerRegistrationState(refreshedUser);
-      const tutorialCompany = registrationState.registrationStep === "first_craft"
-        ? await storage.getTutorialCompanyByOwner(refreshedUser.id)
-        : null;
-      res.json({
-        ...serializeSafeUser(refreshedUser),
-        skills: game.skills,
-        inventory: game.inventory,
-        workTime: Math.round(game.workTime * 100),
-        studyTime: Math.round(game.studyTime * 100),
-        gramBalance: game.gramBalance,
-        activeBankProduct: game.activeBankProduct,
-        activePvpBankBoost: (game as any).activePvpBankBoost ?? null,
-        jobDropPity: game.jobDropPity,
-        tutorial,
-        notices,
-        currentInterviewQuestion: getCurrentInterviewQuestion(refreshedUser),
-        tutorialCompany,
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to update registration" });
-    }
-  });
-
-  app.get("/api/stocks", async (req, res) => {
-    try {
-      await assertFeatureEnabled("stocks", "Stocks are disabled by admin settings");
-      const userId = String(req.query.userId ?? "").trim();
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-      res.json(await getStockMarketSnapshot(userId));
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to load stock market" });
-    }
-  });
-
-  app.post("/api/stocks/buy", async (req, res) => {
-    try {
-      await assertFeatureEnabled("stocks", "Stocks are disabled by admin settings");
-      const userId = String(req.body?.userId ?? "").trim();
-      const ticker = String(req.body?.ticker ?? "").trim();
-      const quantity = Number(req.body?.quantity ?? 0);
-      if (!userId || !ticker || !Number.isFinite(quantity)) {
-        return res.status(400).json({ error: "userId, ticker and quantity are required" });
-      }
-      const result = await buyStockAsset(userId, ticker, quantity);
-      const tutorial = await applyTutorialEvent(userId, "first_stock_bought").catch(() => null);
-      res.json({ ...result, tutorial });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to buy stock" });
-    }
-  });
-
-  app.post("/api/stocks/sell", async (req, res) => {
-    try {
-      await assertFeatureEnabled("stocks", "Stocks are disabled by admin settings");
-      const userId = String(req.body?.userId ?? "").trim();
-      const ticker = String(req.body?.ticker ?? "").trim();
-      const quantity = Number(req.body?.quantity ?? 0);
-      if (!userId || !ticker || !Number.isFinite(quantity)) {
-        return res.status(400).json({ error: "userId, ticker and quantity are required" });
-      }
-      res.json(await sellStockAsset(userId, ticker, quantity));
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to sell stock" });
-    }
-  });
-
-  app.get("/api/tutorial/:userId", async (req, res) => {
-    try {
-      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
-      const state = await getTutorialState(req.params.userId);
-      if (!state) return res.status(404).json({ error: "User not found" });
-
-      const activeStep = getTutorialActiveStep(state);
-      res.json({
-        state,
-        activeStep,
-        progressText: getTutorialProgressText(state),
-        stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
-      });
-    } catch (error) {
-      console.error("Failed to load tutorial state:", error);
-      res.status(500).json({ error: "Failed to load tutorial state" });
-    }
-  });
-
-  app.post("/api/tutorial/:userId/start", async (req, res) => {
-    try {
-      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
-      const result = await startTutorial(req.params.userId);
-      const activeStep = getTutorialActiveStep(result.state);
-      res.json({
-        ...result,
-        activeStep,
-        progressText: getTutorialProgressText(result.state),
-        stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to start tutorial" });
-    }
-  });
-
-  app.post("/api/tutorial/:userId/event", async (req, res) => {
-    try {
-      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
-      const eventType = String(req.body?.eventType || "") as TutorialEventType;
-      const supported: TutorialEventType[] = [
-        "first_job_done",
-        "first_course_item_bought",
-        "first_course_item_used",
-        "first_gadget_bought",
-        "first_gadget_equipped",
-        "first_stock_bought",
-        "first_education_started",
-        "demo_company_created",
-        "demo_blueprint_done",
-        "demo_gadget_produced",
-        "demo_gadget_sold",
-      ];
-      if (!supported.includes(eventType)) {
-        return res.status(400).json({ error: "Unsupported tutorial event" });
-      }
-
-      const result = await applyTutorialEvent(req.params.userId, eventType);
-      const activeStep = getTutorialActiveStep(result.state);
-      res.json({
-        ...result,
-        activeStep,
-        progressText: getTutorialProgressText(result.state),
-        stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to apply tutorial event" });
-    }
-  });
-
-  app.post("/api/tutorial/:userId/demo-company", async (req, res) => {
-    try {
-      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
-      await assertFeatureEnabled("demoCompany", "Demo companies are disabled by admin settings");
-      await assertFeatureEnabled("tutorialDemoCompany", "Tutorial demo company is disabled by admin settings");
-      const user = await storage.getUser(req.params.userId);
-      if (!user) return res.status(404).json({ error: "User not found" });
-      const tutorialState = await getTutorialState(user.id);
-      if (!tutorialState || !tutorialState.isActive || tutorialState.isCompleted) {
-        return res.status(400).json({ error: "Tutorial is not active" });
-      }
-      if (tutorialState.currentStep < 3) {
-        return res.status(400).json({ error: "Demo company unlocks after job and education tutorial steps" });
-      }
-
-      let company = await storage.getTutorialCompanyByOwner(user.id);
-      if (!company) {
-        company = await storage.createCompany(
-          {
-            name: TUTORIAL_DEMO_COMPANY_NAME,
-            city: user.city,
-            isTutorial: true,
-            tutorialOwnerId: user.id,
-          },
-          user.id,
-          user.username,
-        );
-      }
-      const tutorialCapitalTarget = 30000;
-      if (Number(company.balance ?? 0) < tutorialCapitalTarget) {
-        company = await storage.updateCompany(company.id, { balance: tutorialCapitalTarget });
-      }
-
-      const tutorial = await assignTutorialDemoCompany(user.id, company.id);
-      const activeStep = getTutorialActiveStep(tutorial.state);
-      res.json({
-        company,
-        tutorial: {
-          ...tutorial,
-          activeStep,
-          progressText: getTutorialProgressText(tutorial.state),
-          stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
-        },
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to create tutorial company" });
-    }
-  });
-
-  app.post("/api/tutorial/:userId/demo-sell", async (req, res) => {
-    try {
-      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
-      const state = await getTutorialState(req.params.userId);
-      if (!state) return res.status(404).json({ error: "User not found" });
-      if (!state.demoCompanyId) return res.status(400).json({ error: "Demo company not found" });
-      if (!state.isActive || state.isCompleted) {
-        return res.status(400).json({ error: "Tutorial is not active" });
-      }
-      if (state.currentStep < 6) {
-        return res.status(400).json({ error: "Selling unlocks after producing tutorial gadget" });
-      }
-
-      const company = await storage.getCompany(state.demoCompanyId);
-      if (!company || !isTutorialCompany(company)) {
-        return res.status(404).json({ error: "Tutorial company not found" });
-      }
-      if (String(company.tutorialOwnerId || company.ownerId) !== req.params.userId) {
-        return res.status(403).json({ error: "Not tutorial owner" });
-      }
-
-      const produced = companyGadgets.get(company.id) ?? [];
-      const demoGadget = produced.find((item) => item.name === TUTORIAL_DEMO_BLUEPRINT.name) ?? produced[0];
-      if (!demoGadget) {
-        return res.status(400).json({ error: "No produced demo gadget to sell" });
-      }
-
-      const sold = removeProducedGadget(company.id, demoGadget.id);
-      const tutorial = await applyTutorialEvent(req.params.userId, "demo_gadget_sold");
-      const activeStep = getTutorialActiveStep(tutorial.state);
-      res.json({
-        soldGadget: sold,
-        tutorial: {
-          ...tutorial,
-          activeStep,
-          progressText: getTutorialProgressText(tutorial.state),
-          stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
-        },
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to sell tutorial gadget" });
-    }
-  });
-
-  app.post("/api/tutorial/:userId/complete", async (req, res) => {
-    try {
-      await assertFeatureEnabled("tutorial", "Tutorial is disabled by admin settings");
-      const before = await getTutorialState(req.params.userId);
-      const demoCompanyId = before?.demoCompanyId ?? null;
-
-      const result = await completeTutorial(req.params.userId);
-
-      if (demoCompanyId) {
-        const demoCompany = await storage.getCompany(demoCompanyId);
-        if (demoCompany && isTutorialCompany(demoCompany)) {
-          await storage.deleteCompany(demoCompany.id);
-        }
-        companyBlueprints.delete(demoCompanyId);
-        companyGadgets.delete(demoCompanyId);
-      }
-      await clearTutorialDemoCompany(req.params.userId);
-
-      const activeStep = getTutorialActiveStep(result.state);
-      res.json({
-        ...result,
-        activeStep,
-        progressText: getTutorialProgressText(result.state),
-        stepContent: TUTORIAL_STEP_CONTENT[activeStep] ?? TUTORIAL_STEP_CONTENT[1],
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to complete tutorial" });
-    }
-  });
-
-  // вњ… Р“Р›РћР‘РђР›Р¬РќР«Р™ Р Р•Р™РўРРќР“ РР“Р РћРљРћР’
-  app.get("/api/leaderboard/players", async (req, res) => {
-    try {
-      await assertFeatureEnabled("leaderboards", "Leaderboards are disabled by admin settings");
-      const sort = String(req.query.sort ?? "level");
-      const users = (await storage.getUsers()).filter((user) => !isPvpBotUsername(user.username));
-
-      const sorted = [...users].sort((a, b) => {
-        if (sort === "pvp") return Number(b.pvpRating || 1000) - Number(a.pvpRating || 1000);
-        if (sort === "reputation") return b.reputation - a.reputation;
-        if (sort === "wealth") return b.balance - a.balance;
-        return b.level - a.level;
-      });
-
-      res.json(sorted.slice(0, 50).map(({ password, ...u }) => u));
-    } catch (error) {
-      console.error("Failed to load players leaderboard:", error);
-      res.status(500).json({ error: "Failed to load players leaderboard" });
-    }
-  });
-
-  // вњ… Р“Р›РћР‘РђР›Р¬РќР«Р™ Р Р•Р™РўРРќР“ РљРћРњРџРђРќРР™
-  app.get("/api/leaderboard/companies", async (req, res) => {
-    try {
-      await assertFeatureEnabled("leaderboards", "Leaderboards are disabled by admin settings");
-      const sort = String(req.query.sort ?? "level");
-      const companies = (await storage.getAllCompanies()).filter((company) => !isTutorialCompany(company));
-
-      const sorted = [...companies].sort((a, b) => {
-        if (sort === "wealth") return b.balance - a.balance;
-        if (sort === "blueprints") return b.ork - a.ork;
-        return b.level - a.level;
-      });
-
-      res.json(
-        sorted.slice(0, 50).map((c) => ({
-          ...c,
-          developedBlueprints: c.ork,
-        }))
-      );
-    } catch (error) {
-      console.error("Failed to load companies leaderboard:", error);
-      res.status(500).json({ error: "Failed to load companies leaderboard" });
-    }
-  });
-
-  app.get("/api/leaderboard/pvp-developers", async (_req, res) => {
-    try {
-      await assertFeatureEnabled("leaderboards", "Leaderboards are disabled by admin settings");
-      const users = (await storage.getUsers()).filter((user) => !isPvpBotUsername(user.username));
-      const sorted = [...users]
-        .sort((a, b) => {
-          const ratingDiff = Number(b.pvpRating || 1000) - Number(a.pvpRating || 1000);
-          if (ratingDiff !== 0) return ratingDiff;
-          const winsDiff = Number(b.pvpWins || 0) - Number(a.pvpWins || 0);
-          if (winsDiff !== 0) return winsDiff;
-          return Number(b.pvpMatches || 0) - Number(a.pvpMatches || 0);
-        })
-        .slice(0, 50)
-        .map(({ password, tutorialState, ...user }) => ({
-          ...user,
-          pvpRating: Number(user.pvpRating || 1000),
-          pvpWins: Number(user.pvpWins || 0),
-          pvpLosses: Number(user.pvpLosses || 0),
-          pvpMatches: Number(user.pvpMatches || 0),
-        }));
-      res.json(sorted);
-    } catch (error) {
-      console.error("Failed to load PvP developers leaderboard:", error);
-      res.status(500).json({ error: "Failed to load PvP developers leaderboard" });
-    }
-  });
-
-  app.post("/api/pvp/heartbeat", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-      const user = await storage.getUser(userId);
-      if (!user) return res.status(404).json({ error: "User not found" });
-      await storage.updateUser(userId, { lastActiveAt: Math.floor(Date.now() / 1000) });
-      updatePvpHeartbeat(userId);
-      await flushCompletedPvpDuels();
-      runPvpMatchmaking();
-      res.json({ ok: true });
-    } catch (error: any) {
-      res.status(500).json({ error: error?.message || "Failed to update heartbeat" });
-    }
-  });
-
-  app.get("/api/pvp/status", async (req, res) => {
-    try {
-      const userId = String(req.query.userId || "");
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-      await flushCompletedPvpDuels();
-      const user = await storage.getUser(userId);
-      if (!user) return res.status(404).json({ error: "User not found" });
-      const access = canEnterPvp(user);
-      const state = getPvpQueueState(userId);
-      const stamp = getUtcDayStamp();
-      const dailyMatches = user.pvpDailyStamp === stamp ? Number(user.pvpDailyMatches || 0) : 0;
-      res.json({
-        access,
-        accessMessage: access.ok ? null : getPvpAccessMessage(access.reason),
-        inQueue: state.inQueue,
-        queueJoinedAtMs: state.queueJoinedAtMs,
-        queueWaitSec: state.queueWaitSec,
-        queueSize: state.queueSize,
-        hasPendingResult: state.hasPendingResult,
-        activeDuel: state.activeDuel,
-        pendingBoosts: state.pendingBoosts,
-        pendingTactics: state.pendingTactics,
-        boostCatalog: getPvpBoostCatalog(),
-        boostRotation: getPvpShopRotation(),
-        rating: Number(user.pvpRating || 1000),
-        wins: Number(user.pvpWins || 0),
-        losses: Number(user.pvpLosses || 0),
-        matches: Number(user.pvpMatches || 0),
-        dailyLimit: PVP_DUEL_CONFIG.dailyLimit,
-        dailyMatches,
-      });
-    } catch (error: any) {
-      res.status(500).json({ error: error?.message || "Failed to load PvP status" });
-    }
-  });
-
-  app.post("/api/pvp/boosts/purchase", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      const boostId = String(req.body?.boostId || "") as any;
-      if (!userId || !boostId) return res.status(400).json({ error: "userId and boostId are required" });
-      const boost = getPvpBoostCatalog().find((item) => item.id === boostId);
-      if (!boost) return res.status(404).json({ error: "Этот PvP-предмет сегодня недоступен в ротации" });
-      const user = await storage.getUser(userId);
-      if (!user) return res.status(404).json({ error: "User not found" });
-      const access = canEnterPvp(user);
-      if (!access.ok) {
-        return res.status(400).json({ error: getPvpAccessMessage(access.reason), reason: access.reason });
-      }
-      const currentState = getPvpQueueState(user.id);
-      if (currentState.activeDuel && !currentState.activeDuel.awaitingStart) {
-        return res.status(400).json({ error: "Нельзя менять PvP-предмет во время активной дуэли" });
-      }
-      if (!currentState.activeDuel && currentState.pendingBoosts?.includes(boost.id)) {
-        return res.status(400).json({ error: "Этот PvP-предмет уже выбран для следующей дуэли" });
-      }
-      const payment = await spendGram(user.id, boost.costGram, `PvP boost: ${boost.name}`);
-      const pendingBoosts = purchasePvpBoost(user.id, boost.id);
-      res.json({
-        ok: true,
-        boost,
-        pendingBoosts,
-        gramBalance: payment.state.gramBalance,
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to purchase PvP boost" });
-    }
-  });
-
-  app.post("/api/pvp/duel/start", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-      const user = await storage.getUser(userId);
-      if (!user) return res.status(404).json({ error: "User not found" });
-      const access = canEnterPvp(user);
-      if (!access.ok) {
-        return res.status(400).json({ error: getPvpAccessMessage(access.reason), reason: access.reason });
-      }
-      const duel = startActivePvpDuelNow(userId);
-      if (!duel) return res.status(404).json({ error: "Активная дуэль не найдена" });
-      const state = getPvpQueueState(userId);
-      res.json({ ok: true, activeDuel: state.activeDuel });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to start PvP duel" });
-    }
-  });
-
-  app.post("/api/pvp/tactics/select", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      const stageKey = String(req.body?.stageKey || "") as "concept" | "core" | "tests";
-      const tacticId = String(req.body?.tacticId || "") as "speed" | "quality" | "stability" | "pressure";
-      if (!userId || !stageKey || !tacticId) {
-        return res.status(400).json({ error: "userId, stageKey and tacticId are required" });
-      }
-      if (!["concept", "core", "tests"].includes(stageKey)) {
-        return res.status(400).json({ error: "Unknown PvP round" });
-      }
-      if (!["speed", "quality", "stability", "pressure"].includes(tacticId)) {
-        return res.status(400).json({ error: "Unknown PvP tactic" });
-      }
-      const user = await storage.getUser(userId);
-      if (!user) return res.status(404).json({ error: "User not found" });
-      const access = canEnterPvp(user);
-      if (!access.ok) {
-        return res.status(400).json({ error: getPvpAccessMessage(access.reason), reason: access.reason });
-      }
-      const tactics = selectPvpTactic(userId, stageKey, tacticId);
-      const state = getPvpQueueState(userId);
-      res.json({
-        ok: true,
-        tactics,
-        activeDuel: state.activeDuel,
-        pendingTactics: state.pendingTactics,
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Failed to select PvP tactic" });
-    }
-  });
-
-  app.post("/api/pvp/queue/join", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-      const user = await storage.getUser(userId);
-      if (!user) return res.status(404).json({ error: "User not found" });
-      const access = canEnterPvp(user);
-      if (!access.ok) {
-        return res.status(400).json({ error: getPvpAccessMessage(access.reason), reason: access.reason });
-      }
-
-      const stamp = getUtcDayStamp();
-      const dailyMatches = user.pvpDailyStamp === stamp ? Number(user.pvpDailyMatches || 0) : 0;
-      if (dailyMatches >= PVP_DUEL_CONFIG.dailyLimit) {
-        return res.status(400).json({ error: `Достигнут дневной лимит PvP боёв (${PVP_DUEL_CONFIG.dailyLimit})` });
-      }
-
-      const snapshot = await getUserWithGameState(user.id);
-      if (!snapshot) return res.status(404).json({ error: "User game state not found" });
-      const currentState = getPvpQueueState(user.id);
-      if (currentState.activeDuel) {
-        return res.status(400).json({ error: "Текущая PvP дуэль ещё не завершена" });
-      }
-      if (currentState.hasPendingResult) {
-        return res.status(400).json({ error: "Сначала забери результат предыдущей PvP дуэли" });
-      }
-      const membership = await resolvePlayerCompanyMembership(user.id);
-      if (membership) {
-        const companyContracts = getContractsByCity(membership.company.city);
-        const busyByContract = companyContracts.some(
-          (contract) => contract.status === "in_progress" && contract.assignedCompanyId === membership.company.id,
-        );
-        if (busyByContract) {
-          return res.status(400).json({ error: "Нельзя входить в PvP во время активного городского контракта компании" });
-        }
-      }
-      const skills = readDuelSkills(snapshot);
-      const gadget = readEquippedPvpGadget(snapshot);
-      const skillSum = skills.analytics + skills.design + skills.drawing + skills.coding + skills.modeling + skills.testing + skills.attention;
-      const pvpPowerScore = computePvpPowerScore({ skills, level: Number(user.level || 1), gadget });
-      const energyCost = Number(PVP_DUEL_CONFIG.process.baseEnergyCost || 0);
-
-      await storage.updateUser(user.id, { lastActiveAt: Math.floor(Date.now() / 1000) });
-      queuePlayerForPvp({
-        userId: user.id,
-        username: user.username,
-        level: Number(user.level || 1),
-        rating: Number(user.pvpRating || 1000),
-        professionId: access.professionId,
-        skills,
-        skillSum,
-        pvpPowerScore,
-        gadget,
-      });
-
-      await flushCompletedPvpDuels();
-      const result = runPvpMatchmaking();
-
-      const state = getPvpQueueState(user.id);
-      res.json({
-        ok: true,
-        inQueue: state.inQueue,
-        queueSize: state.queueSize,
-        queueWaitSec: state.queueWaitSec,
-        activeDuel: state.activeDuel,
-        pendingBoosts: state.pendingBoosts,
-        energyCost,
-        pvpPowerScore,
-        activeGadget: gadget ? { id: gadget.id, name: gadget.name } : null,
-        matched: !!result,
-      });
-    } catch (error: any) {
-      res.status(500).json({ error: error?.message || "Failed to join PvP queue" });
-    }
-  });
-
-  app.post("/api/pvp/queue/leave", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-      leavePvpQueue(userId);
-      clearPendingPvpBoosts(userId);
-      clearPendingPvpTactics(userId);
-      res.json({ ok: true });
-    } catch (error: any) {
-      res.status(500).json({ error: error?.message || "Failed to leave PvP queue" });
-    }
-  });
-
-  app.post("/api/pvp/result/claim", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-      await flushCompletedPvpDuels();
-      const result = consumePendingPvpResult(userId);
-      if (!result) return res.json({ ok: true, result: null });
-
-      const perspectiveA = result.playerAUserId === userId;
-      const myBefore = perspectiveA ? result.playerARatingBefore : result.playerBRatingBefore;
-      const myAfter = perspectiveA ? result.playerARatingAfter : result.playerBRatingAfter;
-      const opponentName = perspectiveA ? result.playerBName : result.playerAName;
-      const isWinner = result.winnerUserId === userId;
-      const isDraw = result.winnerUserId === null;
-      const opponentIsBot = perspectiveA ? Boolean(result.playerBIsBot) : Boolean(result.playerAIsBot);
-      const moneyReward = isWinner && opponentIsBot ? Math.max(0, Number(PVP_DUEL_CONFIG.reward.botWinMoney || 0)) : 0;
-      const user = await storage.getUser(userId);
-      if (moneyReward > 0 && user) {
-        await storage.updateUser(user.id, { balance: Number(user.balance || 0) + moneyReward });
-      }
-      const droppedPartDef = rollPvpRewardPart({ isWinner, isDraw });
-      const droppedPart = droppedPartDef
-        ? await transferMarketPartToPlayerInventory(userId, {
-            id: String(droppedPartDef.id),
-            name: String(droppedPartDef.name),
-            rarity: String(droppedPartDef.rarity),
-            type: String(droppedPartDef.partType || droppedPartDef.type || "unknown"),
-          })
-        : null;
-      const gadgetWear = await applyGadgetWear(userId, {
-        cause: "pvp",
-        severityMultiplier: result.winnerUserId === null ? 1 : isWinner ? 1 : 1.08,
-        negativeEventChanceBonus: 0.03,
-      });
-
-      res.json({
-        ok: true,
-        result: {
-          id: result.id,
-          createdAtMs: result.createdAtMs,
-          opponentName,
-          rounds: result.rounds,
-          winnerUserId: result.winnerUserId,
-          isWinner,
-          isDraw,
-          ratingBefore: myBefore,
-          ratingAfter: myAfter,
-          ratingDelta: myAfter - myBefore,
-          xpReward: result.winnerUserId === null ? Number(result.drawXp || 0) : isWinner ? result.winnerXp : result.loserXp,
-          reputationReward: result.winnerUserId === null ? Number(result.drawReputation || 0) : isWinner ? result.winnerReputation : 0,
-          moneyReward,
-          moneyRewardCurrency: getCurrencySymbol(user?.city || "Сан-Франциско"),
-          energyCost: perspectiveA ? Number(result.energyCostA || 0) : Number(result.energyCostB || 0),
-          droppedPart,
-          gadgetWear: gadgetWear.report,
-        },
-      });
-    } catch (error: any) {
-      res.status(500).json({ error: error?.message || "Failed to claim PvP result" });
-    }
-  });
-
-  app.get("/api/pvp/history", async (req, res) => {
-    try {
-      const userId = String(req.query.userId || "");
-      const limit = Math.max(1, Math.min(50, Number(req.query.limit || 10)));
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-      const rows = await storage.getPvpDuelHistoryByUser(userId, limit);
-      res.json(rows);
-    } catch (error: any) {
-      res.status(500).json({ error: error?.message || "Failed to load PvP history" });
-    }
-  });
-
   // вњ… РЎРћР—Р”РђРќРР• РљРћРњРџРђРќРР
   app.post("/api/company", async (req, res) => {
     let debitedOwner: { id: string; balance: number } | null = null;
@@ -3789,371 +3177,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.get("/api/hackathon", async (req, res) => {
-    const userId = typeof req.query.userId === "string" ? req.query.userId : "";
-    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
-    const snapshot = getWeeklyHackathonState();
-    res.json({
-      ...snapshot,
-      topCompanies: formatWeeklyHackathonTop(10),
-      liveRound: getHackathonRoundView(),
-      playerStats: userId && companyId ? getWeeklyHackathonPlayerStats(userId, companyId) : null,
-      companyScore: companyId ? getWeeklyHackathonCompanyScore(companyId) : null,
-      sabotage: getWeeklyHackathonSabotageState(companyId || undefined),
-      config: {
-        registrationCostGrm: WEEKLY_HACKATHON_CONFIG.registrationCostGrm,
-        maxParticipantsPerCompany: WEEKLY_HACKATHON_CONFIG.maxParticipantsPerCompany,
-        registrationWindowMs: WEEKLY_HACKATHON_CONFIG.registrationWindowMs,
-        roundDurationMs: WEEKLY_HACKATHON_CONFIG.roundDurationMs,
-        tickMs: WEEKLY_HACKATHON_CONFIG.tickMs,
-        eligibility: WEEKLY_HACKATHON_CONFIG.eligibility,
-      },
-    });
-  });
-
-  app.post("/api/hackathon/register-company", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      const companyId = String(req.body?.companyId || "");
-      if (!userId || !companyId) return res.status(400).json({ error: "userId и companyId обязательны" });
-
-      const company = await storage.getCompany(companyId);
-      if (!company) return res.status(404).json({ error: "Компания не найдена" });
-      if (company.ownerId !== userId) return res.status(403).json({ error: "Регистрировать компанию может только CEO" });
-      if (Number(company.level || 0) < 1) return res.status(400).json({ error: "Компания должна быть минимум 1 уровня" });
-
-      if (Number(company.balance || 0) < WEEKLY_HACKATHON_CONFIG.registrationCostGrm) {
-        return res.status(400).json({ error: `Недостаточно GRM на балансе компании. Нужно ${WEEKLY_HACKATHON_CONFIG.registrationCostGrm}` });
-      }
-
-      await storage.updateCompany(company.id, {
-        balance: Number(company.balance || 0) - WEEKLY_HACKATHON_CONFIG.registrationCostGrm,
-      });
-
-      const rndLevel = Math.max(0, Math.floor(Number(company.ork || 0) / 100));
-      const entry = registerCompanyForWeeklyHackathon({
-        companyId: company.id,
-        companyName: company.name,
-        city: company.city,
-        companyLevel: company.level,
-        rndLevel,
-        companyEmoji: null,
-        startedByUserId: userId,
-      });
-      res.json({ ok: true, entry, state: getWeeklyHackathonState() });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось зарегистрировать компанию" });
-    }
-  });
-
-  app.post("/api/hackathon/join-team", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      if (!userId) return res.status(400).json({ error: "userId обязателен" });
-      const membership = await resolvePlayerCompanyMembership(userId);
-      if (!membership) return res.status(400).json({ error: "Игрок не состоит в компании" });
-      const user = await storage.getUser(userId);
-      if (!user) return res.status(404).json({ error: "Игрок не найден" });
-      const member = await storage.getMemberByUserId(membership.company.id, userId);
-      const recentPvpLogs = await storage.getPvpDuelHistoryByUser(userId, 200);
-      const recentSinceSec = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
-      const eligibility = validateHackathonEligibility({
-        membershipCreatedAt: Number(member?.createdAt || 0) || null,
-        level: Number(user.level || 1),
-        totalPvpBattles: Number(user.pvpMatches || 0),
-        recentPvpBattles7d: recentPvpLogs.filter((row) => Number(row.createdAt || 0) >= recentSinceSec).length,
-      });
-      if (!eligibility.ok) {
-        return res.status(400).json({
-          error: eligibility.reasons[0] || "Игрок не проходит условия участия",
-          reasons: eligibility.reasons,
-          eligibility,
-        });
-      }
-      const joined = joinPlayerToWeeklyHackathonTeam({
-        userId,
-        username: String(user.username || "Игрок"),
-        companyId: membership.company.id,
-      });
-      res.json({ ok: true, joined, state: getWeeklyHackathonState() });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось записаться в состав" });
-    }
-  });
-
-  app.post("/api/hackathon/contribute/skill", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      if (!userId) return res.status(400).json({ error: "userId обязателен" });
-      const membership = await resolvePlayerCompanyMembership(userId);
-      if (!membership) return res.status(400).json({ error: "Игрок не состоит в компании" });
-
-      const snapshot = await getUserWithGameState(userId);
-      if (!snapshot) return res.status(404).json({ error: "Игрок не найден" });
-      const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(membership.company);
-      const game = snapshot.game as any;
-      const workTime = Number(game.workTime || 0);
-      if (workTime < WEEKLY_HACKATHON_CONFIG.skillEnergyCost) {
-        return res.status(400).json({ error: `Недостаточно энергии. Нужно ${Math.round(WEEKLY_HACKATHON_CONFIG.skillEnergyCost * 100)}%` });
-      }
-
-      const result = contributeSkillToWeeklyHackathon({
-        userId,
-        companyId: membership.company.id,
-        skills: {
-          coding: Number(game.skills?.coding || 0),
-          analytics: Number(game.skills?.analytics || 0),
-          design: Number(game.skills?.design || 0),
-          testing: Number(game.skills?.testing || 0),
-        },
-        multiplier: departmentEffects.hackathonSkillMultiplier,
-      });
-      applyGameStatePatch(userId, {
-        workTime: Math.max(0, Number((workTime - WEEKLY_HACKATHON_CONFIG.skillEnergyCost).toFixed(4))),
-      });
-      res.json({ ok: true, ...result, state: getWeeklyHackathonState() });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось внести skill-вклад" });
-    }
-  });
-
-  app.post("/api/hackathon/contribute/grm", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      const amount = Math.floor(Number(req.body?.amount || 0));
-      if (!userId) return res.status(400).json({ error: "userId обязателен" });
-      const membership = await resolvePlayerCompanyMembership(userId);
-      if (!membership) return res.status(400).json({ error: "Игрок не состоит в компании" });
-
-      const payment = await spendGram(userId, amount, `Weekly Hackathon вклад ${amount} GRM`);
-      const result = contributeGrmToWeeklyHackathon({
-        userId,
-        companyId: membership.company.id,
-        amount,
-      });
-      res.json({ ok: true, ...result, gramBalance: payment.state.gramBalance, state: getWeeklyHackathonState() });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось внести GRM-вклад" });
-    }
-  });
-
-  app.post("/api/hackathon/contribute/part", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      const partRef = String(req.body?.partRef || "");
-      if (!userId || !partRef) return res.status(400).json({ error: "userId и partRef обязательны" });
-      const membership = await resolvePlayerCompanyMembership(userId);
-      if (!membership) return res.status(400).json({ error: "Игрок не состоит в компании" });
-
-      const snapshot = await getUserWithGameState(userId);
-      if (!snapshot) return res.status(404).json({ error: "Игрок не найден" });
-      const game = snapshot.game as any;
-      const inventory = Array.isArray(game.inventory) ? [...game.inventory] : [];
-      const index = inventory.findIndex((item: any) => item.type === "part" && String(item.id) === partRef);
-      if (index < 0) return res.status(400).json({ error: "Деталь не найдена в инвентаре" });
-
-      const inventoryItem = inventory[index];
-      const part = ALL_PARTS[String(inventoryItem.id)];
-      if (!part) return res.status(400).json({ error: "Справочник детали не найден" });
-
-      const mappedType: HackathonPartType | null =
-        part.type === "processor" || part.type === "asic_chip"
-          ? "CPU"
-          : part.type === "memory"
-          ? "Memory"
-          : part.type === "camera"
-          ? "Camera"
-          : part.type === "battery" || part.type === "power"
-          ? "Battery"
-          : part.type === "controller" || part.type === "motherboard"
-          ? "Security chip"
-          : null;
-      if (!mappedType || !HACKATHON_ALLOWED_PART_TYPES.has(mappedType)) {
-        return res.status(400).json({ error: "Эта деталь не подходит для хакатона" });
-      }
-
-      const result = contributePartToWeeklyHackathon({
-        userId,
-        companyId: membership.company.id,
-        partType: mappedType,
-        rarity: String(inventoryItem.rarity || "Common"),
-        quantity: 1,
-        multiplier: (await getEffectiveCompanyDepartmentEffects(membership.company)).effects.hackathonPartMultiplier,
-      });
-
-      const qty = Math.max(1, Math.floor(Number(inventoryItem.quantity || 1)));
-      if (qty <= 1) {
-        inventory.splice(index, 1);
-      } else {
-        inventory[index] = { ...inventoryItem, quantity: qty - 1 };
-      }
-      applyGameStatePatch(userId, { inventory });
-      res.json({ ok: true, ...result, state: getWeeklyHackathonState() });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось внести вклад деталью" });
-    }
-  });
-
-  app.get("/api/hackathon/sabotage", async (req, res) => {
-    try {
-      const userId = String(req.query.userId || "");
-      if (!userId) return res.status(400).json({ error: "userId обязателен" });
-      const membership = await resolvePlayerCompanyMembership(userId);
-      if (!membership) return res.status(400).json({ error: "Игрок не состоит в компании" });
-      const snapshot = getWeeklyHackathonState();
-      const companyId = String(membership.company.id);
-      const targets = snapshot.leaderboard.filter((row) => row.companyId !== companyId).map((row) => ({
-        companyId: row.companyId,
-        companyName: row.companyName,
-        city: row.city,
-        score: row.score,
-        securityLevel: Number((row as any).securityLevel || 1),
-      }));
-
-      const sabotageState = getWeeklyHackathonSabotageState(companyId);
-      const eventId = String(snapshot.eventId || "");
-      const logs = eventId ? await storage.getHackathonSabotageLogsByEvent(eventId, companyId) : [];
-      const pendingIncomingPoach = eventId
-        ? await storage.getPendingHackathonPoachOffer(userId, eventId)
-        : undefined;
-
-      res.json({
-        ok: true,
-        status: snapshot.status,
-        eventId,
-        companyId,
-        role: membership.role,
-        canLaunch: canLaunchHackathonSabotageByRole(membership.role),
-        sabotageState,
-        config: WEEKLY_HACKATHON_CONFIG.sabotage,
-        targets,
-        recentLogs: logs.slice(-20).reverse(),
-        pendingIncomingPoach: pendingIncomingPoach ?? null,
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось загрузить саботаж" });
-    }
-  });
-
-  app.post("/api/hackathon/sabotage/security-level", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      const level = Math.floor(Number(req.body?.level || 1));
-      if (!userId) return res.status(400).json({ error: "userId обязателен" });
-      const membership = await resolvePlayerCompanyMembership(userId);
-      if (!membership) return res.status(400).json({ error: "Игрок не состоит в компании" });
-      if (membership.role !== "owner") return res.status(403).json({ error: "Изменять security level может только CEO" });
-      if (![1, 2, 3].includes(level)) return res.status(400).json({ error: "securityLevel может быть только 1, 2 или 3" });
-      const { effects: departmentEffects } = await getEffectiveCompanyDepartmentEffects(membership.company);
-      const updatedLevel = setHackathonCompanySecurityLevel(String(membership.company.id), Math.min(3, level + departmentEffects.sabotageSecurityBonus));
-      res.json({ ok: true, securityLevel: updatedLevel, state: getWeeklyHackathonState() });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось обновить securityLevel" });
-    }
-  });
-
-  app.post("/api/hackathon/sabotage/launch", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      const targetCompanyId = String(req.body?.targetCompanyId || "");
-      const sabotageType = String(req.body?.sabotageType || "") as HackathonSabotageType;
-      const targetUserId = req.body?.targetUserId ? String(req.body.targetUserId) : undefined;
-      if (!userId || !targetCompanyId || !sabotageType) {
-        return res.status(400).json({ error: "userId, targetCompanyId и sabotageType обязательны" });
-      }
-
-      const membership = await resolvePlayerCompanyMembership(userId);
-      if (!membership) return res.status(400).json({ error: "Игрок не состоит в компании" });
-      if (!canLaunchHackathonSabotageByRole(membership.role)) {
-        return res.status(403).json({ error: "Только CEO / CTO / Security Lead могут запускать саботаж" });
-      }
-
-      const attackerCompanyId = String(membership.company.id);
-      if (attackerCompanyId === targetCompanyId) {
-        return res.status(400).json({ error: "Нельзя атаковать свою компанию" });
-      }
-
-      const targetCompany = await storage.getCompany(targetCompanyId);
-      if (!targetCompany) return res.status(404).json({ error: "Компания-цель не найдена" });
-      const sabotageConfig = WEEKLY_HACKATHON_CONFIG.sabotage.types[sabotageType];
-      if (!sabotageConfig) return res.status(400).json({ error: "Неизвестный тип саботажа" });
-
-      if (sabotageType === "talent_poaching") {
-        if (!targetUserId) return res.status(400).json({ error: "Для Talent Poaching нужно targetUserId" });
-        const targetMember = await storage.getMemberByUserId(targetCompanyId, targetUserId);
-        if (!targetMember) return res.status(400).json({ error: "Игрок не состоит в компании-цели" });
-      }
-
-      const attackerCompany = membership.company;
-      const costGrm = Number(sabotageConfig.costGrm || 0);
-      if (Number(attackerCompany.balance || 0) < costGrm) {
-        return res.status(400).json({ error: `Недостаточно GRM у компании. Нужно ${costGrm}` });
-      }
-      await storage.updateCompany(attackerCompanyId, {
-        balance: Number(attackerCompany.balance || 0) - costGrm,
-      });
-
-      const { effects: targetDepartmentEffects } = await getEffectiveCompanyDepartmentEffects(targetCompany);
-      const result = launchWeeklyHackathonSabotage({
-        initiatorUserId: userId,
-        initiatorRole: membership.role,
-        attackerCompanyId,
-        targetCompanyId,
-        sabotageType,
-        targetUserId,
-        defenseMultiplier: targetDepartmentEffects.sabotageDefenseMultiplier,
-      });
-
-      const created = await storage.createHackathonSabotageLog({
-        eventId: result.eventId,
-        attackerCompanyId: result.attackerCompanyId,
-        attackerCompanyName: result.attackerCompanyName,
-        targetCompanyId: result.targetCompanyId,
-        targetCompanyName: result.targetCompanyName,
-        initiatorUserId: result.initiatorUserId,
-        targetUserId: result.targetUserId,
-        sabotageType: result.sabotageType,
-        status: result.status,
-        success: typeof result.success === "boolean" ? result.success : null,
-        detected: result.detected,
-        scoreDeltaAttacker: result.scoreDeltaAttacker,
-        scoreDeltaTarget: result.scoreDeltaTarget,
-        details: JSON.stringify(result.details || {}),
-        createdAt: Math.floor(Date.now() / 1000),
-        resolvedAt: result.status === "resolved" ? Math.floor(Date.now() / 1000) : null,
-      });
-
-      res.json({
-        ok: true,
-        sabotage: result,
-        log: created,
-        companyBalance: Number(attackerCompany.balance || 0) - costGrm,
-        state: getWeeklyHackathonState(),
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось запустить саботаж" });
-    }
-  });
-
-  app.post("/api/hackathon/sabotage/poach/respond", async (req, res) => {
-    try {
-      const userId = String(req.body?.userId || "");
-      const offerId = String(req.body?.offerId || "");
-      const accept = Boolean(req.body?.accept);
-      if (!userId || !offerId) return res.status(400).json({ error: "userId и offerId обязательны" });
-      const result = resolveHackathonPoachOffer({ offerId, userId, accept });
-      await storage.updateHackathonSabotageLog(offerId, {
-        status: accept ? "accepted" : "declined",
-        success: accept,
-        scoreDeltaTarget: result.targetScoreDelta,
-        resolvedAt: Math.floor(Date.now() / 1000),
-      });
-      res.json({ ok: true, result, state: getWeeklyHackathonState() });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось обработать Talent Poaching" });
-    }
-  });
-
   // вњ… РџРћР›РЈР§Р•РќРР• Р’РЎР•РҐ РљРћРњРџРђРќРР™
   app.get("/api/companies", async (req, res) => {
     try {
@@ -4187,6 +3210,62 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(company);
     } catch (error) {
       res.status(500).json({ error: "Failed to get company" });
+    }
+  });
+
+  app.get("/api/companies/:id/stock", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      const members = await storage.getCompanyMembers(company.id);
+      const runtime = companyEconomyByCompanyId.get(String(company.id))
+        ?? reconcileCompanyEconomy({
+          ...company,
+          employeeCount: members.length,
+        } as CompanyEconomyLike);
+      const eligibility = await buildCompanyIpoEligibility(company, runtime);
+      const preview = await buildCompanyStockPreview(company, runtime);
+      res.json({
+        economy: runtime,
+        eligibility,
+        preview,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || "Failed to get company stock data" });
+    }
+  });
+
+  app.post("/api/companies/:id/ipo/run", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      const userId = String(req.body?.userId || "");
+      if (!userId) return res.status(400).json({ error: "userId is required" });
+      if (company.ownerId !== userId) {
+        return res.status(403).json({ error: "Только CEO может вывести компанию на IPO." });
+      }
+      const members = await storage.getCompanyMembers(company.id);
+      const runtime = companyEconomyByCompanyId.get(String(company.id))
+        ?? reconcileCompanyEconomy({
+          ...company,
+          employeeCount: members.length,
+        } as CompanyEconomyLike);
+      const eligibility = await buildCompanyIpoEligibility(company, runtime);
+      const result = launchCompanyIpo(runtime, eligibility);
+      if (!result.ok) {
+        return res.status(400).json({ error: result.reason || "IPO недоступно" });
+      }
+      const saved = setCompanyEconomyRuntimeState(company, result.company);
+      res.json({
+        ok: true,
+        company: saved,
+        sharePrice: result.sharePrice,
+        eligibility,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || "Failed to run IPO" });
     }
   });
 
@@ -4379,7 +3458,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
 
-    const current = await syncCompanyBlueprintResearchProject(company);
+    const current = await syncBlueprintStateForCompany(company);
     const productionOrder = syncCompanyProductionOrder(company.id);
     res.json({
       available: isTutorialCompany(company) ? [buildTutorialBlueprintView()] : getAvailableBlueprints(company.level),
@@ -4973,7 +4052,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (globalOwner && globalOwner.companyId !== company.id) {
       return res.status(400).json({ error: `Этот чертёж уже разработан компанией ${globalOwner.companyName}` });
     }
-    const current = await syncCompanyBlueprintResearchProject(company);
+    const current = await syncBlueprintStateForCompany(company);
     if (current && current.status === "in_progress") {
       return res.status(400).json({ error: "У компании уже идет активная разработка чертежа" });
     }
@@ -5065,7 +4144,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!company) return res.status(404).json({ error: "Company not found" });
     const membership = await storage.getMemberByUserId(company.id, String(userId || ""));
     if (!membership) return res.status(403).json({ error: "Only company members can view blueprint progress" });
-    const state = await syncCompanyBlueprintResearchProject(company);
+    const state = await syncBlueprintStateForCompany(company);
     if (!state) return res.status(400).json({ error: "No active blueprint" });
     const gadgetWear = await applyGadgetWear(String(userId), {
       cause: "blueprint_development",
@@ -5088,7 +4167,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const membership = await storage.getMemberByUserId(company.id, userId);
       if (!membership) return res.status(403).json({ error: "Только сотрудники компании могут присоединиться к разработке" });
       await assertBlueprintResearchAvailability(userId, company.id);
-      const state = await syncCompanyBlueprintResearchProject(company);
+      const state = await syncBlueprintStateForCompany(company);
       if (!state || state.status !== "in_progress" || state.projectStatus !== "active") {
         return res.status(400).json({ error: "Сейчас нет активной разработки" });
       }
@@ -5100,7 +4179,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       state.participantUserIds = Array.from(participantIds);
       state.lastTickAt = Math.min(Date.now(), Number(state.lastTickAt || Date.now()));
       companyBlueprints.set(company.id, state);
-      const synced = await syncCompanyBlueprintResearchProject(company);
+      const synced = await syncBlueprintStateForCompany(company);
       res.json({
         ok: true,
         alreadyJoined: false,
@@ -5344,6 +4423,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const produced = companyGadgets.get(company.id) ?? [];
     produced.push(...created);
     companyGadgets.set(company.id, produced);
+    recordCompanyProductionClaim(
+      company.id,
+      created.length,
+      created.filter((item) => Boolean(item.isExclusive)).length,
+    );
     registerProductionSignal(String(order.category || "all"), order.quantity);
     companyProductionOrders.delete(company.id);
     if (order.isExclusive) {
@@ -5570,16 +4654,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ error: error?.message || "Market is disabled by admin settings" });
     }
     await settleExpiredAuctions();
-    const { listingId, buyerId } = req.body ?? {};
+    const { listingId, buyerId, quantity: rawQuantity } = req.body ?? {};
     const listing = marketListings.find((l) => l.id === listingId && l.status === "active");
     if (!listing) return res.status(404).json({ error: "Listing not found" });
     if (listing.saleType !== "fixed" || !listing.price) {
       return res.status(400).json({ error: "Р­С‚РѕС‚ Р»РѕС‚ РїСЂРѕРґР°РµС‚СЃСЏ С‡РµСЂРµР· Р°СѓРєС†РёРѕРЅ" });
     }
+    const requestedQuantity = Math.max(1, Math.floor(Number(rawQuantity) || 1));
 
     const buyer = await storage.getUser(buyerId);
     if (!buyer) return res.status(404).json({ error: "Buyer not found" });
-    if (buyer.balance < listing.price) return res.status(400).json({ error: "РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ" });
     const buyerMembership = await resolvePlayerCompanyMembership(buyerId);
     if (Date.now() - Number(listing.createdAt || 0) < 20 * 60 * 1000 && buyerMembership?.company?.id !== listing.companyId) {
       return res.status(403).json({ error: "Первые 20 минут купить этот лот могут только игроки компании-разработчика" });
@@ -5588,6 +4672,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const company = await storage.getCompany(listing.companyId);
     if (!company) return res.status(404).json({ error: "Company not found" });
 
+    let listingsToBuy = [listing];
+    if (requestedQuantity > 1) {
+      if (listing.listingKind !== "gadget") {
+        return res.status(400).json({ error: "Количество можно выбрать только при покупке гаджетов" });
+      }
+      const targetGadget = getProducedGadget(listing.companyId, String(listing.gadgetId || ""));
+      if (!targetGadget) {
+        return res.status(404).json({ error: "Гаджет для покупки не найден" });
+      }
+      const targetKey = getMarketGadgetBatchKey(targetGadget);
+      listingsToBuy = marketListings
+        .filter((candidate) => {
+          if (candidate.status !== "active") return false;
+          if (candidate.saleType !== "fixed") return false;
+          if (candidate.listingKind !== "gadget") return false;
+          if (candidate.companyId !== listing.companyId) return false;
+          if (
+            Date.now() - Number(candidate.createdAt || 0) < 20 * 60 * 1000
+            && buyerMembership?.company?.id !== candidate.companyId
+          ) return false;
+          if (Number(candidate.price || 0) !== Number(listing.price || 0)) return false;
+          const candidateGadget = getProducedGadget(candidate.companyId, String(candidate.gadgetId || ""));
+          return getMarketGadgetBatchKey(candidateGadget) === targetKey;
+        })
+        .sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0))
+        .slice(0, requestedQuantity);
+      if (listingsToBuy.length < requestedQuantity) {
+        return res.status(400).json({ error: `Доступно только ${listingsToBuy.length} шт.` });
+      }
+    }
+    const totalPrice = Number(listing.price || 0) * listingsToBuy.length;
+    if (buyer.balance < totalPrice) return res.status(400).json({ error: "РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ" });
+
     const settings = await getGameSettings();
     const sellerCeo = await storage.getUser(company.ownerId);
     const sellerAdvanced = sellerCeo ? getAdvancedPersonalityId(sellerCeo) : null;
@@ -5595,52 +4712,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       company.city,
       settings.economy.commissionsEnabled && settings.economy.taxesEnabled,
     );
-    let netIncome = Math.floor(listing.price * (1 - feeRate));
+    let netIncome = Math.floor(totalPrice * (1 - feeRate));
     if (sellerAdvanced === "strategist") {
       netIncome = Math.max(1, Math.floor(netIncome * 1.08));
     }
-    const fee = listing.price - netIncome;
-    await storage.updateUser(buyer.id, { balance: buyer.balance - listing.price });
-    await storage.updateCompany(company.id, { balance: company.balance + netIncome });
-    const purchasedItem = listing.listingKind === "part"
-      ? await transferMarketPartToPlayerInventory(
-          buyerId,
-          listing.partId ? {
-            id: listing.partId,
-            name: String(listing.partName || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.name || listing.partId),
-            rarity: String(listing.partRarity || "Common"),
-            type: String(listing.partType || ALL_PARTS[listing.partId as keyof typeof ALL_PARTS]?.type || "unknown"),
-          } : null,
-        )
-      : await transferProducedGadgetToPlayerInventory(
-          buyerId,
-          removeProducedGadget(listing.companyId, String(listing.gadgetId || "")),
-          {
-            acquisitionSource: "auction",
-            acquiredAt: Date.now(),
-            lastAuctionPurchaseAt: Date.now(),
+    const fee = totalPrice - netIncome;
+    const nextCompanyBalance = Number(company.balance || 0) + netIncome;
+    await storage.updateUser(buyer.id, { balance: buyer.balance - totalPrice });
+    await storage.updateCompany(company.id, { balance: nextCompanyBalance });
+    await applyCompanyMarketIncomeToRuntime(company, nextCompanyBalance, netIncome);
+    const purchasedItems = [] as any[];
+    const purchaseTimestamp = Date.now();
+    for (const purchasedListing of listingsToBuy) {
+      const purchasedItem = purchasedListing.listingKind === "part"
+        ? await transferMarketPartToPlayerInventory(
+            buyerId,
+            purchasedListing.partId ? {
+              id: purchasedListing.partId,
+              name: String(purchasedListing.partName || ALL_PARTS[purchasedListing.partId as keyof typeof ALL_PARTS]?.name || purchasedListing.partId),
+              rarity: String(purchasedListing.partRarity || "Common"),
+              type: String(purchasedListing.partType || ALL_PARTS[purchasedListing.partId as keyof typeof ALL_PARTS]?.type || "unknown"),
+            } : null,
+          )
+        : await transferProducedGadgetToPlayerInventory(
+            buyerId,
+            removeProducedGadget(purchasedListing.companyId, String(purchasedListing.gadgetId || "")),
+            {
+              acquisitionSource: "auction",
+              acquiredAt: purchaseTimestamp,
+              lastAuctionPurchaseAt: purchaseTimestamp,
+            },
+          );
+      purchasedItems.push(purchasedItem);
+      purchasedListing.status = "sold";
+      purchasedListing.sold = true;
+      purchasedListing.salePrice = purchasedListing.price;
+      if (purchasedListing.listingKind === "gadget") {
+        appendEconomyAuditEvent({
+          eventType: "MARKET_GADGET_PURCHASED",
+          userId: buyer.id,
+          companyId: company.id,
+          targetId: String(purchasedListing.gadgetId || ""),
+          amount: Number(purchasedListing.price || 0),
+          status: "success",
+          metadata: {
+            sellerUserId: purchasedListing.sellerUserId,
+            saleType: "fixed",
+            listingId: purchasedListing.id,
+            quantity: listingsToBuy.length,
           },
-        );
-    listing.status = "sold";
-    listing.sold = true;
-    listing.salePrice = listing.price;
-    if (listing.listingKind === "gadget") {
-      appendEconomyAuditEvent({
-        eventType: "MARKET_GADGET_PURCHASED",
-        userId: buyer.id,
-        companyId: company.id,
-        targetId: String(listing.gadgetId || ""),
-        amount: Number(listing.price || 0),
-        status: "success",
-        metadata: {
-          sellerUserId: listing.sellerUserId,
-          saleType: "fixed",
-          listingId: listing.id,
-        },
-      });
+        });
+      }
     }
-
-    res.json({ ok: true, fee, netIncome, purchasedItem });
+    res.json({
+      ok: true,
+      fee,
+      netIncome,
+      quantity: listingsToBuy.length,
+      totalPrice,
+      purchasedItem: purchasedItems[0] ?? null,
+      purchasedItems,
+    });
   });
 
   app.post("/api/market/bid", async (req, res) => {
@@ -5665,7 +4797,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const minNext = (listing.currentBid ?? listing.startingPrice ?? 0) + (listing.minIncrement ?? 10);
     if (Number(amount) < minNext) {
-      return res.status(400).json({ error: `РњРёРЅРёРјР°Р»СЊРЅР°СЏ СЃС‚Р°РІРєР°: ${minNext}` });
+      return res.status(400).json({ error: `Минимальная ставка: ${minNext}` });
     }
 
     if (bidder.balance < Number(amount)) {
@@ -5676,9 +4808,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const previousBid = Number(listing.currentBid || listing.startingPrice || 0);
     listing.currentBid = Number(amount);
     listing.currentBidderId = bidderId;
-    if (listing.auctionDurationHours) {
-      listing.auctionEndsAt = Date.now() + Number(listing.auctionDurationHours) * 60 * 60 * 1000;
-    }
+    listing.auctionEndsAt = Date.now() + AUCTION_POST_BID_EXTENSION_MINUTES * 60 * 1000;
 
     if (previousBidderId && previousBidderId !== bidderId) {
       const previousBidderTelegramId = Number(getTelegramIdByUserId(previousBidderId) || 0);
@@ -5854,67 +4984,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       consumedPartRefs,
       company: updatedCompany,
     });
-  });
-
-  app.get("/api/users/:id/advanced-personality", async (req, res) => {
-    const user = await storage.getUser(req.params.id);
-    if (!user) return res.status(404).json({ error: "User not found" });
-
-    res.json({
-      unlocked: false,
-      levelRequired: null,
-      selected: null,
-      needsChoice: false,
-      options: [],
-    });
-  });
-
-  app.post("/api/users/:id/advanced-personality", async (req, res) => {
-    void req;
-    res.status(410).json({ error: "Механика второго характера отключена" });
-  });
-
-  app.get("/api/users/:id/profession", async (req, res) => {
-    const user = await storage.getUser(req.params.id);
-    if (!user) return res.status(404).json({ error: "User not found" });
-
-    const professionId = getPlayerProfessionId(user);
-    res.json({
-      unlocked: Number(user.level || 0) >= PROFESSION_UNLOCK_LEVEL,
-      levelRequired: PROFESSION_UNLOCK_LEVEL,
-      selected: professionId,
-      profile: professionId ? getProfessionById(professionId) ?? null : null,
-      needsChoice: canSelectProfession(user),
-      options: PLAYABLE_PROFESSIONS,
-    });
-  });
-
-  app.post("/api/users/:id/profession", async (req, res) => {
-    try {
-      const user = await storage.getUser(req.params.id);
-      if (!user) return res.status(404).json({ error: "User not found" });
-      if (Number(user.level || 0) < PROFESSION_UNLOCK_LEVEL) {
-        return res.status(400).json({ error: `Доступно с уровня ${PROFESSION_UNLOCK_LEVEL}` });
-      }
-      if (getPlayerProfessionId(user)) {
-        return res.status(400).json({ error: "Профессия уже выбрана" });
-      }
-
-      const professionId = String(req.body?.professionId || "").trim();
-      if (!isProfessionId(professionId) || professionId === "devops") {
-        return res.status(400).json({ error: "Профессия не найдена" });
-      }
-
-      const updated = await setPlayerProfession(user.id, professionId);
-      res.json({
-        ok: true,
-        selected: professionId,
-        profile: getProfessionById(professionId) ?? null,
-        user: serializeSafeUser(updated),
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error?.message || "Не удалось выбрать профессию" });
-    }
   });
 
   app.get("/api/companies/:id/mining/status", async (req, res) => {

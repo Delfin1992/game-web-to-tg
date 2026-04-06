@@ -13,6 +13,7 @@ import {
   getEnergyRegenPerSecond,
   getGrmPerLocal,
   getJobFailureChance,
+  getJobPartDropChanceByTier,
   getJobRewardLocalByTier,
   getJobWorkEnergyCostByTier,
   getJobXpByTier,
@@ -337,100 +338,100 @@ export function getGramToLocalRate(city: string): number {
 const JOBS_BY_CITY: Record<string, Job[]> = {
   "Сан-Франциско": [
     {
-      name: "РЎС‚Р°Р¶РµСЂ iOS СЂР°Р·СЂР°Р±РѕС‚С‡РёРє",
+      name: "Стажер iOS разработчик",
       minStats: { coding: 0 },
       rankRequired: "Intern",
       timeMinutes: 5,
       reward: 10,
       expReward: 20,
-      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° РїСЂРѕСЃС‚С‹С… С„СѓРЅРєС†РёР№ РґР»СЏ iOS РїСЂРёР»РѕР¶РµРЅРёР№",
+      description: "Разработка простых функций для iOS приложений",
     },
     {
-      name: "Junior iOS СЂР°Р·СЂР°Р±РѕС‚С‡РёРє",
+      name: "Junior iOS разработчик",
       minStats: { coding: 2, design: 1 },
       rankRequired: "Junior",
       timeMinutes: 5,
       reward: 25,
       expReward: 30,
-      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° РєРѕРјРїРѕРЅРµРЅС‚РѕРІ iOS РїСЂРёР»РѕР¶РµРЅРёР№",
+      description: "Разработка компонентов iOS приложений",
     },
     {
-      name: "Middle iOS СЂР°Р·СЂР°Р±РѕС‚С‡РёРє",
+      name: "Middle iOS разработчик",
       minStats: { coding: 4, design: 2, analytics: 2 },
       rankRequired: "Middle",
       timeMinutes: 5,
       reward: 45,
       expReward: 40,
-      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° СЃР»РѕР¶РЅС‹С… С„СѓРЅРєС†РёР№ Рё РѕРїС‚РёРјРёР·Р°С†РёСЏ",
+      description: "Разработка сложных функций и оптимизация",
     },
   ],
   "Сингапур": [
     {
-      name: "РЎС‚Р°Р¶РµСЂ QA РёРЅР¶РµРЅРµСЂ",
+      name: "Стажер QA инженер",
       minStats: { testing: 0 },
       rankRequired: "Intern",
       timeMinutes: 5,
       reward: 15,
       expReward: 20,
-      description: "Р‘Р°Р·РѕРІРѕРµ С‚РµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРѕР±РёР»СЊРЅС‹С… СѓСЃС‚СЂРѕР№СЃС‚РІ",
+      description: "Базовое тестирование мобильных устройств",
     },
     {
-      name: "Junior QA РёРЅР¶РµРЅРµСЂ",
+      name: "Junior QA инженер",
       minStats: { testing: 2, attention: 1 },
       rankRequired: "Junior",
       timeMinutes: 5,
       reward: 30,
       expReward: 30,
-      description: "РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ С„СѓРЅРєС†РёРѕРЅР°Р»Р° СѓСЃС‚СЂРѕР№СЃС‚РІ",
+      description: "Тестирование функционала устройств",
     },
     {
-      name: "Middle QA РёРЅР¶РµРЅРµСЂ",
+      name: "Middle QA инженер",
       minStats: { testing: 4, attention: 2, analytics: 2 },
       rankRequired: "Middle",
       timeMinutes: 5,
       reward: 50,
       expReward: 40,
-      description: "РђРІС‚РѕРјР°С‚РёР·Р°С†РёСЏ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ СѓСЃС‚СЂРѕР№СЃС‚РІ",
+      description: "Автоматизация тестирования устройств",
     },
   ],
   "Санкт-Петербург": [
     {
-      name: "РЎС‚Р°Р¶РµСЂ UI/UX РґРёР·Р°Р№РЅРµСЂ",
+      name: "Стажер UI/UX дизайнер",
       minStats: { design: 0 },
       rankRequired: "Intern",
       timeMinutes: 5,
       reward: 20,
       expReward: 25,
-      description: "РЎРѕР·РґР°РЅРёРµ РїСЂРѕСЃС‚С‹С… СЌР»РµРјРµРЅС‚РѕРІ РёРЅС‚РµСЂС„РµР№СЃР°",
+      description: "Создание простых элементов интерфейса",
     },
     {
-      name: "Junior UI/UX РґРёР·Р°Р№РЅРµСЂ",
+      name: "Junior UI/UX дизайнер",
       minStats: { design: 2, attention: 1 },
       rankRequired: "Junior",
       timeMinutes: 5,
       reward: 35,
       expReward: 35,
-      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° РёРЅС‚РµСЂС„РµР№СЃРѕРІ РїСЂРёР»РѕР¶РµРЅРёР№",
+      description: "Разработка интерфейсов приложений",
     },
     {
-      name: "Middle UI/UX РґРёР·Р°Р№РЅРµСЂ",
+      name: "Middle UI/UX дизайнер",
       minStats: { design: 4, attention: 2, drawing: 2 },
       rankRequired: "Middle",
       timeMinutes: 5,
       reward: 55,
       expReward: 45,
-      description: "РЎРѕР·РґР°РЅРёРµ СЃР»РѕР¶РЅС‹С… РёРЅС‚РµСЂС„РµР№СЃРѕРІ",
+      description: "Создание сложных интерфейсов",
     },
   ],
   "Сеул": [
     {
-      name: "РЎС‚Р°Р¶РµСЂ Game Developer",
+      name: "Стажер Game Developer",
       minStats: { coding: 0 },
       rankRequired: "Intern",
       timeMinutes: 5,
       reward: 22,
       expReward: 25,
-      description: "Р Р°Р·СЂР°Р±РѕС‚РєР° РїСЂРѕСЃС‚С‹С… РёРіСЂРѕРІС‹С… РјРµС…Р°РЅРёРє",
+      description: "Разработка простых игровых механик",
     },
     {
       name: "Junior K-Game Dev",
@@ -439,7 +440,7 @@ const JOBS_BY_CITY: Record<string, Job[]> = {
       timeMinutes: 5,
       reward: 40,
       expReward: 35,
-      description: "Р Р°Р±РѕС‚Р° РЅР°Рґ K-Pop РёРіСЂРѕРІС‹РјРё РїСЂРѕРµРєС‚Р°РјРё",
+      description: "Работа над K-Pop игровыми проектами",
     },
     {
       name: "Middle Engine Developer",
@@ -448,7 +449,7 @@ const JOBS_BY_CITY: Record<string, Job[]> = {
       timeMinutes: 5,
       reward: 65,
       expReward: 50,
-      description: "РћРїС‚РёРјРёР·Р°С†РёСЏ РёРіСЂРѕРІС‹С… РґРІРёР¶РєРѕРІ",
+      description: "Оптимизация игровых движков",
     },
   ],
 };
@@ -919,7 +920,11 @@ function normalizeGadgetInventoryFields(item: GameInventoryItem): GameInventoryI
     ?? item.durability
     ?? maxCondition,
   );
-  const condition = clampNumber(Math.round(Number.isFinite(rawCondition) ? rawCondition : maxCondition), 0, maxCondition);
+  const condition = clampNumber(
+    Number((Number.isFinite(rawCondition) ? rawCondition : maxCondition).toFixed(1)),
+    0,
+    maxCondition,
+  );
   const reliability = Number.isFinite(Number(item.reliability))
     ? clampNumber(Number(item.reliability), 0.7, 1.6)
     : 1;
@@ -1061,8 +1066,10 @@ export async function applyGadgetWear(userId: string, options: GadgetWearOptions
 
   const { state } = context;
   const user = context.user;
-  const equippedGadgets = state.inventory.filter((item) => isTechInventoryItem(item) && item.isEquipped);
-  if (!equippedGadgets.length) {
+  const equippedGadgetIndexes = state.inventory
+    .map((item, index) => ({ item, index }))
+    .filter((entry) => isTechInventoryItem(entry.item) && entry.item.isEquipped);
+  if (!equippedGadgetIndexes.length) {
     return {
       user,
       state,
@@ -1086,7 +1093,7 @@ export async function applyGadgetWear(userId: string, options: GadgetWearOptions
     summary: null,
   };
 
-  for (const rawItem of equippedGadgets) {
+  for (const { item: rawItem, index } of equippedGadgetIndexes) {
     const item = normalizeGadgetInventoryFields(rawItem);
     const before = Math.max(0, Number(item.condition ?? 100));
     if (before <= 0) continue;
@@ -1113,6 +1120,7 @@ export async function applyGadgetWear(userId: string, options: GadgetWearOptions
     item.maxCondition = Math.max(1, Number(item.maxCondition ?? 100));
     item.durability = after;
     item.maxDurability = item.maxCondition;
+    item.wear = Number((100 - (after / Math.max(1, item.maxCondition)) * 100).toFixed(2));
 
     const warning = buildGadgetConditionWarning(before, after, item.name);
     if (warning) report.warnings.push(warning);
@@ -1134,6 +1142,8 @@ export async function applyGadgetWear(userId: string, options: GadgetWearOptions
       lost: Number((before - after).toFixed(1)),
       isBroken: Boolean(item.isBroken),
     });
+
+    state.inventory[index] = sanitizeInventoryItem(item) as GameInventoryItem;
   }
 
   if (report.affected.length) {
@@ -1397,6 +1407,15 @@ function localizeAmountForCity(baseLocalAmount: number, city?: string) {
   return Math.max(1, Math.round(baseLocalAmount / rate));
 }
 
+function getDeterministicJobXpReduction(city: string, job: Pick<Job, "id" | "name">) {
+  const seed = `${normalizeCityForLegacyMaps(city)}:${String(job.id || job.name || "")}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = ((hash * 31) + seed.charCodeAt(i)) | 0;
+  }
+  return 1 + (Math.abs(hash) % 5);
+}
+
 function findShopItemByRef(ref: string, city?: string) {
   const items = listShopItems(city);
   const trimmed = ref.trim();
@@ -1418,10 +1437,12 @@ function withBalancedJob(city: string, job: Job): Job {
     target: "jobs",
     city,
   });
+  const xpBase = getJobXpByTier(city, tier);
+  const xpReduction = getDeterministicJobXpReduction(city, job);
   return {
     ...job,
     reward: Math.max(1, Math.round(applyGlobalEventMultiplier(getJobRewardLocalByTier(city, tier), salaryModifier))),
-    expReward: getJobXpByTier(city, tier),
+    expReward: Math.max(1, xpBase - xpReduction),
   };
 }
 
@@ -2032,7 +2053,7 @@ export async function completeJob(userId: string, jobRef: string) {
     notices.push(`📚 Профильный рост навыков: ${skillNotices.join(", ")}`);
   }
 
-  const baseChance = job.expReward >= 45 ? 50 : job.expReward >= 30 ? 38 : 28;
+  const baseChance = getJobPartDropChanceByTier(resolveJobTierFromRank(job.rankRequired));
   const effectiveChance = Math.min(85, baseChance + state.jobDropPity * 15);
   const droppedPart = rollRandomPartDrop(effectiveChance, {
     allowedQualities: ["Common", "Uncommon"],

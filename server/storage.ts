@@ -745,6 +745,8 @@ export class MemStorage implements IStorage {
       ork: 0,
       balance: 1000,
       warehouseCapacity: 50,
+      sabotageLevel: 0,
+      defenseLevel: 0,
       isTutorial: company.isTutorial ?? false,
       tutorialOwnerId: company.tutorialOwnerId ?? null,
     };

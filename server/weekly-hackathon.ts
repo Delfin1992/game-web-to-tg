@@ -3,6 +3,7 @@ import {
   HACKATHON_PART_SCORES,
   HACKATHON_ROUNDS,
   WEEKLY_HACKATHON_CONFIG,
+  type HackathonDefenseType,
   getHackathonRoundByStatus,
   getNextWeeklyAutoStart,
   type HackathonPartType,
@@ -51,7 +52,32 @@ type RegisteredCompany = {
   companyEmoji?: string | null;
   startedByUserId?: string | null;
   registeredAt: number;
+  sabotageLevel: number;
+  defenseLevel: number;
   participants: HackathonParticipant[];
+};
+
+type ActiveSabotageState = {
+  sabotageType: HackathonSabotageType;
+  sourceCompanyId: string;
+  sourceCompanyName: string;
+  targetCompanyId: string;
+  targetCompanyName: string;
+  startedAt: number;
+  endsAt: number;
+  baseReduction: number;
+  effectiveReduction: number;
+  reductionSource: "fixed" | "random";
+  status: "active" | "removed";
+  defenseApplied?: HackathonDefenseType | null;
+};
+
+type ActiveDefenseState = {
+  defenseType: HackathonDefenseType;
+  companyId: string;
+  startedAt: number;
+  endsAt: number;
+  sourceSabotageType?: HackathonSabotageType | null;
 };
 
 type PlayerContributionStats = {
@@ -78,6 +104,8 @@ type WeeklyHackathonAnnouncement = {
   winnerCompanyId?: string;
   targetCompanyId?: string;
   joinCompanyId?: string;
+  defenseCompanyId?: string;
+  defenseTypes?: HackathonDefenseType[];
 };
 
 type RewardApplicationState = {
@@ -101,6 +129,9 @@ type WeeklyHackathonState = {
   registeredCompanies: Map<string, RegisteredCompany>;
   participantSnapshots: Map<string, LockedParticipantSnapshot>;
   userCompanyParticipation: Map<string, string>;
+  sabotageUsedThisRoundByCompany: Map<string, boolean>;
+  activeSabotageByTarget: Map<string, ActiveSabotageState>;
+  activeDefenseByCompany: Map<string, ActiveDefenseState>;
   winners: Array<{ companyId: string; companyName: string; tournamentPoints: number; rawScore: number }>;
   mvpPlayerId: string | null;
   announcementQueue: WeeklyHackathonAnnouncement[];
@@ -136,6 +167,9 @@ const state: WeeklyHackathonState = {
   registeredCompanies: new Map(),
   participantSnapshots: new Map(),
   userCompanyParticipation: new Map(),
+  sabotageUsedThisRoundByCompany: new Map(),
+  activeSabotageByTarget: new Map(),
+  activeDefenseByCompany: new Map(),
   winners: [],
   mvpPlayerId: null,
   announcementQueue: [],
@@ -219,6 +253,35 @@ function randomMultiplier() {
   return min + Math.random() * (max - min);
 }
 
+function getSabotageConfig(type: HackathonSabotageType) {
+  return WEEKLY_HACKATHON_CONFIG.sabotageAndDefense.sabotageTypes[type];
+}
+
+function getDefenseConfig(type: HackathonDefenseType) {
+  return WEEKLY_HACKATHON_CONFIG.sabotageAndDefense.defenseTypes[type];
+}
+
+function getSabotageReduction(type: HackathonSabotageType) {
+  const config = getSabotageConfig(type);
+  if ("percentReduction" in config) return Number(config.percentReduction || 0);
+  const min = Number(config.randomMinReduction || 0);
+  const max = Number(config.randomMaxReduction || min);
+  return roundToTwo(min + Math.random() * Math.max(0, max - min));
+}
+
+function pruneExpiredHackathonEffects(nowMs: number) {
+  for (const [companyId, sabotage] of Array.from(state.activeSabotageByTarget.entries())) {
+    if (nowMs >= sabotage.endsAt || sabotage.status !== "active") {
+      state.activeSabotageByTarget.delete(companyId);
+    }
+  }
+  for (const [companyId, defense] of Array.from(state.activeDefenseByCompany.entries())) {
+    if (nowMs >= defense.endsAt) {
+      state.activeDefenseByCompany.delete(companyId);
+    }
+  }
+}
+
 function resetEventState(nowMs: number) {
   state.eventId = null;
   state.status = "idle";
@@ -240,6 +303,9 @@ function resetEventState(nowMs: number) {
   state.registeredCompanies.clear();
   state.participantSnapshots.clear();
   state.userCompanyParticipation.clear();
+  state.sabotageUsedThisRoundByCompany.clear();
+  state.activeSabotageByTarget.clear();
+  state.activeDefenseByCompany.clear();
   state.winners = [];
   state.mvpPlayerId = null;
   state.announcementQueue = [];
@@ -378,6 +444,7 @@ function assignWinnerBoosts(nowMs: number) {
 }
 
 function finalizeCurrentRound(nowMs: number) {
+  pruneExpiredHackathonEffects(nowMs);
   const roundId = state.currentRound;
   if (!roundId) return;
   const round = HACKATHON_ROUNDS.find((entry) => entry.id === roundId);
@@ -402,6 +469,9 @@ function finalizeCurrentRound(nowMs: number) {
       ...rankings.slice(0, 3).map((row) => `${getCompanyStatusBadge(row.place)} ${row.place} место: ${row.companyName} — ${roundToTwo(row.score)}`),
     ].join("\n"),
   });
+  state.sabotageUsedThisRoundByCompany.clear();
+  state.activeSabotageByTarget.clear();
+  state.activeDefenseByCompany.clear();
 }
 
 function startRound(roundId: HackathonRoundId, nowMs: number) {
@@ -411,6 +481,9 @@ function startRound(roundId: HackathonRoundId, nowMs: number) {
   state.status = round.status;
   state.roundStartAt = nowMs;
   state.roundEndAt = nowMs + WEEKLY_HACKATHON_CONFIG.roundDurationMs;
+  state.sabotageUsedThisRoundByCompany.clear();
+  state.activeSabotageByTarget.clear();
+  state.activeDefenseByCompany.clear();
   queueAnnouncement({
     id: `round-start:${state.eventId}:${roundId}:${nowMs}`,
     text: [
@@ -486,6 +559,7 @@ async function lockRegisteredParticipants(resolvePlayerSnapshot: ((userId: strin
 
 async function applyRoundTick(_resolvePlayerSnapshot: ((userId: string) => Promise<PlayerSnapshot | null>) | undefined) {
   if (!state.currentRound) return;
+  pruneExpiredHackathonEffects(Date.now());
   const round = getCurrentRoundDefinition();
   if (!round) return;
 
@@ -516,7 +590,11 @@ async function applyRoundTick(_resolvePlayerSnapshot: ((userId: string) => Promi
     }
 
     if (companyTick <= 0) continue;
-    const finalTick = roundToTwo(companyTick * synergy * randomMultiplier());
+    const activeSabotage = state.activeSabotageByTarget.get(company.companyId);
+    const sabotageMultiplier = activeSabotage?.status === "active"
+      ? Math.max(0, 1 - Number(activeSabotage.effectiveReduction || 0))
+      : 1;
+    const finalTick = roundToTwo(companyTick * synergy * randomMultiplier() * sabotageMultiplier);
     const currentRoundScore = Number(state.roundScores[round.id].get(company.companyId) ?? 0);
     const nextRoundScore = roundToTwo(currentRoundScore + finalTick);
     state.roundScores[round.id].set(company.companyId, nextRoundScore);
@@ -525,6 +603,7 @@ async function applyRoundTick(_resolvePlayerSnapshot: ((userId: string) => Promi
 }
 
 export function getWeeklyHackathonState() {
+  pruneExpiredHackathonEffects(Date.now());
   const overallLeaderboard = sortCompaniesForOverall().map((row, index) => ({
     place: index + 1,
     ...row,
@@ -546,6 +625,8 @@ export function getWeeklyHackathonState() {
       companyEmoji: company.companyEmoji ?? null,
       city: company.city,
       level: company.level,
+      sabotageLevel: company.sabotageLevel,
+      defenseLevel: company.defenseLevel,
       participantCount: company.participants.length,
       participants: company.participants.map((participant) => ({
         userId: participant.userId,
@@ -566,6 +647,8 @@ export function getWeeklyHackathonState() {
     winners: state.winners,
     mvpPlayerId: state.mvpPlayerId,
     mvp: state.mvpPlayerId ? state.playerContribution.get(state.mvpPlayerId) ?? null : null,
+    activeSabotageByTarget: Array.from(state.activeSabotageByTarget.values()),
+    activeDefenseByCompany: Array.from(state.activeDefenseByCompany.values()),
     nextAutoStartAt: state.nextAutoStartAt,
     rewardsAppliedAt: state.rewards.appliedAt,
   };
@@ -615,7 +698,8 @@ export function registerCompanyForWeeklyHackathon(input: {
   rndLevel: number;
   companyEmoji?: string | null;
   startedByUserId?: string | null;
-  securityLevel?: number;
+  sabotageLevel?: number;
+  defenseLevel?: number;
 }) {
   if (state.status !== "registration") {
     throw new Error("Регистрация в weekly hackathon сейчас закрыта");
@@ -632,6 +716,8 @@ export function registerCompanyForWeeklyHackathon(input: {
     companyEmoji: input.companyEmoji ?? null,
     startedByUserId: input.startedByUserId ?? null,
     registeredAt: Date.now(),
+    sabotageLevel: Math.max(0, Math.floor(Number(input.sabotageLevel || 0))),
+    defenseLevel: Math.max(0, Math.floor(Number(input.defenseLevel || 0))),
     participants: [],
   };
   state.registeredCompanies.set(company.companyId, company);
@@ -700,6 +786,7 @@ export function getWeeklyHackathonPlayerStats(userId: string, _companyId: string
 export function getWeeklyHackathonCompanyScore(companyId: string) {
   const company = state.registeredCompanies.get(companyId);
   if (!company) return null;
+  pruneExpiredHackathonEffects(Date.now());
   return {
     companyId,
     companyName: company.companyName,
@@ -707,17 +794,24 @@ export function getWeeklyHackathonCompanyScore(companyId: string) {
     tournamentPoints: Number(state.totalTournamentPoints.get(companyId) ?? 0),
     rawScore: roundToTwo(Number(state.totalRawScores.get(companyId) ?? 0)),
     currentRoundScore: state.currentRound ? roundToTwo(Number(state.roundScores[state.currentRound].get(companyId) ?? 0)) : 0,
-    securityLevel: 1,
+    sabotageLevel: company.sabotageLevel,
+    defenseLevel: company.defenseLevel,
+    activeSabotage: state.activeSabotageByTarget.get(companyId) ?? null,
+    activeDefense: state.activeDefenseByCompany.get(companyId) ?? null,
   };
 }
 
-export function getWeeklyHackathonSabotageState(_companyId?: string) {
+export function getWeeklyHackathonSabotageState(companyId?: string) {
+  pruneExpiredHackathonEffects(Date.now());
+  const ownCompany = companyId ? state.registeredCompanies.get(companyId) ?? null : null;
   return {
-    maxPerCompanyPerEvent: 0,
-    maxPerUserPerEvent: 0,
-    usedByCompany: 0,
-    companyDebuffs: null,
-    pendingPoachOffers: [],
+    usedThisRound: companyId ? Boolean(state.sabotageUsedThisRoundByCompany.get(companyId)) : false,
+    activeIncoming: companyId ? state.activeSabotageByTarget.get(companyId) ?? null : null,
+    activeDefense: companyId ? state.activeDefenseByCompany.get(companyId) ?? null : null,
+    ownLevels: ownCompany
+      ? { sabotageLevel: ownCompany.sabotageLevel, defenseLevel: ownCompany.defenseLevel }
+      : null,
+    activeTargets: Array.from(state.activeSabotageByTarget.values()),
   };
 }
 
@@ -725,8 +819,206 @@ export function getPendingPoachOffersForUser(_userId: string) {
   return [];
 }
 
-export function setHackathonCompanySecurityLevel(_companyId: string, level: number) {
-  return Math.max(1, Math.min(3, Math.floor(level || 1)));
+export function getRegisteredHackathonCompany(companyId: string) {
+  return state.registeredCompanies.get(companyId) ?? null;
+}
+
+export function upgradeWeeklyHackathonSabotageLevel(companyId: string) {
+  const company = getRegisteredCompany(companyId);
+  const nextLevel = Math.min(3, company.sabotageLevel + 1);
+  if (nextLevel === company.sabotageLevel) {
+    throw new Error("Саботаж уже прокачан до максимального уровня");
+  }
+  company.sabotageLevel = nextLevel;
+  state.registeredCompanies.set(companyId, company);
+  return {
+    level: nextLevel,
+    cost: Number(WEEKLY_HACKATHON_CONFIG.sabotageAndDefense.sabotageUpgradeCosts[nextLevel] || 0),
+  };
+}
+
+export function upgradeWeeklyHackathonDefenseLevel(companyId: string) {
+  const company = getRegisteredCompany(companyId);
+  const nextLevel = Math.min(3, company.defenseLevel + 1);
+  if (nextLevel === company.defenseLevel) {
+    throw new Error("Защита уже прокачана до максимального уровня");
+  }
+  company.defenseLevel = nextLevel;
+  state.registeredCompanies.set(companyId, company);
+  return {
+    level: nextLevel,
+    cost: Number(WEEKLY_HACKATHON_CONFIG.sabotageAndDefense.defenseUpgradeCosts[nextLevel] || 0),
+  };
+}
+
+export function getAvailableHackathonSabotageTypes(companyId: string): HackathonSabotageType[] {
+  const company = getRegisteredCompany(companyId);
+  return (Object.entries(WEEKLY_HACKATHON_CONFIG.sabotageAndDefense.sabotageTypes) as Array<[HackathonSabotageType, any]>)
+    .filter(([, config]) => Number(config.level || 0) <= company.sabotageLevel)
+    .map(([type]) => type);
+}
+
+export function getAvailableHackathonDefenseTypes(companyId: string): HackathonDefenseType[] {
+  const company = getRegisteredCompany(companyId);
+  return (Object.entries(WEEKLY_HACKATHON_CONFIG.sabotageAndDefense.defenseTypes) as Array<[HackathonDefenseType, any]>)
+    .filter(([, config]) => Number(config.level || 0) <= company.defenseLevel)
+    .map(([type]) => type);
+}
+
+export function setHackathonCompanySecurityLevel(companyId: string, level: number) {
+  const company = getRegisteredCompany(companyId);
+  company.defenseLevel = Math.max(0, Math.min(3, Math.floor(level || 0)));
+  state.registeredCompanies.set(companyId, company);
+  return company.defenseLevel;
+}
+
+export function applyWeeklyHackathonSabotage(input: {
+  initiatorUserId: string;
+  attackerCompanyId: string;
+  targetCompanyId: string;
+  sabotageType: HackathonSabotageType;
+}) {
+  const nowMs = Date.now();
+  pruneExpiredHackathonEffects(nowMs);
+  if (!(state.status === "round1" || state.status === "round2" || state.status === "round3")) {
+    throw new Error("Саботаж доступен только во время активного раунда хакатона");
+  }
+  if (input.attackerCompanyId === input.targetCompanyId) {
+    throw new Error("Нельзя атаковать свою компанию");
+  }
+  const attacker = getRegisteredCompany(input.attackerCompanyId);
+  const target = getRegisteredCompany(input.targetCompanyId);
+  if (state.sabotageUsedThisRoundByCompany.get(attacker.companyId)) {
+    throw new Error("Компания уже использовала саботаж в этом раунде");
+  }
+  if (state.activeSabotageByTarget.has(target.companyId)) {
+    throw new Error("На эту компанию уже действует активный саботаж");
+  }
+  const sabotageConfig = getSabotageConfig(input.sabotageType);
+  if (attacker.sabotageLevel < Number(sabotageConfig.level || 0)) {
+    throw new Error("Этот тип саботажа ещё не открыт у компании");
+  }
+
+  const baseReduction = getSabotageReduction(input.sabotageType);
+  let effectiveReduction = baseReduction;
+  let defenseApplied: HackathonDefenseType | null = null;
+  const currentDefense = state.activeDefenseByCompany.get(target.companyId);
+  if (currentDefense?.defenseType === "preventive_shield" && nowMs < currentDefense.endsAt) {
+    const shieldConfig = getDefenseConfig("preventive_shield") as { nextSabotageReductionMultiplier?: number };
+    effectiveReduction = roundToTwo(effectiveReduction * Number(shieldConfig.nextSabotageReductionMultiplier || 0.3));
+    defenseApplied = "preventive_shield";
+    state.activeDefenseByCompany.delete(target.companyId);
+  }
+
+  const activeSabotage: ActiveSabotageState = {
+    sabotageType: input.sabotageType,
+    sourceCompanyId: attacker.companyId,
+    sourceCompanyName: attacker.companyName,
+    targetCompanyId: target.companyId,
+    targetCompanyName: target.companyName,
+    startedAt: nowMs,
+    endsAt: nowMs + Number(sabotageConfig.durationMs || 0),
+    baseReduction,
+    effectiveReduction,
+    reductionSource: input.sabotageType === "destabilization" ? "random" : "fixed",
+    status: "active",
+    defenseApplied,
+  };
+  state.activeSabotageByTarget.set(target.companyId, activeSabotage);
+  state.sabotageUsedThisRoundByCompany.set(attacker.companyId, true);
+  queueAnnouncement({
+    id: `sabotage:${state.eventId}:${attacker.companyId}:${target.companyId}:${nowMs}`,
+    text: [
+      "💣 ВАС АТАКОВАЛИ!",
+      "",
+      `Атакующая компания: ${attacker.companyName}`,
+      `Тип: ${sabotageConfig.title}`,
+      `Эффект: -${Math.round(effectiveReduction * 100)}%`,
+      `⏱ ${Math.ceil(Number(sabotageConfig.durationMs || 0) / 1000)} секунд`,
+      defenseApplied === "preventive_shield" ? "🧊 Превентивная защита уже ослабила удар." : "",
+      "",
+      "Выбери защиту кнопками ниже.",
+    ].filter(Boolean).join("\n"),
+    targetCompanyId: target.companyId,
+    defenseCompanyId: target.companyId,
+    defenseTypes: (Object.entries(WEEKLY_HACKATHON_CONFIG.sabotageAndDefense.defenseTypes) as Array<[HackathonDefenseType, any]>)
+      .filter(([, config]) => Number(config.level || 0) <= target.defenseLevel)
+      .map(([type]) => type),
+  });
+  return activeSabotage;
+}
+
+export function applyWeeklyHackathonDefense(input: {
+  companyId: string;
+  defenseType: HackathonDefenseType;
+}) {
+  const nowMs = Date.now();
+  pruneExpiredHackathonEffects(nowMs);
+  if (!(state.status === "round1" || state.status === "round2" || state.status === "round3")) {
+    throw new Error("Защита доступна только во время активного раунда хакатона");
+  }
+  const company = getRegisteredCompany(input.companyId);
+  const defenseConfig = getDefenseConfig(input.defenseType);
+  if (company.defenseLevel < Number(defenseConfig.level || 0)) {
+    throw new Error("Этот тип защиты ещё не открыт у компании");
+  }
+  const currentDefense = state.activeDefenseByCompany.get(company.companyId);
+  if (currentDefense && nowMs < currentDefense.endsAt) {
+    throw new Error("У компании уже активна защита");
+  }
+  const incomingSabotage = state.activeSabotageByTarget.get(company.companyId);
+
+  if (input.defenseType === "instant_rollback") {
+    if (!incomingSabotage) {
+      throw new Error("Сейчас нет активного саботажа для отката");
+    }
+    const rollbackConfig = getDefenseConfig("instant_rollback") as { rollbackWindowMs?: number };
+    if (nowMs - incomingSabotage.startedAt > Number(rollbackConfig.rollbackWindowMs || 0)) {
+      throw new Error("Слишком поздно для мгновенного отката");
+    }
+    state.activeSabotageByTarget.delete(company.companyId);
+    const defense: ActiveDefenseState = {
+      defenseType: input.defenseType,
+      companyId: company.companyId,
+      startedAt: nowMs,
+      endsAt: nowMs + WEEKLY_HACKATHON_CONFIG.sabotageAndDefense.defenseCooldownMs,
+      sourceSabotageType: incomingSabotage.sabotageType,
+    };
+    state.activeDefenseByCompany.set(company.companyId, defense);
+    return { removed: true, defense, sabotage: null };
+  }
+
+  if (input.defenseType === "stabilization") {
+    if (!incomingSabotage) {
+      throw new Error("Сейчас нет активного саботажа для стабилизации");
+    }
+    const stabilizationConfig = getDefenseConfig("stabilization") as { sabotageReductionMultiplier?: number };
+    incomingSabotage.effectiveReduction = roundToTwo(
+      Number(incomingSabotage.effectiveReduction || 0) * Number(stabilizationConfig.sabotageReductionMultiplier || 0.5),
+    );
+    incomingSabotage.defenseApplied = "stabilization";
+    state.activeSabotageByTarget.set(company.companyId, incomingSabotage);
+    const defense: ActiveDefenseState = {
+      defenseType: input.defenseType,
+      companyId: company.companyId,
+      startedAt: nowMs,
+      endsAt: incomingSabotage.endsAt,
+      sourceSabotageType: incomingSabotage.sabotageType,
+    };
+    state.activeDefenseByCompany.set(company.companyId, defense);
+    return { removed: false, defense, sabotage: incomingSabotage };
+  }
+
+  const preventiveConfig = getDefenseConfig("preventive_shield") as { durationMs?: number };
+  const defense: ActiveDefenseState = {
+    defenseType: input.defenseType,
+    companyId: company.companyId,
+    startedAt: nowMs,
+    endsAt: nowMs + Number(preventiveConfig.durationMs || 0),
+    sourceSabotageType: null,
+  };
+  state.activeDefenseByCompany.set(company.companyId, defense);
+  return { removed: false, defense, sabotage: incomingSabotage ?? null };
 }
 
 export function launchWeeklyHackathonSabotage(_input: {
@@ -827,7 +1119,12 @@ export async function applyWeeklyHackathonRewards(input: {
   addPlayerPart: (userId: string, quality: "Common" | "Uncommon" | "Rare" | "Epic") => Promise<void>;
 }) {
   if (state.status !== "finished" || state.rewards.appliedAt) {
-    return { applied: false, winners: state.winners, mvpPlayerId: state.mvpPlayerId };
+    return {
+      applied: false,
+      winners: state.winners,
+      mvpPlayerId: state.mvpPlayerId,
+      mvpRewardGrm: WEEKLY_HACKATHON_CONFIG.rewards.mvp.grm,
+    };
   }
 
   for (const winner of state.winners.slice(0, 3)) {
@@ -871,7 +1168,12 @@ export async function applyWeeklyHackathonRewards(input: {
   }
 
   state.rewards.appliedAt = Date.now();
-  return { applied: true, winners: state.winners, mvpPlayerId: state.mvpPlayerId };
+  return {
+    applied: true,
+    winners: state.winners,
+    mvpPlayerId: state.mvpPlayerId,
+    mvpRewardGrm: WEEKLY_HACKATHON_CONFIG.rewards.mvp.grm,
+  };
 }
 
 export function getHackathonRoundView() {
