@@ -13,7 +13,6 @@ export function createInventoryTelegramModule(deps: {
   handleIncomingMessage: (token: string, webAppUrl: string, message: any) => Promise<void>;
   buyShopItem: (userId: string, ref: string) => Promise<any>;
   tryApplyTutorialEvent: (userId: string, event: string) => Promise<any>;
-  updateWeeklyQuestProgress: (user: any, key: any, amount?: number) => any;
   formatShopPurchaseResultText: (input: any) => string;
   buildShopPurchaseInlineMarkup: (item: any) => Record<string, unknown> | undefined;
   sendWithCityHubKeyboard: (token: string, chatId: number, text: string) => Promise<void>;
@@ -126,13 +125,13 @@ export function createInventoryTelegramModule(deps: {
             player.id,
             result.item.type === "consumable" ? "first_course_item_bought" : "first_gadget_bought",
           );
-          deps.updateWeeklyQuestProgress(result.user, "shop", 1);
           const lines = deps.formatShopPurchaseResultText({
             itemName: result.item.name,
             balance: result.user.balance,
             city: result.user.city,
             price: Number(result.item.price || 0),
             tutorialAdvance,
+            notices: result.notices,
           });
           const purchaseMarkup = deps.buildShopPurchaseInlineMarkup(result.item);
           if (purchaseMarkup) {
@@ -156,9 +155,6 @@ export function createInventoryTelegramModule(deps: {
           try {
             const result = await deps.useInventoryItem(player.id, itemRef);
             const tutorialAdvance = await deps.tryApplyTutorialEvent(player.id, "first_course_item_used");
-            if (result.item?.type === "consumable") {
-              deps.updateWeeklyQuestProgress(result.user, "study", 1);
-            }
             const lines = [
               deps.formatShopPurchaseResultText({
                 itemName: result.item.name,
@@ -168,6 +164,7 @@ export function createInventoryTelegramModule(deps: {
                 tutorialAdvance,
                 used: true,
                 bonusesText: deps.formatStats(result.item.stats),
+                notices: result.notices,
               }),
             ];
             await deps.callTelegramApi(token, "editMessageText", {

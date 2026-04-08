@@ -1,7 +1,8 @@
-﻿/**
+/**
  * Transitional company orchestration module.
  * Heavy domain logic still lives in telegram.ts and existing services, but section senders move here.
  */
+import { createNotification } from "../notifications/service";
 
 function getBlueprintRecipeRequirements(blueprint: any) {
   if (Array.isArray(blueprint?.productionRecipe) && blueprint.productionRecipe.length) {
@@ -270,13 +271,20 @@ export async function sendCompanyIpoSection(input: {
   token: string;
   chatId: number;
   membership: any;
-  formatCompanyIpoSection: (membership: any) => Promise<{ text: string }>;
+  formatCompanyIpoSection: (membership: any) => Promise<{ text: string; ipoAllowed?: boolean; isPublic?: boolean }>;
+  buildCompanyIpoInlineButtons?: (isOwner: boolean, ipoAllowed: boolean, isPublic: boolean) => unknown;
   buildCompanyReplyMarkup: (role?: string | null, chatId?: number) => unknown;
   sendMessage: (token: string, chatId: number, text: string, extra?: Record<string, unknown>) => Promise<unknown>;
 }) {
   const view = await input.formatCompanyIpoSection(input.membership);
   await input.sendMessage(input.token, input.chatId, view.text, {
-    reply_markup: input.buildCompanyReplyMarkup(input.membership.role, input.chatId),
+    reply_markup: input.buildCompanyIpoInlineButtons
+      ? input.buildCompanyIpoInlineButtons(
+          String(input.membership.role || "").toLowerCase() === "owner",
+          Boolean(view.ipoAllowed),
+          Boolean(view.isPublic),
+        )
+      : input.buildCompanyReplyMarkup(input.membership.role, input.chatId),
   });
 }
 
@@ -388,7 +396,8 @@ type CompanyTelegramModuleDeps = {
   sendWithMainKeyboardBase?: any;
   formatRate: (value: number) => string;
   getLocalToGRMRate: (city: string) => number;
-  formatCompanyIpoSection: (membership: any) => Promise<{ text: string }>;
+  formatCompanyIpoSection: (membership: any) => Promise<{ text: string; ipoAllowed?: boolean; isPublic?: boolean; ipoOptions?: any[]; companyEconomy?: any }>;
+  buildCompanyIpoInlineButtons: (isOwner: boolean, ipoAllowed: boolean, isPublic: boolean) => unknown;
   formatCompanyStaffingSection: (membership: any, chatId: number) => Promise<string>;
   buildCompanyStaffingInlineMarkup: (chatId: number, role: string | null) => unknown;
   companyMemberRefsByChatId: Map<number, string[]>;
@@ -628,19 +637,19 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           token,
           chatId,
           player.id,
-          `в›” РЎРµР№С‡Р°СЃ СѓР¶Рµ РІС‹РїРѕР»РЅСЏРµС‚СЃСЏ РґРµР№СЃС‚РІРёРµ: ${deps.formatExclusiveActionLabel(currentExclusiveAction)}.\nРЎРЅР°С‡Р°Р»Р° Р·Р°РІРµСЂС€Рё РµРіРѕ РёР»Рё РЅР°Р¶РјРё В«в¬…пёЏ РќР°Р·Р°РґВ».`,
+          `⛔ Сейчас уже выполняется действие: ${deps.formatExclusiveActionLabel(currentExclusiveAction)}.\nСначала заверши его или отмени через /cancel.`,
         );
-        return { handled: true as const, callbackText: "Р”РµР№СЃС‚РІРёРµ Р·Р°Р±Р»РѕРєРёСЂРѕРІР°РЅРѕ" };
+        return { handled: true as const, callbackText: "Действие заблокировано" };
       }
 
       const membership = await deps.getPlayerCompanyContext(player.id);
       if (!membership) {
-        await deps.sendWithMainKeyboard(token, chatId, "РўС‹ РЅРµ СЃРѕСЃС‚РѕРёС€СЊ РІ РєРѕРјРїР°РЅРёРё. РСЃРїРѕР»СЊР·СѓР№ /company, С‡С‚РѕР±С‹ РІСЃС‚СѓРїРёС‚СЊ РёР»Рё СЃРѕР·РґР°С‚СЊ РЅРѕРІСѓСЋ.");
-        return { handled: true as const, callbackText: "РўС‹ РЅРµ СЃРѕСЃС‚РѕРёС€СЊ РІ РєРѕРјРїР°РЅРёРё" };
+        await deps.sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Используй /company, чтобы вступить или создать новую.");
+        return { handled: true as const, callbackText: "Ты не состоишь в компании" };
       }
 
       if (data === "company:warehouse") {
-        return { handled: true as const, callbackText: "Р Р°Р·РґРµР»: РЎРєР»Р°Рґ" };
+        return { handled: true as const, callbackText: "Раздел: Склад" };
       }
 
       const companyPartSellPickMatch = data.match(/^company:part_sell_pick:(\d+)$/);
@@ -655,7 +664,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         const warehouseParts = deps.getCompanyWarehouseParts(membership.company.id);
         const partItem = warehouseParts.find((item: any) => String(item.id) === String(partRef));
         if (!partItem) {
-          await deps.sendMessage(token, chatId, "Р—Р°РїС‡Р°СЃС‚СЊ РЅРµ РЅР°Р№РґРµРЅР° РЅР° СЃРєР»Р°РґРµ РєРѕРјРїР°РЅРёРё.", {
+          await deps.sendMessage(token, chatId, "Запчасть не найдена на складе компании.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
           return { handled: true as const, callbackText: "Продажа запчастей" };
@@ -676,7 +685,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           token,
           chatId,
           result.ok
-            ? `вњ… РЎРѕ СЃРєР»Р°РґР° РєРѕРјРїР°РЅРёРё РїСЂРѕРґР°РЅРѕ: ${result.partName} x${result.sellQty}\n+${deps.formatNumber(result.earnedGrm)} GRM\nРљР°РїРёС‚Р°Р» РєРѕРјРїР°РЅРёРё: ${deps.formatNumber(result.companyCapitalGrm)} GRM`
+            ? `✅ Со склада компании продано: ${result.partName} x${result.sellQty}\n+${deps.formatNumber(result.earnedGrm)} GRM\nКапитал компании: ${deps.formatNumber(result.companyCapitalGrm)} GRM`
             : `❌ ${result.error}`,
           { reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId) },
         );
@@ -690,18 +699,18 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         if (nextFilter === "all") deps.companyWarehouseFilterByChatId.delete(chatId);
         else deps.companyWarehouseFilterByChatId.set(chatId, nextFilter);
         await deps.sendCompanyWarehouseSection(token, chatId, membership, player.id);
-        return { handled: true as const, callbackText: "Р¤РёР»СЊС‚СЂ СЃРєР»Р°РґР°" };
+        return { handled: true as const, callbackText: "Фильтр склада" };
       }
 
       if (data === "company:work") {
         await deps.sendCompanyWorkSection(token, chatId, membership);
-        return { handled: true as const, callbackText: "Р Р°Р·РґРµР»: Р Р°Р±РѕС‚Р°", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Раздел: Работа", shouldClearInlineButtons: false as const };
       }
 
       const miningPickMatch = data.match(/^company:mining_pick:(short|medium|long)$/);
       if (miningPickMatch) {
-        if (!(await deps.ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Р”РѕР±С‹С‡Р° Р·Р°РїС‡Р°СЃС‚РµР№"))) {
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ СЃРјРµРЅС‹", shouldClearInlineButtons: false as const };
+        if (!(await deps.ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Добыча запчастей"))) {
+          return { handled: true as const, callbackText: "Выбор смены", shouldClearInlineButtons: false as const };
         }
         const plan = deps.getCompanyMiningPlan(miningPickMatch[1]);
         try {
@@ -730,19 +739,19 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
         }
-        return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ СЃРјРµРЅС‹", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Выбор смены", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:mining_claim") {
         const currentStatus = await deps.getCompanyMiningStatus(membership.company.id, player.id);
         if (currentStatus.status !== "ready_to_claim" || !currentStatus.rewardPreview) {
-          await deps.sendOrEditCompanyBureauSection(token, chatId, membership, player.id, messageId, "вЏ± Р”РѕР±С‹С‡Р° РµС‰Рµ РІ РїСЂРѕС†РµСЃСЃРµ.");
-          return { handled: true as const, callbackText: "Р—Р°Р±РѕСЂ РґРѕР±С‹С‡Рё", shouldClearInlineButtons: false as const };
+          await deps.sendOrEditCompanyBureauSection(token, chatId, membership, player.id, messageId, "⏱ Добыча ещё в процессе.");
+          return { handled: true as const, callbackText: "Забор добычи", shouldClearInlineButtons: false as const };
         }
         const warehouseCheck = await deps.ensureCompanyWarehouseCanStoreMiningReward(membership.company, currentStatus.rewardPreview.quantity);
         if (!warehouseCheck.ok) {
-          await deps.sendOrEditCompanyBureauSection(token, chatId, membership, player.id, messageId, `вљ пёЏ РќР° СЃРєР»Р°РґРµ РЅРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РјРµСЃС‚Р°. РЎРІРѕР±РѕРґРЅРѕ СЃР»РѕС‚РѕРІ: ${warehouseCheck.free}.`);
-          return { handled: true as const, callbackText: "Р—Р°Р±РѕСЂ РґРѕР±С‹С‡Рё", shouldClearInlineButtons: false as const };
+          await deps.sendOrEditCompanyBureauSection(token, chatId, membership, player.id, messageId, `⚠️ На складе недостаточно места. Свободно слотов: ${warehouseCheck.free}.`);
+          return { handled: true as const, callbackText: "Забор добычи", shouldClearInlineButtons: false as const };
         }
         const claimed = await deps.claimCompanyMining(membership.company.id, player.id);
         const reward = claimed.reward;
@@ -753,7 +762,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           [`✅ Добыча завершена: ${reward.partName} x${reward.quantity}`, `Редкость: ${reward.rarity}`, "Деталь перемещена на склад компании."].join("\n"),
           { reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId) },
         );
-        return { handled: true as const, callbackText: "Р—Р°Р±РѕСЂ РґРѕР±С‹С‡Рё", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Забор добычи", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:mining_refresh" || data === "company:mining_start") {
@@ -821,18 +830,128 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         return { handled: true as const, callbackText: "Пополнение компании" };
       }
 
-      if (data === "company:ipo") {
+if (data === "company:ipo") {
         const view = await deps.formatCompanyIpoSection(membership);
         if (messageId) {
           await deps.callTelegramApi(token, "editMessageText", {
             chat_id: chatId,
             message_id: messageId,
             text: view.text,
+            reply_markup: deps.buildCompanyIpoInlineButtons(
+              String(membership.role || "").toLowerCase() === "owner",
+              Boolean(view.ipoAllowed),
+              Boolean(view.isPublic),
+            ),
           });
         } else {
-          await deps.sendMessage(token, chatId, view.text);
+          await deps.sendMessage(token, chatId, view.text, {
+            reply_markup: deps.buildCompanyIpoInlineButtons(
+              String(membership.role || "").toLowerCase() === "owner",
+              Boolean(view.ipoAllowed),
+              Boolean(view.isPublic),
+            ),
+          });
         }
         return { handled: true as const, callbackText: "Раздел: IPO" };
+      }
+
+      const ipoPickMatch = data.match(/^company:ipo_pick:(basic|boosted|aggressive)$/);
+      if (ipoPickMatch) {
+        if (String(membership.role || "").toLowerCase() !== "owner") {
+          await deps.sendWithMainKeyboard(token, chatId, "Только CEO может запускать IPO.");
+          return { handled: true as const, callbackText: "Выбор IPO" };
+        }
+        const view = await deps.formatCompanyIpoSection(membership);
+        const option = (view.ipoOptions ?? []).find((item: any) => String(item.id) === String(ipoPickMatch[1]));
+        if (!option) {
+          await deps.sendMessage(token, chatId, "Вариант IPO не найден.", {
+            reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
+          });
+          return { handled: true as const, callbackText: "Выбор IPO" };
+        }
+        await deps.sendMessage(
+          token,
+          chatId,
+          [
+            "🚀 Подтверждение IPO",
+            `Тип: ${option.emoji} ${option.name}`,
+            `Списание: ${deps.formatNumber(option.investmentGrm)} GRM`,
+            `Цена акции: ${deps.formatNumber(option.sharePriceGrm)} GRM / ${option.currencySymbol}${deps.formatNumber(option.sharePriceLocal)}`,
+            `Всего акций: ${deps.formatNumber(option.totalShares)}`,
+            `Free float: ${deps.formatNumber(option.freeFloatShares)}`,
+            `${option.riskLabel}. ${option.description}`,
+          ].join("\n"),
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "✅ Подтвердить IPO", callback_data: `company:ipo_confirm:${option.id}` }],
+                [{ text: "← Назад", callback_data: "company:ipo" }],
+              ],
+            },
+          },
+        );
+        return { handled: true as const, callbackText: "Выбор IPO" };
+      }
+
+      const ipoConfirmMatch = data.match(/^company:ipo_confirm:(basic|boosted|aggressive)$/);
+      if (ipoConfirmMatch) {
+        if (String(membership.role || "").toLowerCase() !== "owner") {
+          await deps.sendWithMainKeyboard(token, chatId, "Только CEO может запускать IPO.");
+          return { handled: true as const, callbackText: "Подтверждение IPO" };
+        }
+        try {
+          const result = await deps.callInternalApi("POST", `/api/companies/${membership.company.id}/ipo/run`, {
+            userId: player.id,
+            ipoTypeId: ipoConfirmMatch[1],
+          });
+          await deps.sendMessage(
+            token,
+            chatId,
+            [
+              "✅ IPO успешно запущено",
+              `Тип: ${ipoConfirmMatch[1]}`,
+              `Списано: ${deps.formatNumber(Number(result.investmentGrm || 0))} GRM`,
+              `Стартовая цена: ${deps.formatNumber(Number(result.sharePrice || 0))} GRM`,
+            ].join("\n"),
+          );
+          const refreshed = await deps.getPlayerCompanyContext(player.id);
+          if (refreshed) {
+            const refreshedView = await deps.formatCompanyIpoSection(refreshed);
+            await deps.sendMessage(token, chatId, refreshedView.text, {
+              reply_markup: deps.buildCompanyIpoInlineButtons(true, Boolean(refreshedView.ipoAllowed), Boolean(refreshedView.isPublic)),
+            });
+          }
+        } catch (error) {
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`, {
+            reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
+          });
+        }
+        return { handled: true as const, callbackText: "Подтверждение IPO" };
+      }
+
+      if (data === "company:ipo_dividends") {
+        const view = await deps.formatCompanyIpoSection(membership);
+        const companyEconomy = view.companyEconomy;
+        if (!companyEconomy?.shares?.isPublic) {
+          await deps.sendMessage(token, chatId, "Дивиденды доступны только после IPO.", {
+            reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
+          });
+          return { handled: true as const, callbackText: "Дивиденды" };
+        }
+        deps.pendingActionByChatId.set(chatId, { type: "company_dividend_amount", companyId: String(membership.company.id) });
+        await deps.sendMessage(
+          token,
+          chatId,
+          [
+            "💸 Дивиденды компании",
+            `Баланс компании: ${deps.formatNumber(Number(companyEconomy.capitalGRM || 0))} GRM`,
+            `Последняя выплата: ${deps.formatNumber(Number(companyEconomy.shares.lastDividendPerShareGRM || 0))} GRM/акция`,
+            "Рекомендуемые варианты: 0.25, 0.5 или 1 GRM на акцию.",
+            "Введи размер дивиденда на одну акцию.",
+          ].join("\n"),
+          { reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId) },
+        );
+        return { handled: true as const, callbackText: "Дивиденды" };
       }
 
       if (data === "company:requests") {
@@ -854,7 +973,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
       }
 
       if (data === "company:staffing") {
-        if (membership.role !== "owner") {
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
           await deps.sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
           return { handled: true as const, callbackText: "HR" };
         }
@@ -866,7 +985,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
 
       const staffPickMatch = data.match(/^company:staff_pick(?:_ref)?:([^:]+)$/);
       if (staffPickMatch) {
-        if (membership.role !== "owner") {
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
           await deps.sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
           return { handled: true as const, callbackText: "Выбор сотрудника" };
         }
@@ -891,7 +1010,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
 
       const staffAssignMatch = data.match(/^company:staff_assign(?::(researchAndDevelopment|production|marketing|finance|infrastructure)|(?:_ref)?:([^:]+):(researchAndDevelopment|production|marketing|finance|infrastructure))$/);
       if (staffAssignMatch) {
-        if (membership.role !== "owner") {
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
           await deps.sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
           return { handled: true as const, callbackText: "Назначение в отдел" };
         }
@@ -933,7 +1052,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
 
       const salaryPickMatch = data.match(/^company:salary_pick(?:_ref)?:([^:]+)$/);
       if (salaryPickMatch) {
-        if (membership.role !== "owner") {
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
           await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
           return { handled: true as const, callbackText: "Выбор зарплаты" };
         }
@@ -979,7 +1098,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
       }
 
       if (data === "company:warehouse_expand_confirm") {
-        if (membership.role !== "owner") {
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
           await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
           return { handled: true as const, callbackText: "Подтверждение прокачки склада" };
         }
@@ -1008,8 +1127,8 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         const snapshot = await deps.getCompanyBlueprintSnapshot(membership.company.id);
         const active = snapshot.active;
         if (!active || active.status !== "in_progress") {
-          await deps.sendMessage(token, chatId, "в„№пёЏ РЎРµР№С‡Р°СЃ РЅРµС‚ Р°РєС‚РёРІРЅРѕР№ СЂР°Р·СЂР°Р±РѕС‚РєРё РґР»СЏ РїРѕРґРєР»СЋС‡РµРЅРёСЏ.");
-          return { handled: true as const, callbackText: "РЈС‡Р°СЃС‚РёРµ РІ СЂР°Р·СЂР°Р±РѕС‚РєРµ" };
+          await deps.sendMessage(token, chatId, "ℹ️ Сейчас нет активной разработки для подключения.");
+          return { handled: true as const, callbackText: "Участие в разработке" };
         }
         const joined = await deps.callInternalApi("POST", `/api/companies/${membership.company.id}/blueprints/join`, {
           userId: player.id,
@@ -1018,12 +1137,12 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         if ((joined?.project ?? active)?.status === "in_progress") {
           deps.startCompanyBlueprintProgressTicker(token, chatId, membership.company.name, membership.company.id, player.id);
         }
-        return { handled: true as const, callbackText: "РЈС‡Р°СЃС‚РёРµ РІ СЂР°Р·СЂР°Р±РѕС‚РєРµ" };
+        return { handled: true as const, callbackText: "Участие в разработке" };
       }
 
       if (data === "company:bp_progress_live") {
         await deps.updateCompanyBlueprintProgressMessage(token, chatId, membership.company.name, membership.company.id, player.id);
-        return { handled: true as const, callbackText: "Р–РёРІРѕР№ РїСЂРѕРіСЂРµСЃСЃ" };
+        return { handled: true as const, callbackText: "Живой прогресс" };
       }
 
       if (data === "company:leave") {
@@ -1032,7 +1151,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           from: query.from,
           text: "/company_leave",
         });
-        return { handled: true as const, callbackText: "Р’С‹С…РѕРґ РёР· РєРѕРјРїР°РЅРёРё" };
+        return { handled: true as const, callbackText: "Выход из компании" };
       }
 
       if (data === "company:delete") {
@@ -1041,28 +1160,28 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           from: query.from,
           text: "/company_delete",
         });
-        return { handled: true as const, callbackText: "РЈРґР°Р»РµРЅРёРµ РєРѕРјРїР°РЅРёРё" };
+        return { handled: true as const, callbackText: "Удаление компании" };
       }
 
       if (data === "company:bp_progress") {
-        await deps.sendMessage(token, chatId, "в›” РЈСЃРєРѕСЂРµРЅРёРµ СЂР°Р·СЂР°Р±РѕС‚РєРё (+24С‡) РѕС‚РєР»СЋС‡РµРЅРѕ.");
-        return { handled: true as const, callbackText: "РЈСЃРєРѕСЂРµРЅРёРµ РѕС‚РєР»СЋС‡РµРЅРѕ" };
+        await deps.sendMessage(token, chatId, "⛔ Ускорение разработки (+24ч) отключено.");
+        return { handled: true as const, callbackText: "Ускорение отключено" };
       }
 
       const companyBlueprintStartMatch = data.match(/^company:bp_start:(.+)$/);
       if (companyBlueprintStartMatch) {
-        if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "РЎС‚Р°СЂС‚ СЂР°Р·СЂР°Р±РѕС‚РєРё" };
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
+          await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+          return { handled: true as const, callbackText: "Старт разработки" };
         }
         if (!(await deps.ensureExclusiveActionAllowed(token, chatId, player.id, "development"))) {
-          return { handled: true as const, callbackText: "РЎС‚Р°СЂС‚ СЂР°Р·СЂР°Р±РѕС‚РєРё" };
+          return { handled: true as const, callbackText: "Старт разработки" };
         }
-        if (!(await deps.ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Р Р°Р·СЂР°Р±РѕС‚РєР° Р±Р°Р·РѕРІРѕРіРѕ С‡РµСЂС‚РµР¶Р°"))) {
-          return { handled: true as const, callbackText: "РЎС‚Р°СЂС‚ СЂР°Р·СЂР°Р±РѕС‚РєРё" };
+        if (!(await deps.ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Разработка базового чертежа"))) {
+          return { handled: true as const, callbackText: "Старт разработки" };
         }
         await deps.startCompanyBlueprintDevelopment(token, chatId, membership, player, companyBlueprintStartMatch[1]);
-        return { handled: true as const, callbackText: "РЎС‚Р°СЂС‚ СЂР°Р·СЂР°Р±РѕС‚РєРё" };
+        return { handled: true as const, callbackText: "Старт разработки" };
       }
 
       if (data === "company:bp_produce") {
@@ -1076,17 +1195,17 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
 
       const exclusivePickMatch = data.match(/^company:exclusive_pick:(.+)$/);
       if (exclusivePickMatch) {
-        if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "Р Р°Р·РґРµР» РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РіР°РґР¶РµС‚Р°", shouldClearInlineButtons: false as const };
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
+          await deps.sendWithMainKeyboard(token, chatId, "Раздел доступен только CEO компании.");
+          return { handled: true as const, callbackText: "Выбор гаджета", shouldClearInlineButtons: false as const };
         }
         const snapshot = await deps.getCompanyExclusiveSnapshot(membership.company.id);
         const target = (snapshot.upgradeCandidates ?? []).find((item: any) => String(item.id) === String(exclusivePickMatch[1]));
         if (!target) {
-          await deps.sendMessage(token, chatId, "Р“Р°РґР¶РµС‚ РґР»СЏ EX-Р°РїРіСЂРµР№РґР° РЅРµ РЅР°Р№РґРµРЅ. РћС‚РєСЂРѕР№ СЂР°Р·РґРµР» Р·Р°РЅРѕРІРѕ.", {
+          await deps.sendMessage(token, chatId, "Гаджет для EX-апгрейда не найден. Открой раздел заново.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РіР°РґР¶РµС‚Р°", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Выбор гаджета", shouldClearInlineButtons: false as const };
         }
         deps.companyExclusiveSelectedPartRefsByChatId.delete(chatId);
         deps.companyExclusivePartPageByChatId.set(chatId, 0);
@@ -1098,21 +1217,21 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           gadgetBatchAvailable: Number(target.availableQuantity || 1),
         });
         await deps.sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, target.name, target.category, Number(target.availableQuantity || 1), messageId);
-        return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РіР°РґР¶РµС‚Р°", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Выбор гаджета", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:economy") {
         await deps.sendCompanyEconomySection(token, chatId, membership);
-        return { handled: true as const, callbackText: "Р Р°Р·РґРµР»: Р­РєРѕРЅРѕРјРёРєР°" };
+        return { handled: true as const, callbackText: "Раздел: Экономика" };
       }
 
       if (data === "company:ipo_run") {
         await deps.handleIncomingMessage(token, webAppUrl, {
           chat: { id: chatId },
           from: query.from,
-          text: "/company_ipo_run",
+          text: "/company_ipo",
         });
-        return { handled: true as const, callbackText: "Р—Р°РїСѓСЃРє IPO" };
+        return { handled: true as const, callbackText: "Раздел IPO" };
       }
 
       if (data === "company:bp_confirm_back") {
@@ -1121,16 +1240,16 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           await deps.sendMessage(token, chatId, "Открой «Производство гаджетов» ещё раз.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РР·РјРµРЅРёС‚СЊ РєРѕР»РёС‡РµСЃС‚РІРѕ" };
+          return { handled: true as const, callbackText: "Изменить количество" };
         }
         const blueprintSnapshot = await deps.getCompanyBlueprintSnapshot(membership.company.id);
         const blueprint = blueprintSnapshot.available.find((item: any) => item.id === pendingAction.blueprintId);
         if (!blueprint) {
           deps.pendingActionByChatId.delete(chatId);
-          await deps.sendMessage(token, chatId, "Р§РµСЂС‚С‘Р¶ Р±РѕР»СЊС€Рµ РЅРµ РЅР°Р№РґРµРЅ.", {
+          await deps.sendMessage(token, chatId, "Чертёж больше не найден.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РР·РјРµРЅРёС‚СЊ РєРѕР»РёС‡РµСЃС‚РІРѕ" };
+          return { handled: true as const, callbackText: "Изменить количество" };
         }
         const warehouseParts = [...deps.getCompanyWarehouseParts(membership.company.id)];
         const requiredParts = getBlueprintRecipeRequirements(blueprint);
@@ -1165,16 +1284,16 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         ].filter(Boolean).join("\n"), {
           reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
         });
-        return { handled: true as const, callbackText: "РР·РјРµРЅРёС‚СЊ РєРѕР»РёС‡РµСЃС‚РІРѕ" };
+        return { handled: true as const, callbackText: "Изменить количество" };
       }
 
       if (data === "company:bp_confirm_start") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_bp_produce_confirm") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° РІС‹Р±РµСЂРё С‡РµСЂС‚С‘Р¶ Рё РєРѕР»РёС‡РµСЃС‚РІРѕ РїР°СЂС‚РёРё.", {
+          await deps.sendMessage(token, chatId, "Сначала выбери чертёж и количество партии.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р—Р°РїСѓСЃРє РїР°СЂС‚РёРё" };
+          return { handled: true as const, callbackText: "Запуск партии" };
         }
         try {
           const blueprintSnapshot = await deps.getCompanyBlueprintSnapshot(membership.company.id);
@@ -1184,7 +1303,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             await deps.sendMessage(token, chatId, "❌ Активный чертёж больше не найден.", {
               reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
             });
-            return { handled: true as const, callbackText: "Р—Р°РїСѓСЃРє РїР°СЂС‚РёРё" };
+            return { handled: true as const, callbackText: "Запуск партии" };
           }
           const warehouseParts = [...deps.getCompanyWarehouseParts(membership.company.id)];
           const requiredParts = getBlueprintRecipeRequirements(blueprint);
@@ -1195,7 +1314,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
             const partType = requirement.partType;
             for (let i = 0; i < needed; i += 1) {
               const idx = pool.findIndex((item) => item.type === requirement.partType && deps.normalizePartRarity(item.quality) === deps.normalizePartRarity(requirement.quality));
-              if (idx === -1) throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РґРµС‚Р°Р»РµР№ С‚РёРїР° ${partType} РґР»СЏ РїР°СЂС‚РёРё x${pendingAction.quantity}`);
+              if (idx === -1) throw new Error(`Недостаточно деталей типа ${partType} для партии x${pendingAction.quantity}`);
               selectedParts.push(pool[idx]);
               pool.splice(idx, 1);
             }
@@ -1244,7 +1363,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
       const requestAcceptRefMatch = data.match(/^company:request_accept_ref:(\d+)$/);
       const requestAcceptMatch = data.match(/^company:request_accept:(.+)$/);
       if (requestAcceptRefMatch || requestAcceptMatch) {
-        if (membership.role !== "owner") {
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
           await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
           return { handled: true as const, callbackText: "Одобрение заявки" };
         }
@@ -1297,6 +1416,15 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           await deps.ensureCompanyEconomyState(membership.company, updatedMembers.length);
         }
         await deps.storage.updateJoinRequestStatus(request.id, "accepted");
+        createNotification(String(request.userId), {
+          type: "COMPANY_JOIN_ACCEPTED",
+          title: "🏢 Тебя приняли в компанию",
+          message: `Компания «${membership.company.name}» одобрила твою заявку.`,
+          dataJson: {
+            companyId: membership.company.id,
+            companyName: membership.company.name,
+          },
+        });
         await deps.sendMessage(token, chatId, `✅ Заявка ${request.username} одобрена.`, {
           reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
         });
@@ -1307,7 +1435,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
       const requestDeclineRefMatch = data.match(/^company:request_decline_ref:(\d+)$/);
       const requestDeclineMatch = data.match(/^company:request_decline:(.+)$/);
       if (requestDeclineRefMatch || requestDeclineMatch) {
-        if (membership.role !== "owner") {
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
           await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
           return { handled: true as const, callbackText: "Отклонение заявки" };
         }
@@ -1347,7 +1475,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
 
       const departmentUpgradeMatch = data.match(/^company:dept_upgrade:(researchAndDevelopment|production|marketing|finance|infrastructure)$/);
       if (departmentUpgradeMatch) {
-        if (membership.role !== "owner") {
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
           await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
           return { handled: true as const, callbackText: "Улучшение отдела" };
         }
@@ -1376,31 +1504,31 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
       if (exclusiveToggleMatch) {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_exclusive_parts") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° Р·Р°РїСѓСЃС‚Рё СЂР°Р·СЂР°Р±РѕС‚РєСѓ СЌРєСЃРєР»СЋР·РёРІРЅРѕРіРѕ РіР°РґР¶РµС‚Р° С‡РµСЂРµР· В«РЎС‚Р°СЂС‚В».", {
+          await deps.sendMessage(token, chatId, "Сначала запусти разработку эксклюзивного гаджета через «Старт».", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р”РµС‚Р°Р»СЊ", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Деталь", shouldClearInlineButtons: false as const };
         }
         const refs = deps.getCompanyWarehouseParts(membership.company.id).map((item: any) => `${item.id}::${item.rarity}`);
         deps.companyExclusivePartRefsByChatId.set(chatId, refs);
         const selectedRefs = [...(deps.companyExclusiveSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
         const targetRef = refs[Number(exclusiveToggleMatch[1]) - 1];
         if (!targetRef) {
-          await deps.answerCallbackQuery(token, input.callbackId, "Р”РµС‚Р°Р»СЊ РЅРµ РЅР°Р№РґРµРЅР°");
-          return { handled: true as const, callbackText: "Р”РµС‚Р°Р»СЊ", shouldClearInlineButtons: false as const };
+          await deps.answerCallbackQuery(token, input.callbackId, "Деталь не найдена");
+          return { handled: true as const, callbackText: "Деталь", shouldClearInlineButtons: false as const };
         }
         const existingIndex = selectedRefs.indexOf(targetRef);
         if (existingIndex >= 0) selectedRefs.splice(existingIndex, 1);
         else {
           if (selectedRefs.length >= deps.EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
-            await deps.answerCallbackQuery(token, input.callbackId, `РќСѓР¶РЅРѕ РІС‹Р±СЂР°С‚СЊ ${deps.EXCLUSIVE_UPGRADE_REQUIRED_PARTS} РґРµС‚Р°Р»РµР№`);
-            return { handled: true as const, callbackText: "Р”РµС‚Р°Р»СЊ", shouldClearInlineButtons: false as const };
+            await deps.answerCallbackQuery(token, input.callbackId, `Нужно выбрать ${deps.EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей`);
+            return { handled: true as const, callbackText: "Деталь", shouldClearInlineButtons: false as const };
           }
           selectedRefs.push(targetRef);
         }
         deps.companyExclusiveSelectedPartRefsByChatId.set(chatId, selectedRefs);
         await deps.sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, pendingAction.gadgetName, pendingAction.gadgetCategory, pendingAction.gadgetBatchAvailable, messageId);
-        return { handled: true as const, callbackText: "Р”РµС‚Р°Р»СЊ", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Деталь", shouldClearInlineButtons: false as const };
       }
 
       const exclusivePageMatch = data.match(/^company:exclusive_part_page:(stay|\d+)$/);
@@ -1408,27 +1536,27 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         if (exclusivePageMatch[1] !== "stay") deps.companyExclusivePartPageByChatId.set(chatId, Math.max(0, Number(exclusivePageMatch[1]) || 0));
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_exclusive_parts") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° Р·Р°РїСѓСЃС‚Рё СЂР°Р·СЂР°Р±РѕС‚РєСѓ СЌРєСЃРєР»СЋР·РёРІРЅРѕРіРѕ РіР°РґР¶РµС‚Р° С‡РµСЂРµР· В«РЎС‚Р°СЂС‚В».", {
+          await deps.sendMessage(token, chatId, "Сначала запусти разработку эксклюзивного гаджета через «Старт».", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РЎС‚СЂР°РЅРёС†Р°", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Страница", shouldClearInlineButtons: false as const };
         }
         await deps.sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, pendingAction.gadgetName, pendingAction.gadgetCategory, pendingAction.gadgetBatchAvailable, messageId);
-        return { handled: true as const, callbackText: "РЎС‚СЂР°РЅРёС†Р°", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Страница", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:exclusive_part_reset") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_exclusive_parts") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° Р·Р°РїСѓСЃС‚Рё СЂР°Р·СЂР°Р±РѕС‚РєСѓ СЌРєСЃРєР»СЋР·РёРІРЅРѕРіРѕ РіР°РґР¶РµС‚Р° С‡РµСЂРµР· В«РЎС‚Р°СЂС‚В».", {
+          await deps.sendMessage(token, chatId, "Сначала запусти разработку эксклюзивного гаджета через «Старт».", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РЎР±СЂРѕСЃ", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Сброс", shouldClearInlineButtons: false as const };
         }
         deps.companyExclusiveSelectedPartRefsByChatId.set(chatId, []);
         deps.companyExclusivePartPageByChatId.set(chatId, 0);
         await deps.sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, pendingAction.gadgetName, pendingAction.gadgetCategory, pendingAction.gadgetBatchAvailable, messageId);
-        return { handled: true as const, callbackText: "РЎР±СЂРѕСЃ", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Сброс", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:exclusive_part_back") {
@@ -1439,13 +1567,13 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         deps.setCompanyMenuSection(chatId, "root");
         deps.rememberTelegramMenu(player.id, { menu: "company", section: "root" });
         await deps.sendCompanyRootMenu(token, chatId, player);
-        return { handled: true as const, callbackText: "РќР°Р·Р°Рґ" };
+        return { handled: true as const, callbackText: "Назад" };
       }
 
       if (data === "company:exclusive_part_done") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_exclusive_parts") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° Р·Р°РїСѓСЃС‚Рё СЂР°Р·СЂР°Р±РѕС‚РєСѓ СЌРєСЃРєР»СЋР·РёРІРЅРѕРіРѕ РіР°РґР¶РµС‚Р° С‡РµСЂРµР· В«РЎС‚Р°СЂС‚В».", {
+          await deps.sendMessage(token, chatId, "Сначала запусти разработку эксклюзивного гаджета через «Старт».", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
         return { handled: true as const, callbackText: "Предпросмотр", shouldClearInlineButtons: false as const };
@@ -1455,7 +1583,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         const selectedRefs = [...(deps.companyExclusiveSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
         deps.companyExclusiveSelectedPartRefsByChatId.set(chatId, selectedRefs);
         if (selectedRefs.length !== deps.EXCLUSIVE_UPGRADE_REQUIRED_PARTS) {
-          await deps.answerCallbackQuery(token, input.callbackId, `РќСѓР¶РЅРѕ РІС‹Р±СЂР°С‚СЊ ${deps.EXCLUSIVE_UPGRADE_REQUIRED_PARTS} РґРµС‚Р°Р»РµР№`);
+          await deps.answerCallbackQuery(token, input.callbackId, `Нужно выбрать ${deps.EXCLUSIVE_UPGRADE_REQUIRED_PARTS} деталей`);
           await deps.sendCompanyExclusivePartsPicker(token, chatId, membership, player.id, pendingAction.gadgetName, pendingAction.gadgetCategory, pendingAction.gadgetBatchAvailable, messageId);
         return { handled: true as const, callbackText: "Предпросмотр", shouldClearInlineButtons: false as const };
         }
@@ -1590,17 +1718,17 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
 
       const companyExclusiveProducePickMatch = data.match(/^company:exclusive_produce_pick:(.+)$/);
       if (companyExclusiveProducePickMatch) {
-        if (membership.role !== "owner") {
-          await deps.sendWithMainKeyboard(token, chatId, "РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ CEO РєРѕРјРїР°РЅРёРё.");
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РІС‹РїСѓСЃРєР°" };
+        if (!(["owner", "deputy"].includes(String(membership.role || "")))) {
+          await deps.sendWithMainKeyboard(token, chatId, "Команда доступна только CEO компании.");
+          return { handled: true as const, callbackText: "Выбор выпуска" };
         }
         const snapshot = await deps.getCompanyExclusiveSnapshot(membership.company.id);
         const target = (snapshot.catalog ?? []).find((item: any) => item.id === companyExclusiveProducePickMatch[1]);
         if (!target) {
-          await deps.sendMessage(token, chatId, "Р§РµСЂС‚С‘Р¶ РЅРµ РЅР°Р№РґРµРЅ. РћС‚РєСЂРѕР№ В«Р’С‹РїСѓСЃРєВ» РµС‰С‘ СЂР°Р·.", {
+          await deps.sendMessage(token, chatId, "Чертёж не найден. Открой «Выпуск» ещё раз.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РІС‹РїСѓСЃРєР°" };
+          return { handled: true as const, callbackText: "Выбор выпуска" };
         }
         deps.pendingActionByChatId.set(chatId, {
           type: "company_exclusive_produce_qty",
@@ -1610,7 +1738,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         await deps.sendMessage(token, chatId, `🏭 ${target.name}\nВведи количество для выпуска (1-${Math.max(1, target.remainingUnits)}).`, {
           reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
         });
-        return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РІС‹РїСѓСЃРєР°" };
+        return { handled: true as const, callbackText: "Выбор выпуска" };
       }
 
       const contractAcceptMatch = data.match(/^company:contract_accept:(\d+)$/);
@@ -1623,43 +1751,71 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         return { handled: true as const, callbackText: "Принятие контракта" };
       }
 
+      const contractContributeMatch = data.match(/^company:contract_contribute:(\d+)$/);
+      if (contractContributeMatch) {
+        const contracts = await deps.getCityContracts(membership.company.city);
+        const selected = deps.resolveContractRef(chatId, contractContributeMatch[1], contracts);
+        if (!selected) {
+          await deps.sendMessage(token, chatId, "Контракт не найден. Открой раздел работы компании заново.");
+          return { handled: true as const, callbackText: "Вклад в контракт" };
+        }
+        try {
+          const payload = await deps.callInternalApi("POST", `/api/city-contracts/${selected.id}/contribute`, {
+            userId: player.id,
+            companyId: membership.company.id,
+          });
+          const currentStage = payload?.currentStage;
+          const contribution = Number(payload?.contribution?.value || 0);
+          const text = payload?.completed
+            ? "✅ Контракт завершён. Награды компании и участникам уже распределены."
+            : currentStage
+              ? `⚡ Вклад засчитан: +${contribution.toFixed(1)} в этап «${currentStage.title}».`
+              : `⚡ Вклад засчитан: +${contribution.toFixed(1)}.`;
+          await deps.sendMessage(token, chatId, text);
+        } catch (error) {
+          await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`);
+        }
+        await deps.sendCompanyWorkSection(token, chatId, membership);
+        return { handled: true as const, callbackText: "Вклад в контракт" };
+      }
+
       const contractPartToggleMatch = data.match(/^company:contract_part_toggle:(\d+)$/);
       if (contractPartToggleMatch) {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_contract_parts") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° РѕС‚РєСЂРѕР№ РєРѕРЅС‚СЂР°РєС‚ РєРѕРјРїР°РЅРёРё Рё Р·Р°РїСѓСЃС‚Рё РІС‹Р±РѕСЂ РґРµС‚Р°Р»РµР№.", {
+          await deps.sendMessage(token, chatId, "Сначала открой контракт компании и запусти выбор деталей.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РґРµС‚Р°Р»Рё", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Выбор детали", shouldClearInlineButtons: false as const };
         }
         const contracts = await deps.getCityContracts(membership.company.city);
         const contract = contracts.find((item: any) => item.id === pendingAction.contractId);
         if (!contract) {
           deps.clearPendingActionRuntimeState(chatId, pendingAction);
-          await deps.sendMessage(token, chatId, "РљРѕРЅС‚СЂР°РєС‚ Р±РѕР»СЊС€Рµ РЅРµ РЅР°Р№РґРµРЅ. РћС‚РєСЂРѕР№ СЂР°Р·РґРµР» СЂР°Р±РѕС‚С‹ РєРѕРјРїР°РЅРёРё Р·Р°РЅРѕРІРѕ.", {
+          await deps.sendMessage(token, chatId, "Контракт больше не найден. Открой раздел работы компании заново.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РґРµС‚Р°Р»Рё", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Выбор детали", shouldClearInlineButtons: false as const };
         }
         const refs = deps.getCompanyWarehousePartUnitRefs(membership.company.id, pendingAction.requiredPartType).map((item: any) => item.ref);
         const selectedRefs = [...(deps.companyContractSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
         const targetRef = refs[Number(contractPartToggleMatch[1]) - 1];
         if (!targetRef) {
-          await deps.answerCallbackQuery(token, input.callbackId, "Р”РµС‚Р°Р»СЊ РЅРµ РЅР°Р№РґРµРЅР°");
-          return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РґРµС‚Р°Р»Рё", shouldClearInlineButtons: false as const };
+          await deps.answerCallbackQuery(token, input.callbackId, "Деталь не найдена");
+          return { handled: true as const, callbackText: "Выбор детали", shouldClearInlineButtons: false as const };
         }
         const existingIndex = selectedRefs.indexOf(targetRef);
         if (existingIndex >= 0) selectedRefs.splice(existingIndex, 1);
         else {
           if (selectedRefs.length >= pendingAction.requiredQuantity) {
-            await deps.answerCallbackQuery(token, input.callbackId, `РњРѕР¶РЅРѕ РІС‹Р±СЂР°С‚СЊ С‚РѕР»СЊРєРѕ ${pendingAction.requiredQuantity}`);
-            return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РґРµС‚Р°Р»Рё", shouldClearInlineButtons: false as const };
+            await deps.answerCallbackQuery(token, input.callbackId, `Можно выбрать только ${pendingAction.requiredQuantity}`);
+            return { handled: true as const, callbackText: "Выбор детали", shouldClearInlineButtons: false as const };
           }
           selectedRefs.push(targetRef);
         }
         deps.companyContractSelectedPartRefsByChatId.set(chatId, selectedRefs);
         await deps.sendCompanyContractPartsPicker(token, chatId, membership, contract, messageId);
-        return { handled: true as const, callbackText: "Р’С‹Р±РѕСЂ РґРµС‚Р°Р»Рё", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Выбор детали", shouldClearInlineButtons: false as const };
       }
 
       const contractPartPageMatch = data.match(/^company:contract_part_page:(stay|\d+)$/);
@@ -1667,78 +1823,78 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         if (contractPartPageMatch[1] !== "stay") deps.companyContractPartPageByChatId.set(chatId, Math.max(0, Number(contractPartPageMatch[1]) || 0));
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_contract_parts") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° РѕС‚РєСЂРѕР№ РєРѕРЅС‚СЂР°РєС‚ РєРѕРјРїР°РЅРёРё Рё Р·Р°РїСѓСЃС‚Рё РІС‹Р±РѕСЂ РґРµС‚Р°Р»РµР№.", {
+          await deps.sendMessage(token, chatId, "Сначала открой контракт компании и запусти выбор деталей.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РЎС‚СЂР°РЅРёС†Р° РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Страница деталей", shouldClearInlineButtons: false as const };
         }
         const contracts = await deps.getCityContracts(membership.company.city);
         const contract = contracts.find((item: any) => item.id === pendingAction.contractId);
         if (!contract) {
           deps.clearPendingActionRuntimeState(chatId, pendingAction);
-          await deps.sendMessage(token, chatId, "РљРѕРЅС‚СЂР°РєС‚ Р±РѕР»СЊС€Рµ РЅРµ РЅР°Р№РґРµРЅ. РћС‚РєСЂРѕР№ СЂР°Р·РґРµР» СЂР°Р±РѕС‚С‹ РєРѕРјРїР°РЅРёРё Р·Р°РЅРѕРІРѕ.", {
+          await deps.sendMessage(token, chatId, "Контракт больше не найден. Открой раздел работы компании заново.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РЎС‚СЂР°РЅРёС†Р° РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Страница деталей", shouldClearInlineButtons: false as const };
         }
         await deps.sendCompanyContractPartsPicker(token, chatId, membership, contract, messageId);
-        return { handled: true as const, callbackText: "РЎС‚СЂР°РЅРёС†Р° РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Страница деталей", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:contract_part_reset") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_contract_parts") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° РѕС‚РєСЂРѕР№ РєРѕРЅС‚СЂР°РєС‚ РєРѕРјРїР°РЅРёРё Рё Р·Р°РїСѓСЃС‚Рё РІС‹Р±РѕСЂ РґРµС‚Р°Р»РµР№.", {
+          await deps.sendMessage(token, chatId, "Сначала открой контракт компании и запусти выбор деталей.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РЎР±СЂРѕСЃ РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Сброс деталей", shouldClearInlineButtons: false as const };
         }
         const contracts = await deps.getCityContracts(membership.company.city);
         const contract = contracts.find((item: any) => item.id === pendingAction.contractId);
         if (!contract) {
           deps.clearPendingActionRuntimeState(chatId, pendingAction);
-          await deps.sendMessage(token, chatId, "РљРѕРЅС‚СЂР°РєС‚ Р±РѕР»СЊС€Рµ РЅРµ РЅР°Р№РґРµРЅ. РћС‚РєСЂРѕР№ СЂР°Р·РґРµР» СЂР°Р±РѕС‚С‹ РєРѕРјРїР°РЅРёРё Р·Р°РЅРѕРІРѕ.", {
+          await deps.sendMessage(token, chatId, "Контракт больше не найден. Открой раздел работы компании заново.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РЎР±СЂРѕСЃ РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Сброс деталей", shouldClearInlineButtons: false as const };
         }
         deps.companyContractSelectedPartRefsByChatId.set(chatId, []);
         deps.companyContractPartPageByChatId.set(chatId, 0);
         await deps.sendCompanyContractPartsPicker(token, chatId, membership, contract, messageId);
-        return { handled: true as const, callbackText: "РЎР±СЂРѕСЃ РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Сброс деталей", shouldClearInlineButtons: false as const };
       }
 
       if (data === "company:contract_part_back") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (pendingAction && pendingAction.type === "company_contract_parts") deps.clearPendingActionRuntimeState(chatId, pendingAction);
         await deps.sendCompanyWorkSection(token, chatId, membership);
-        return { handled: true as const, callbackText: "РќР°Р·Р°Рґ Рє РєРѕРЅС‚СЂР°РєС‚Р°Рј" };
+        return { handled: true as const, callbackText: "Назад к контрактам" };
       }
 
       if (data === "company:contract_part_done") {
         const pendingAction = deps.pendingActionByChatId.get(chatId);
         if (!pendingAction || pendingAction.type !== "company_contract_parts") {
-          await deps.sendMessage(token, chatId, "РЎРЅР°С‡Р°Р»Р° РѕС‚РєСЂРѕР№ РєРѕРЅС‚СЂР°РєС‚ РєРѕРјРїР°РЅРёРё Рё Р·Р°РїСѓСЃС‚Рё РІС‹Р±РѕСЂ РґРµС‚Р°Р»РµР№.", {
+          await deps.sendMessage(token, chatId, "Сначала открой контракт компании и запусти выбор деталей.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РЎРґР°С‡Р° РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Сдача деталей", shouldClearInlineButtons: false as const };
         }
         const contracts = await deps.getCityContracts(membership.company.city);
         const contract = contracts.find((item: any) => item.id === pendingAction.contractId);
         if (!contract) {
           deps.clearPendingActionRuntimeState(chatId, pendingAction);
-          await deps.sendMessage(token, chatId, "РљРѕРЅС‚СЂР°РєС‚ Р±РѕР»СЊС€Рµ РЅРµ РЅР°Р№РґРµРЅ. РћС‚РєСЂРѕР№ СЂР°Р·РґРµР» СЂР°Р±РѕС‚С‹ РєРѕРјРїР°РЅРёРё Р·Р°РЅРѕРІРѕ.", {
+          await deps.sendMessage(token, chatId, "Контракт больше не найден. Открой раздел работы компании заново.", {
             reply_markup: deps.buildCompanyReplyMarkup(membership.role, chatId),
           });
-          return { handled: true as const, callbackText: "РЎРґР°С‡Р° РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Сдача деталей", shouldClearInlineButtons: false as const };
         }
         const refs = deps.getCompanyWarehousePartUnitRefs(membership.company.id, pendingAction.requiredPartType).map((item: any) => item.ref);
         const selectedRefs = [...(deps.companyContractSelectedPartRefsByChatId.get(chatId) ?? [])].filter((ref) => refs.includes(ref));
         deps.companyContractSelectedPartRefsByChatId.set(chatId, selectedRefs);
         if (selectedRefs.length !== pendingAction.requiredQuantity) {
-          await deps.answerCallbackQuery(token, input.callbackId, `РќСѓР¶РЅРѕ РІС‹Р±СЂР°С‚СЊ ${pendingAction.requiredQuantity} РґРµС‚Р°Р»РµР№`);
+          await deps.answerCallbackQuery(token, input.callbackId, `Нужно выбрать ${pendingAction.requiredQuantity} деталей`);
           await deps.sendCompanyContractPartsPicker(token, chatId, membership, contract, messageId);
-          return { handled: true as const, callbackText: "РЎРґР°С‡Р° РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+          return { handled: true as const, callbackText: "Сдача деталей", shouldClearInlineButtons: false as const };
         }
         try {
           await deps.completeCompanyContractDelivery(token, chatId, membership, contract, player.id, { partRefs: selectedRefs });
@@ -1747,19 +1903,19 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
           await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`);
         }
         await deps.sendCompanyWorkSection(token, chatId, membership);
-        return { handled: true as const, callbackText: "РЎРґР°С‡Р° РґРµС‚Р°Р»РµР№", shouldClearInlineButtons: false as const };
+        return { handled: true as const, callbackText: "Сдача деталей", shouldClearInlineButtons: false as const };
       }
 
       const contractDeliverMatch = data.match(/^company:contract_deliver:(\d+)$/);
       if (contractDeliverMatch) {
-        if (!(await deps.ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "РљРѕРЅС‚СЂР°РєС‚С‹ РєРѕРјРїР°РЅРёРё"))) {
-          return { handled: true as const, callbackText: "РЎРґР°С‡Р° РєРѕРЅС‚СЂР°РєС‚Р°" };
+        if (!(await deps.ensureCompanyProcessUnlocked(token, chatId, player.id, membership.company.id, "Контракты компании"))) {
+          return { handled: true as const, callbackText: "Сдача контракта" };
         }
         const contracts = await deps.getCityContracts(membership.company.city);
         const selected = deps.resolveContractRef(chatId, contractDeliverMatch[1], contracts);
         if (!selected) {
-          await deps.sendMessage(token, chatId, "РљРѕРЅС‚СЂР°РєС‚ РЅРµ РЅР°Р№РґРµРЅ. РћС‚РєСЂРѕР№ СЂР°Р·РґРµР» В«Р Р°Р±РѕС‚Р°В» РєРЅРѕРїРєРѕР№ РЅРёР¶Рµ.");
-          return { handled: true as const, callbackText: "РЎРґР°С‡Р° РєРѕРЅС‚СЂР°РєС‚Р°" };
+          await deps.sendMessage(token, chatId, "Контракт не найден. Открой раздел «Работа» кнопкой ниже.");
+          return { handled: true as const, callbackText: "Сдача контракта" };
         }
         try {
           if (selected.kind === "parts_supply") {
@@ -1771,7 +1927,7 @@ export function createCompanyTelegramModule(deps: CompanyTelegramModuleDeps) {
         } catch (error) {
           await deps.sendMessage(token, chatId, `❌ ${deps.extractErrorMessage(error)}`);
         }
-        return { handled: true as const, callbackText: "РЎРґР°С‡Р° РєРѕРЅС‚СЂР°РєС‚Р°" };
+        return { handled: true as const, callbackText: "Сдача контракта" };
       }
 
       return { handled: false as const };

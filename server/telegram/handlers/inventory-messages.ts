@@ -44,9 +44,7 @@ export async function handleInventoryMessage(input: {
   buyShopItem: (userId: string, ref: string) => Promise<any>;
   resolveShopBuyRefFromChat: (chatId: number, ref: string) => string;
   tryApplyTutorialEvent: (userId: string, event: string) => Promise<any>;
-  updateWeeklyQuestProgress: (user: any, key: any, amount?: number) => any;
   formatStats: (stats: Record<string, number>) => string;
-  formatWeeklyQuestProgressNotice: (progress: any) => string;
   formatTutorialAdvanceNotice: (advance: any, city: string) => string;
   buildShopPurchaseInlineMarkup: (item: any) => Record<string, unknown> | undefined;
   buildInventoryMenu: (snapshot: any) => { text: string; refs: string[] };
@@ -125,7 +123,6 @@ export async function handleInventoryMessage(input: {
         player.id,
         result.item.type === "consumable" ? "first_course_item_bought" : "first_gadget_bought",
       );
-      const weeklyQuestProgress = input.updateWeeklyQuestProgress(result.user, "shop", 1);
       const currency = input.getCurrencySymbol(result.user.city);
       const lines = [
         `✅ Куплено: ${result.item.name}`,
@@ -133,8 +130,7 @@ export async function handleInventoryMessage(input: {
         "",
         `💰 Баланс: ${currency}${formatCompactNumber(result.user.balance)}`,
       ];
-      const weeklyQuestNotice = input.formatWeeklyQuestProgressNotice(weeklyQuestProgress);
-      if (weeklyQuestNotice) lines.push("", weeklyQuestNotice);
+      if (Array.isArray(result.notices) && result.notices.length) lines.push("", input.formatNotices(result.notices));
       const tutorialNotice = input.formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
       if (tutorialNotice) lines.push("", tutorialNotice);
       const purchaseMarkup = input.buildShopPurchaseInlineMarkup(result.item);
@@ -171,19 +167,13 @@ export async function handleInventoryMessage(input: {
     try {
       const result = await input.useInventoryItem(player.id, ref);
       const tutorialAdvance = await input.tryApplyTutorialEvent(player.id, "first_course_item_used");
-      let weeklyQuestNotice = "";
-      if (result.item?.type === "consumable") {
-        const weeklyQuestProgress = input.updateWeeklyQuestProgress(result.user, "study", 1);
-        weeklyQuestNotice = input.formatWeeklyQuestProgressNotice(weeklyQuestProgress);
-      }
       const lines = [
         `✅ Использовано: ${result.item.name}`,
         `Эффект: ${input.formatStats(result.item.stats)}`,
       ];
-      if (weeklyQuestNotice) lines.push("", weeklyQuestNotice);
+      if (Array.isArray(result.notices) && result.notices.length) lines.push("", input.formatNotices(result.notices));
       const tutorialNotice = input.formatTutorialAdvanceNotice(tutorialAdvance, result.user.city);
       if (tutorialNotice) lines.push("", tutorialNotice);
-      if (result.notices.length) lines.push("", input.formatNotices(result.notices));
       await input.sendWithCurrentHubKeyboard(token, chatId, player.id, lines.join("\n"));
     } catch (error) {
       await input.sendWithCurrentHubKeyboard(token, chatId, player.id, `❌ ${input.extractErrorMessage(error)}`);

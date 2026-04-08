@@ -2,6 +2,8 @@
  * Company membership and registry mutation commands extracted from telegram.ts.
  * Keeps existing checks and side effects, while isolating membership flows.
  */
+import { createNotification } from "../../notifications/service";
+
 export async function handleCompanyMembershipMessage(input: {
   command: string;
   args: string[];
@@ -323,6 +325,15 @@ export async function handleCompanyMembershipMessage(input: {
         const updatedMembers = await storage.getCompanyMembers(membership.company.id);
         await ensureCompanyEconomyState(membership.company, updatedMembers.length);
       }
+      createNotification(String(request.userId), {
+        type: "COMPANY_JOIN_ACCEPTED",
+        title: "🏢 Тебя приняли в компанию",
+        message: `Компания «${membership.company.name}» одобрила твою заявку.`,
+        dataJson: {
+          companyId: membership.company.id,
+          companyName: membership.company.name,
+        },
+      });
       await sendMessage(token, chatId, `✅ Заявка ${request.username} одобрена.`, {
         reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
       });

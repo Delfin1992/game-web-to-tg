@@ -32,6 +32,9 @@ type HackathonRouteDeps = {
   applyWeeklyHackathonSabotage: (input: any) => any;
   applyWeeklyHackathonDefense: (input: any) => any;
   recordCompanyHackathonParticipation?: (companyId: string) => void;
+  recordCompanyTaskContribution?: (input: any) => any;
+  recordCompanyMoneyContribution?: (input: any) => any;
+  recordCompanyPartsContribution?: (input: any) => any;
 };
 
 function listAvailableByLevel(map: Record<string, any>, level: number) {
@@ -162,6 +165,18 @@ export function registerHackathonRoutes(app: Express, deps: HackathonRouteDeps) 
         },
         multiplier: departmentEffects.hackathonSkillMultiplier,
       });
+      deps.recordCompanyTaskContribution?.({
+        companyId: membership.company.id,
+        userId,
+        username: String(snapshot.user?.username || "Игрок"),
+        taskId: `hackathon:${String(deps.getWeeklyHackathonState()?.eventId || "current")}`,
+        source: "hackathon_skill",
+        skillType: result?.skillType || "coding",
+        value: Number(result?.contribution || 0),
+        professionBonus: 1,
+        departmentEfficiency: Number(departmentEffects.hackathonSkillMultiplier || 1),
+        randomMultiplier: 1,
+      });
       deps.applyGameStatePatch(userId, {
         workTime: Math.max(0, Number((workTime - deps.WEEKLY_HACKATHON_CONFIG.skillEnergyCost).toFixed(4))),
       });
@@ -184,6 +199,13 @@ export function registerHackathonRoutes(app: Express, deps: HackathonRouteDeps) 
         userId,
         companyId: membership.company.id,
         amount,
+      });
+      deps.recordCompanyMoneyContribution?.({
+        companyId: membership.company.id,
+        userId,
+        username: String((await deps.storage.getUser(userId))?.username || "Игрок"),
+        amount,
+        source: "hackathon_money",
       });
       res.json({ ok: true, ...result, gramBalance: payment.state.gramBalance, state: deps.getWeeklyHackathonState() });
     } catch (error: any) {
@@ -233,6 +255,13 @@ export function registerHackathonRoutes(app: Express, deps: HackathonRouteDeps) 
         rarity: String(inventoryItem.rarity || "Common"),
         quantity: 1,
         multiplier: (await deps.getEffectiveCompanyDepartmentEffects(membership.company)).effects.hackathonPartMultiplier,
+      });
+      deps.recordCompanyPartsContribution?.({
+        companyId: membership.company.id,
+        userId,
+        username: String(snapshot.user?.username || "Игрок"),
+        quantity: 1,
+        source: "hackathon_part",
       });
 
       const qty = Math.max(1, Math.floor(Number(inventoryItem.quantity || 1)));

@@ -1,4 +1,6 @@
 import {
+  convertGRMToLocal,
+  getLocalCurrencySymbolByCity,
   INITIAL_COMPANY_SHARES,
   reconcileCompanyEconomy,
   type CompanyEconomyLike,
@@ -12,10 +14,10 @@ import { storage, registerRuntimeSnapshotProvider } from "../storage";
 import { getUserWithGameState } from "../game-engine";
 
 export const COMPANY_IPO_REQUIREMENTS = {
-  minCompanyAgeDays: 14,
-  minEmployees: 10,
-  minTotalSkills: 200,
-  minDevelopedGadgets: 3,
+  minCompanyAgeDays: 1,
+  minEmployees: 1,
+  minTotalSkills: 100,
+  minDevelopedGadgets: 0,
   minHackathonParticipation: 1,
   minBalanceGrm: 100000,
 } as const;
@@ -26,6 +28,54 @@ export const COMPANY_IPO_SHARE_CONFIG = {
   minPriceGrm: 100,
   maxPriceGrm: 300,
 } as const;
+
+export type CompanyIpoVariantId = "basic" | "boosted" | "aggressive";
+
+export const COMPANY_IPO_VARIANTS: Record<CompanyIpoVariantId, {
+  id: CompanyIpoVariantId;
+  name: string;
+  emoji: string;
+  description: string;
+  riskLabel: string;
+  investmentGrm: number;
+  priceMultiplier: number;
+  volatilityMultiplier: number;
+  freeFloatShares: number;
+}> = {
+  basic: {
+    id: "basic",
+    name: "Базовый IPO",
+    emoji: "🟢",
+    description: "Низкий риск и более плавная динамика цены.",
+    riskLabel: "Низкий риск",
+    investmentGrm: 10000,
+    priceMultiplier: 0.9,
+    volatilityMultiplier: 0.85,
+    freeFloatShares: 2000,
+  },
+  boosted: {
+    id: "boosted",
+    name: "Усиленный IPO",
+    emoji: "🟡",
+    description: "Сбалансированный сценарий для обычного выхода на биржу.",
+    riskLabel: "Сбалансированный",
+    investmentGrm: 30000,
+    priceMultiplier: 1,
+    volatilityMultiplier: 1,
+    freeFloatShares: 2500,
+  },
+  aggressive: {
+    id: "aggressive",
+    name: "Агрессивный IPO",
+    emoji: "🔴",
+    description: "Высокий риск и более резкая реакция рынка.",
+    riskLabel: "Высокий риск",
+    investmentGrm: 80000,
+    priceMultiplier: 1.15,
+    volatilityMultiplier: 1.2,
+    freeFloatShares: 3000,
+  },
+};
 
 export const COMPANY_STOCK_BALANCE_THRESHOLDS = {
   minGrowth: 5000,
@@ -86,6 +136,21 @@ export type CompanyIpoEligibility = {
   allDone: boolean;
   items: CompanyIpoChecklistItem[];
   metrics: CompanyIpoMetrics;
+};
+
+export type CompanyIpoOptionView = {
+  id: CompanyIpoVariantId;
+  name: string;
+  emoji: string;
+  description: string;
+  riskLabel: string;
+  investmentGrm: number;
+  sharePriceGrm: number;
+  sharePriceLocal: number;
+  currencySymbol: string;
+  totalShares: number;
+  freeFloatShares: number;
+  volatilityMultiplier: number;
 };
 
 type CompanyStockMetrics = {
@@ -234,6 +299,7 @@ export async function buildCompanyIpoEligibility(company: any, economy: CompanyE
   const participationCount = Math.max(
     0,
     Number(economy.shares.stockDayState.hackathonParticipationCount || 0),
+    Number(economy.shares.stockDayState.lastHackathonPlace ? 1 : 0),
   );
 
   const metrics: CompanyIpoMetrics = {
@@ -310,27 +376,81 @@ export function calculateCompanyIpoSharePrice(metrics: CompanyIpoMetrics) {
   );
 }
 
-export function launchCompanyIpo(company: CompanyEconomyState, eligibility: CompanyIpoEligibility, nowMs: number = Date.now()) {
+export function calculateCompanyIpoSharePriceForVariant(
+  metrics: CompanyIpoMetrics,
+  variantId: CompanyIpoVariantId,
+) {
+  const variant = COMPANY_IPO_VARIANTS[variantId];
+  const basePrice = calculateCompanyIpoSharePrice(metrics);
+  return clamp(
+    Math.round(basePrice * variant.priceMultiplier),
+    COMPANY_IPO_SHARE_CONFIG.minPriceGrm,
+    COMPANY_IPO_SHARE_CONFIG.maxPriceGrm,
+  );
+}
+
+export function buildCompanyIpoOptions(
+  company: Pick<CompanyEconomyRuntimeState, "city"> | { city?: string | null },
+  eligibility: CompanyIpoEligibility,
+): CompanyIpoOptionView[] {
+  const city = String(company.city || "San Francisco");
+  const currencySymbol = getLocalCurrencySymbolByCity(city);
+  return Object.values(COMPANY_IPO_VARIANTS).map((variant) => {
+    const sharePriceGrm = calculateCompanyIpoSharePriceForVariant(eligibility.metrics, variant.id);
+    return {
+      id: variant.id,
+      name: variant.name,
+      emoji: variant.emoji,
+      description: variant.description,
+      riskLabel: variant.riskLabel,
+      investmentGrm: variant.investmentGrm,
+      sharePriceGrm,
+      sharePriceLocal: convertGRMToLocal(sharePriceGrm, city),
+      currencySymbol,
+      totalShares: COMPANY_IPO_SHARE_CONFIG.totalShares,
+      freeFloatShares: variant.freeFloatShares,
+      volatilityMultiplier: variant.volatilityMultiplier,
+    };
+  });
+}
+
+export function launchCompanyIpo(
+  company: CompanyEconomyState,
+  eligibility: CompanyIpoEligibility,
+  variantId: CompanyIpoVariantId = "boosted",
+  nowMs: number = Date.now(),
+) {
   if (!eligibility.allDone) {
     return { ok: false as const, reason: "Не выполнены требования IPO", company };
   }
+  const variant = COMPANY_IPO_VARIANTS[variantId];
+  if (!variant) {
+    return { ok: false as const, reason: "Неизвестный вариант IPO", company };
+  }
   const normalized = ensureCompanyStockDayState(company, nowMs);
-  const sharePrice = calculateCompanyIpoSharePrice(eligibility.metrics);
+  if (normalized.capitalGRM < variant.investmentGrm) {
+    return { ok: false as const, reason: "Недостаточно GRM на балансе компании", company: normalized };
+  }
+  const sharePrice = calculateCompanyIpoSharePriceForVariant(eligibility.metrics, variantId);
   const updated = reconcileCompanyEconomy({
     ...normalized,
     stage: "public",
+    capitalGRM: round2(normalized.capitalGRM - variant.investmentGrm),
     shares: {
       ...normalized.shares,
       totalShares: COMPANY_IPO_SHARE_CONFIG.totalShares,
-      freeFloatShares: COMPANY_IPO_SHARE_CONFIG.freeFloatShares,
+      freeFloatShares: variant.freeFloatShares,
       sharePriceGRM: sharePrice,
       isIPOAvailable: true,
       isPublic: true,
       ipoLaunchedAt: nowMs,
+      ipoTypeId: variant.id,
+      ipoInvestmentGRM: variant.investmentGrm,
+      ipoVolatilityMultiplier: variant.volatilityMultiplier,
       lastPriceDeltaPercent: 0,
     },
   });
-  return { ok: true as const, company: updated, sharePrice };
+  return { ok: true as const, company: updated, sharePrice, variant };
 }
 
 export function recordCompanyHackathonParticipation(companyId: string, nowMs: number = Date.now()) {
@@ -453,7 +573,11 @@ function evaluateStockDayState(
   if (decline.noDevelopment) delta += COMPANY_STOCK_FACTOR_PCT.noDevelopment;
   if (decline.badEventResult) delta += COMPANY_STOCK_FACTOR_PCT.badEventResult;
 
-  delta = clamp(delta, -COMPANY_STOCK_DAILY_LIMIT_PERCENT, COMPANY_STOCK_DAILY_LIMIT_PERCENT);
+  delta = clamp(
+    delta * Math.max(0.1, Number(normalized.shares.ipoVolatilityMultiplier || 1)),
+    -COMPANY_STOCK_DAILY_LIMIT_PERCENT,
+    COMPANY_STOCK_DAILY_LIMIT_PERCENT,
+  );
 
   const summary: string[] = [];
   if (growth.employeeActivity10) summary.push("сильная активность сотрудников");
@@ -560,28 +684,52 @@ export async function getPublicCompanyStockViews(): Promise<Array<{
   companyId: string;
   companyName: string;
   city: string;
+  ticker: string;
+  currencySymbol: string;
   sharePriceGrm: number;
+  sharePriceLocal: number;
+  marketCapGrm: number;
+  marketCapLocal: number;
+  freeFloatShares: number;
   deltaPercent: number;
+  ipoTypeId: string | null;
 }>> {
   const companies = await storage.getAllCompanies();
   return companies
     .map((company) => {
       const economy = getRuntimeEconomy(company.id);
       if (!economy?.shares?.isPublic) return null;
+      const sharePriceGrm = round2(Number(economy.shares.sharePriceGRM || 0));
+      const city = String(company.city || "San Francisco");
+      const marketCapGrm = round2(sharePriceGrm * Math.max(0, Number(economy.shares.totalShares || 0)));
       return {
         companyId: String(company.id),
         companyName: String(company.name),
-        city: String(company.city),
-        sharePriceGrm: round2(Number(economy.shares.sharePriceGRM || 0)),
+        city,
+        ticker: `IPO-${String(company.id).slice(0, 6).toUpperCase()}`,
+        currencySymbol: getLocalCurrencySymbolByCity(city),
+        sharePriceGrm,
+        sharePriceLocal: convertGRMToLocal(sharePriceGrm, city),
+        marketCapGrm,
+        marketCapLocal: convertGRMToLocal(marketCapGrm, city),
+        freeFloatShares: Math.max(0, Number(economy.shares.freeFloatShares || 0)),
         deltaPercent: round2(Number(economy.shares.lastPriceDeltaPercent || 0)),
+        ipoTypeId: economy.shares.ipoTypeId || null,
       };
     })
     .filter((item): item is {
       companyId: string;
       companyName: string;
       city: string;
+      ticker: string;
+      currencySymbol: string;
       sharePriceGrm: number;
+      sharePriceLocal: number;
+      marketCapGrm: number;
+      marketCapLocal: number;
+      freeFloatShares: number;
       deltaPercent: number;
+      ipoTypeId: string | null;
     } => Boolean(item))
     .sort((left: any, right: any) => right.sharePriceGrm - left.sharePriceGrm);
 }

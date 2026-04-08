@@ -33,7 +33,7 @@ export async function handleProfileMetaMessage(input: {
   sendWithExtrasKeyboard: (token: string, chatId: number, text: string) => Promise<void>;
   sendWithRatingKeyboard: (token: string, chatId: number, text: string) => Promise<void>;
   formatReputationMenu: (player: any) => string;
-  formatWeeklyQuestMenu: (player: any) => any;
+  formatWeeklyQuestMenu: (player: any) => Promise<any>;
   buildQuestInlineButtons: (canClaim: boolean) => any;
   claimWeeklyQuestReward: (userId: string) => Promise<any>;
   getUserWithGameState: (userId: string) => Promise<any>;
@@ -43,6 +43,9 @@ export async function handleProfileMetaMessage(input: {
   isRatingEntityToken: (value?: string) => boolean;
   normalizeRatingEntity: (value?: string) => any;
   formatRatingMenu: (entity: any, sortArg?: any) => Promise<any>;
+  listUserNotifications: (userId: string) => Promise<any>;
+  formatTelegramInbox: (snapshot: any) => string;
+  claimNotificationReward: (userId: string, notificationId: string) => Promise<any>;
 }) {
   const {
     command,
@@ -85,6 +88,9 @@ export async function handleProfileMetaMessage(input: {
     isRatingEntityToken,
     normalizeRatingEntity,
     formatRatingMenu,
+    listUserNotifications,
+    formatTelegramInbox,
+    claimNotificationReward,
   } = input;
 
   if (command === "/profile" || command === "/me" || command === "/status") {
@@ -204,7 +210,7 @@ export async function handleProfileMetaMessage(input: {
 
   if (command === "/quests" || command === "/quest") {
     const player = await resolveOrCreateTelegramPlayer(message.from);
-    const questView = formatWeeklyQuestMenu(player);
+    const questView = await formatWeeklyQuestMenu(player);
     await sendMessage(token, chatId, questView.text, {
       reply_markup: buildQuestInlineButtons(questView.canClaim),
     });
@@ -215,10 +221,19 @@ export async function handleProfileMetaMessage(input: {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     try {
       const claimed = await claimWeeklyQuestReward(player.id);
-      const questView = formatWeeklyQuestMenu(claimed.user);
+      const questView = await formatWeeklyQuestMenu(claimed.user);
+      const rewardParts = [
+        claimed.rewardMoney > 0 ? `+${getCurrencySymbol(claimed.user.city)}${claimed.rewardMoney}` : "",
+        claimed.rewardExp > 0 ? `+${claimed.rewardExp} XP` : "",
+        claimed.rewardReputation > 0 ? `+${claimed.rewardReputation} репутации` : "",
+        claimed.rewardGram > 0 ? `+${claimed.rewardGram} GRM` : "",
+        claimed.reward?.workEnergy > 0 ? `+${Math.round(Number(claimed.reward.workEnergy || 0))}% энергии работы` : "",
+        claimed.reward?.studyEnergy > 0 ? `+${Math.round(Number(claimed.reward.studyEnergy || 0))}% энергии учёбы` : "",
+        claimed.reward?.itemName ? `${claimed.reward.itemName} x${Math.max(1, Number(claimed.reward.itemQuantity || 1))}` : "",
+      ].filter(Boolean);
       const lines = [
         "🎁 Отлично, награда уже у тебя!",
-        `+${getCurrencySymbol(claimed.user.city)}${claimed.rewardMoney}, +${claimed.rewardExp} XP, +${claimed.rewardReputation} репутации`,
+        claimed.rewardLabel || rewardParts.join(", "),
         "",
         questView.text,
       ];
@@ -235,6 +250,50 @@ export async function handleProfileMetaMessage(input: {
     const player = await resolveOrCreateTelegramPlayer(message.from);
     try {
       await sendTutorialMenu(token, chatId, player.id);
+    } catch (error) {
+      await sendWithMainKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
+    }
+    return true;
+  }
+
+  if (command === "/inbox" || command === "/notifications") {
+    const player = await resolveOrCreateTelegramPlayer(message.from);
+    const snapshot = await listUserNotifications(player.id);
+    await sendWithMainKeyboard(token, chatId, formatTelegramInbox(snapshot));
+    return true;
+  }
+
+  if (command === "/inbox_claim") {
+    const player = await resolveOrCreateTelegramPlayer(message.from);
+    const inputValue = String(args[0] || "").trim();
+    if (!inputValue) {
+      await sendWithMainKeyboard(token, chatId, "Укажи номер уведомления из /inbox. Пример: /inbox_claim 1");
+      return true;
+    }
+    const snapshot = await listUserNotifications(player.id);
+    const index = Math.max(0, Number(inputValue) - 1);
+    const item = snapshot.items?.[index];
+    if (!item) {
+      await sendWithMainKeyboard(token, chatId, "Уведомление не найдено. Открой /inbox и проверь номер.");
+      return true;
+    }
+    try {
+      const claimed = await claimNotificationReward(player.id, item.id);
+      const rewardParts = [
+        Number(claimed.reward?.money || 0) > 0 ? `+$${Math.round(Number(claimed.reward.money || 0))}` : "",
+        Number(claimed.reward?.xp || 0) > 0 ? `+${Math.round(Number(claimed.reward.xp || 0))} XP` : "",
+        Number(claimed.reward?.reputation || 0) > 0 ? `+${Math.round(Number(claimed.reward.reputation || 0))} репутации` : "",
+        Number(claimed.reward?.gram || 0) > 0 ? `+${Number(claimed.reward.gram || 0)} GRM` : "",
+        Number(claimed.reward?.workEnergy || 0) > 0 ? `+${Math.round(Number(claimed.reward.workEnergy || 0))}% энергии работы` : "",
+        Number(claimed.reward?.studyEnergy || 0) > 0 ? `+${Math.round(Number(claimed.reward.studyEnergy || 0))}% энергии учёбы` : "",
+        claimed.reward?.itemName ? `${claimed.reward.itemName} x${Math.max(1, Number(claimed.reward.itemQuantity || 1))}` : "",
+      ].filter(Boolean);
+      const nextSnapshot = await listUserNotifications(player.id);
+      await sendWithMainKeyboard(
+        token,
+        chatId,
+        ["🎁 Награда получена", rewardParts.join(", "), "", formatTelegramInbox(nextSnapshot)].filter(Boolean).join("\n"),
+      );
     } catch (error) {
       await sendWithMainKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
     }

@@ -13,13 +13,15 @@ import {
   acceptRepairOrder,
   calculateRepairEstimate,
   cancelRepairOrderByPlayer,
+  contributeRepairOrder,
   createRepairOrder,
   listRepairOrdersForCity,
   listRepairOrdersForCompany,
   listRepairableGadgets,
-  startRepairOrder,
 } from "../repair-service";
 import { canManageCompanyAssets } from "../company-security";
+import { completeJob, performQuickWork, performStudy, buyShopItem } from "../game-engine";
+import { createNotification } from "../notifications/service";
 
 type PlayerRouteDeps = {
   storage: typeof storageType;
@@ -89,7 +91,7 @@ export function registerPlayerRoutes(app: Express, deps: PlayerRouteDeps) {
           role: membership.role,
         })
       : false;
-    const companyOrders = canManageRepairOrders && membership
+    const companyOrders = membership
       ? listRepairOrdersForCompany(membership.company.id)
       : [];
 
@@ -100,18 +102,30 @@ export function registerPlayerRoutes(app: Express, deps: PlayerRouteDeps) {
         estimate: calculateRepairEstimate(item),
       })),
       activeOrders: cityOrders.filter((order) => order.playerId === userId),
-      cityOrders: canManageRepairOrders
+      cityOrders: membership
         ? cityOrders.filter((order) => order.status === "queued")
         : [],
       companyOrders,
-      companyPanel: canManageRepairOrders && membership
+      companyPanel: membership
         ? {
             companyId: membership.company.id,
             companyName: membership.company.name,
             role: membership.role,
+            canManageRepairOrders,
           }
         : null,
     };
+  };
+
+  const buildFullUserPayload = async (userId: string) => {
+    return buildUserRoutePayload({
+      storage: deps.storage,
+      getUserWithGameState: deps.getUserWithGameState,
+      getTutorialState: deps.getTutorialState,
+      buildPlayerRegistrationState: deps.buildPlayerRegistrationState,
+      getCurrentInterviewQuestion: deps.getCurrentInterviewQuestion,
+      serializeSafeUser: deps.serializeSafeUser,
+    }, userId);
   };
 
   app.get("/api/users/:id", async (req, res) => {
@@ -212,6 +226,85 @@ export function registerPlayerRoutes(app: Express, deps: PlayerRouteDeps) {
     }
   });
 
+  app.post("/api/game-actions/quick-work", async (req, res) => {
+    try {
+      const userId = String(req.body?.userId ?? "").trim();
+      if (!userId) return res.status(400).json({ error: "userId is required" });
+      const result = await performQuickWork(userId);
+      const payload = await buildFullUserPayload(userId);
+      res.json({
+        snapshot: payload,
+        notices: result.notices,
+        moneyGained: result.moneyGained,
+        expGained: result.expGained,
+        droppedPart: result.droppedPart,
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to complete work" });
+    }
+  });
+
+  app.post("/api/game-actions/quick-study", async (req, res) => {
+    try {
+      const userId = String(req.body?.userId ?? "").trim();
+      if (!userId) return res.status(400).json({ error: "userId is required" });
+      const result = await performStudy(userId);
+      const payload = await buildFullUserPayload(userId);
+      res.json({
+        snapshot: payload,
+        notices: result.notices,
+        boostedSkill: result.boostedSkill,
+        skillIncrease: result.skillIncrease,
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to complete study" });
+    }
+  });
+
+  app.post("/api/game-actions/job-complete", async (req, res) => {
+    try {
+      const userId = String(req.body?.userId ?? "").trim();
+      const jobRef = String(req.body?.jobRef ?? "").trim();
+      if (!userId || !jobRef) return res.status(400).json({ error: "userId and jobRef are required" });
+      const result = await completeJob(userId, jobRef);
+      const payload = await buildFullUserPayload(userId);
+      res.json({
+        snapshot: payload,
+        result: {
+          failed: Boolean(result.failed),
+          job: result.job,
+          finalMoney: result.finalMoney ?? 0,
+          finalExp: result.finalExp ?? 0,
+          penaltyMoney: result.penaltyMoney ?? 0,
+          droppedPart: result.droppedPart ?? null,
+          energyCost: result.energyCost ?? 0,
+          reputationGain: result.reputationGain ?? 0,
+          failureChance: result.failureChance ?? 0,
+        },
+        notices: result.notices,
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to complete job" });
+    }
+  });
+
+  app.post("/api/game-actions/shop-buy", async (req, res) => {
+    try {
+      const userId = String(req.body?.userId ?? "").trim();
+      const itemRef = String(req.body?.itemRef ?? "").trim();
+      if (!userId || !itemRef) return res.status(400).json({ error: "userId and itemRef are required" });
+      const result = await buyShopItem(userId, itemRef);
+      const payload = await buildFullUserPayload(userId);
+      res.json({
+        snapshot: payload,
+        item: result.item,
+        notices: result.notices,
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to buy shop item" });
+    }
+  });
+
   app.get("/api/housing/:userId", async (req, res) => {
     try {
       const snapshot = await buildHousingSnapshot(req.params.userId);
@@ -229,7 +322,7 @@ export function registerPlayerRoutes(app: Express, deps: PlayerRouteDeps) {
       await purchaseHousing(req.params.userId, houseId);
       const snapshot = await buildHousingSnapshot(req.params.userId);
       if (!snapshot) return res.status(404).json({ error: "User not found" });
-      res.json(snapshot);
+      res.json({ ...snapshot, notices: [] });
     } catch (error: any) {
       res.status(400).json({ error: error?.message || "Failed to purchase housing" });
     }
@@ -269,7 +362,7 @@ export function registerPlayerRoutes(app: Express, deps: PlayerRouteDeps) {
         requestedPrice: requestedPrice == null ? null : Number(requestedPrice),
       });
       const snapshot = await buildRepairSnapshot(req.params.userId);
-      res.json({ order, snapshot });
+      res.json({ order, snapshot, notices: Array.isArray((order as any).notices) ? (order as any).notices : [] });
     } catch (error: any) {
       res.status(400).json({ error: error?.message || "Failed to create repair order" });
     }
@@ -290,28 +383,31 @@ export function registerPlayerRoutes(app: Express, deps: PlayerRouteDeps) {
     try {
       const membership = await deps.resolvePlayerCompanyMembership(req.params.userId);
       if (!membership) return res.status(400).json({ error: "Company membership required" });
-      const allowed = canManageCompanyAssets({
-        actorUserId: req.params.userId,
-        companyOwnerId: membership.company.ownerId,
-        role: membership.role,
-      });
-      if (!allowed) {
-        return res.status(403).json({ error: "Только CEO и его заместитель могут принимать ремонтные заказы компании." });
-      }
       const order = await acceptRepairOrder({
         orderId: req.params.orderId,
         company: membership.company,
         acceptedBy: req.params.userId,
       });
-      await startRepairOrder({
-        orderId: order.id,
-        companyId: membership.company.id,
-        startedBy: req.params.userId,
-      });
       const snapshot = await buildRepairSnapshot(req.params.userId);
       res.json({ order, snapshot });
     } catch (error: any) {
       res.status(400).json({ error: error?.message || "Failed to accept repair order" });
+    }
+  });
+
+  app.post("/api/repair-service/:userId/orders/:orderId/contribute", async (req, res) => {
+    try {
+      const membership = await deps.resolvePlayerCompanyMembership(req.params.userId);
+      if (!membership) return res.status(400).json({ error: "Company membership required" });
+      const result = await contributeRepairOrder({
+        orderId: req.params.orderId,
+        companyId: membership.company.id,
+        userId: req.params.userId,
+      });
+      const snapshot = await buildRepairSnapshot(req.params.userId);
+      res.json({ ...result, snapshot });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to contribute to repair" });
     }
   });
 
@@ -544,10 +640,20 @@ export function registerPlayerRoutes(app: Express, deps: PlayerRouteDeps) {
       }
 
       const updated = await deps.setPlayerProfession(user.id, professionId);
+      const profile = deps.getProfessionById(professionId) ?? null;
+      createNotification(user.id, {
+        type: "PROFESSION_SELECTED",
+        title: "🎓 Профессия выбрана",
+        message: profile ? `Ты выбрал профессию ${profile.emoji} ${profile.name}.` : "Профессия успешно выбрана.",
+        dataJson: {
+          professionId,
+          professionName: profile?.name ?? null,
+        },
+      });
       res.json({
         ok: true,
         selected: professionId,
-        profile: deps.getProfessionById(professionId) ?? null,
+        profile,
         user: deps.serializeSafeUser(updated),
       });
     } catch (error: any) {

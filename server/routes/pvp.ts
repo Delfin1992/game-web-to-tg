@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import type { storage as storageType } from "../storage";
+import { createNotification } from "../notifications/service";
 
 type PvpRouteDeps = {
   storage: typeof storageType;
@@ -35,6 +36,7 @@ type PvpRouteDeps = {
   transferMarketPartToPlayerInventory: (userId: string, part: any) => Promise<any>;
   applyGadgetWear: (userId: string, input: any) => Promise<any>;
   getCurrencySymbol: (city: string) => string;
+  trackDailyQuestEvent: (userId: string, event: { type: "play_pvp" | "win_pvp"; value?: number }) => Promise<{ notices: string[] }>;
 };
 
 export function registerPvpRoutes(app: Express, deps: PvpRouteDeps) {
@@ -359,6 +361,25 @@ export function registerPvpRoutes(app: Express, deps: PvpRouteDeps) {
         severityMultiplier: result.winnerUserId === null ? 1 : isWinner ? 1 : 1.08,
         negativeEventChanceBonus: 0.03,
       });
+      const playQuest = await deps.trackDailyQuestEvent(userId, { type: "play_pvp", value: 1 });
+      const winQuest = isWinner ? await deps.trackDailyQuestEvent(userId, { type: "win_pvp", value: 1 }) : { notices: [] };
+      createNotification(userId, {
+        type: "PVP_RESULT",
+        title: isDraw ? "⚔️ PvP-дуэль завершилась вничью" : isWinner ? "🏆 PvP-дуэль выиграна" : "⚔️ PvP-дуэль завершена",
+        message: isDraw
+          ? `Бой с ${opponentName} закончился ничьей.`
+          : isWinner
+            ? `Ты победил ${opponentName}. Рейтинг: ${myBefore} → ${myAfter}.`
+            : `Ты уступил ${opponentName}. Рейтинг: ${myBefore} → ${myAfter}.`,
+        dataJson: {
+          opponentName,
+          ratingBefore: myBefore,
+          ratingAfter: myAfter,
+          isWinner,
+          isDraw,
+          droppedPartId: droppedPart?.id ?? null,
+        },
+      });
 
       res.json({
         ok: true,
@@ -380,6 +401,7 @@ export function registerPvpRoutes(app: Express, deps: PvpRouteDeps) {
           energyCost: perspectiveA ? Number(result.energyCostA || 0) : Number(result.energyCostB || 0),
           droppedPart,
           gadgetWear: gadgetWear.report,
+          notices: [...playQuest.notices, ...winQuest.notices],
         },
       });
     } catch (error: any) {
