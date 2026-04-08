@@ -8,6 +8,15 @@ import {
   getUserWithGameState,
   type GameInventoryItem,
 } from "./game-engine";
+import { trackDailyQuestEvent } from "./daily-quests/service";
+import { createNotification } from "./notifications/service";
+import {
+  calculateCompanySkillContribution,
+  getTaskContributions,
+  markCompanyRepairCompleted,
+  recordCompanyTaskContribution,
+  type CompanyContributionSkillType,
+} from "./company-coop";
 
 export type GadgetRepairStatus = "none" | "queued" | "accepted" | "in_progress" | "completed";
 export type RepairOrderStatus = "queued" | "accepted" | "in_progress" | "completed" | "failed" | "cancelled";
@@ -16,6 +25,24 @@ export type RepairPartRequirement = {
   type: PartType;
   label: string;
   quantity: number;
+};
+
+export type RepairStage = {
+  index: number;
+  title: string;
+  skillOptions: CompanyContributionSkillType[];
+  skillType: CompanyContributionSkillType;
+  target: number;
+  progress: number;
+  completedAt?: number | null;
+  contributions: Array<{
+    id: string;
+    userId: string;
+    username: string;
+    value: number;
+    skillType: CompanyContributionSkillType;
+    createdAt: number;
+  }>;
 };
 
 export type RepairOrder = {
@@ -43,6 +70,8 @@ export type RepairOrder = {
   failureReason?: string;
   rewardGranted?: boolean;
   paymentProcessed?: boolean;
+  currentStageIndex?: number;
+  stages?: RepairStage[];
   createdAt: number;
   updatedAt: number;
 };
@@ -70,6 +99,16 @@ const PART_LABELS: Record<PartType, string> = {
   strap: "ремешок",
   power: "блок питания",
 };
+
+const REPAIR_STAGE_DEFINITIONS: Array<{
+  title: string;
+  skillOptions: CompanyContributionSkillType[];
+  targetShare: number;
+}> = [
+  { title: "Диагностика", skillOptions: ["analytics", "testing"], targetShare: 0.28 },
+  { title: "Исправление", skillOptions: ["coding"], targetShare: 0.46 },
+  { title: "Проверка", skillOptions: ["testing"], targetShare: 0.26 },
+];
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -131,7 +170,9 @@ function buildRepairRequiredParts(gadget: Pick<GameInventoryItem, "id" | "name" 
   const damageRatio = 1 - (Math.max(0, Number(gadget.condition || 0)) / Math.max(1, Number(gadget.maxCondition || 100)));
   const deviceHint = getGadgetDeviceHint(gadget);
   const required = new Map<PartType, number>();
-  const push = (type: PartType, qty = 1) => required.set(type, Math.max(qty, required.get(type) ?? 0));
+  const push = (type: PartType, qty = 1) => {
+    if (qty > 0) required.set(type, Math.max(qty, required.get(type) ?? 0));
+  };
 
   if (deviceHint === "asic") {
     push("asic_chip", 1);
@@ -169,6 +210,47 @@ function buildRepairRequiredParts(gadget: Pick<GameInventoryItem, "id" | "name" 
     .filter(([, quantity]) => quantity > 0)
     .slice(0, 4)
     .map(([type, quantity]) => ({ type, quantity, label: PART_LABELS[type] }));
+}
+
+function chooseBestRepairSkill(
+  skillOptions: CompanyContributionSkillType[],
+  skills: Partial<Record<CompanyContributionSkillType, number>>,
+) {
+  return [...skillOptions].sort((left, right) => Number(skills[right] || 0) - Number(skills[left] || 0))[0] ?? skillOptions[0];
+}
+
+function buildRepairStages(
+  gadget: Pick<GameInventoryItem, "stats" | "condition" | "maxCondition" | "isBroken">,
+  repairTimeMs: number,
+): RepairStage[] {
+  const normalized = normalizeGadget(gadget as GameInventoryItem);
+  const damageRatio = 1 - normalized.condition / Math.max(1, normalized.maxCondition);
+  const statPower = Object.values(normalized.stats || {}).reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0);
+  const totalTarget = Math.max(
+    60,
+    Math.round(statPower * 3.2 + damageRatio * 220 + repairTimeMs / 60000 * 4 + (normalized.isBroken ? 90 : 0)),
+  );
+  return REPAIR_STAGE_DEFINITIONS.map((stage, index) => ({
+    index,
+    title: stage.title,
+    skillOptions: [...stage.skillOptions],
+    skillType: stage.skillOptions[0],
+    target: Math.max(20, Math.round(totalTarget * stage.targetShare)),
+    progress: 0,
+    completedAt: null,
+    contributions: [],
+  }));
+}
+
+function getCurrentRepairStage(order: RepairOrder | null | undefined) {
+  if (!order || !Array.isArray(order.stages) || !order.stages.length) return null;
+  const index = Math.max(0, Number(order.currentStageIndex || 0));
+  return order.stages[index] ?? null;
+}
+
+function isRepairStageComplete(stage: RepairStage | null | undefined) {
+  if (!stage) return false;
+  return Number(stage.progress || 0) >= Number(stage.target || 0);
 }
 
 export function calculateRepairEstimate(gadget: Pick<GameInventoryItem, "id" | "name" | "stats" | "rarity" | "condition" | "maxCondition" | "isBroken">) {
@@ -259,9 +341,7 @@ export async function createRepairOrder(input: {
     throw new Error(`Для отправки в сервис нужно минимум ${getCurrencySymbol(user.city)}${estimate.maxPrice}`);
   }
 
-  const requestedPrice = input.requestedPrice == null
-    ? estimate.finalPrice
-    : Math.round(Number(input.requestedPrice));
+  const requestedPrice = input.requestedPrice == null ? estimate.finalPrice : Math.round(Number(input.requestedPrice));
   if (!Number.isFinite(requestedPrice)) {
     throw new Error("Укажи корректную цену ремонта");
   }
@@ -291,6 +371,8 @@ export async function createRepairOrder(input: {
     completedAt: null,
     companyChatId: null,
     playerChatId: input.playerChatId ?? null,
+    currentStageIndex: 0,
+    stages: buildRepairStages(normalized, estimate.repairTimeMs),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -302,8 +384,9 @@ export async function createRepairOrder(input: {
     repairLocked: true,
     isEquipped: false,
   });
+  const questProgress = await trackDailyQuestEvent(user.id, { type: "repair_gadget", value: 1 });
   console.log(`[repair] created order=${order.id} player=${user.id} gadget=${normalized.id}`);
-  return order;
+  return { ...order, notices: questProgress.notices };
 }
 
 export async function cancelRepairOrderByPlayer(userId: string, orderId: string) {
@@ -351,7 +434,7 @@ export async function startRepairOrder(input: {
   if (order.status !== "accepted") throw new Error("Заказ ещё не принят");
   if (order.assignedCompanyId !== input.companyId) throw new Error("Заказ закреплён за другой компанией");
   order.status = "in_progress";
-  order.dueAt = Date.now() + order.repairTimeMs;
+  order.dueAt = null;
   order.updatedAt = Date.now();
   await updateGadgetRepairFields(order.playerId, order.gadgetId, {
     repairStatus: "in_progress",
@@ -359,6 +442,79 @@ export async function startRepairOrder(input: {
   });
   console.log(`[repair] started order=${order.id} company=${input.companyId} by=${input.startedBy}`);
   return order;
+}
+
+export async function contributeRepairOrder(input: {
+  orderId: string;
+  companyId: string;
+  userId: string;
+}) {
+  const order = getRepairOrder(input.orderId);
+  if (!order) throw new Error("Заказ не найден");
+  if (order.assignedCompanyId !== input.companyId) throw new Error("Заказ закреплён за другой компанией");
+  if (order.status === "completed") throw new Error("Заказ уже завершён");
+  if (order.status === "failed" || order.status === "cancelled") throw new Error("Заказ больше недоступен");
+  if (order.status === "accepted") {
+    await startRepairOrder({ orderId: order.id, companyId: input.companyId, startedBy: input.userId });
+  }
+  if (order.status !== "in_progress") throw new Error("Ремонт ещё не запущен");
+
+  const snapshot = await getUserWithGameState(input.userId);
+  if (!snapshot) throw new Error("Игрок не найден");
+
+  const currentStage = getCurrentRepairStage(order);
+  if (!currentStage) throw new Error("У ремонта не найден текущий этап");
+  const chosenSkill = chooseBestRepairSkill(currentStage.skillOptions, (snapshot.game as any)?.skills ?? {});
+  const calculation = await calculateCompanySkillContribution({
+    companyId: input.companyId,
+    userId: input.userId,
+    skillType: chosenSkill,
+  });
+
+  const contribution = recordCompanyTaskContribution({
+    companyId: input.companyId,
+    userId: calculation.userId,
+    username: calculation.username,
+    taskId: order.id,
+    source: "repair",
+    skillType: chosenSkill,
+    value: calculation.value,
+    professionBonus: calculation.professionBonus,
+    departmentEfficiency: calculation.departmentEfficiency,
+    randomMultiplier: calculation.randomMultiplier,
+    stageIndex: currentStage.index,
+  });
+
+  currentStage.skillType = chosenSkill;
+  currentStage.progress = Number((currentStage.progress + contribution.value).toFixed(2));
+  currentStage.contributions.push({
+    id: contribution.id,
+    userId: contribution.userId,
+    username: contribution.username,
+    value: contribution.value,
+    skillType: contribution.skillType,
+    createdAt: contribution.createdAt,
+  });
+
+  let completed = false;
+  if (isRepairStageComplete(currentStage)) {
+    currentStage.progress = Math.max(currentStage.progress, currentStage.target);
+    currentStage.completedAt = Date.now();
+    order.currentStageIndex = Math.max(0, Number(order.currentStageIndex || 0)) + 1;
+    if ((order.currentStageIndex ?? 0) >= (order.stages?.length ?? 0)) {
+      await completeRepairOrder(order.id);
+      completed = true;
+    }
+  }
+  order.updatedAt = Date.now();
+
+  return {
+    order: getRepairOrder(order.id),
+    stage: getCurrentRepairStage(order),
+    contribution,
+    contributions: getTaskContributions(order.id),
+    completed,
+  };
 }
 
 export async function completeRepairOrder(orderId: string) {
@@ -382,6 +538,19 @@ export async function completeRepairOrder(orderId: string) {
     order.paymentProcessed = true;
   }
 
+  if (order.assignedCompanyId && !order.rewardGranted) {
+    const company = await storage.getCompany(order.assignedCompanyId);
+    if (company) {
+      const companyRewardGrm = Math.max(40, Math.round(Number(order.finalPrice || 0) / 8));
+      const complexityXp = Math.max(1, Math.ceil(order.requiredParts.length + (order.maxPrice - order.minPrice) / 800));
+      await storage.updateCompany(company.id, {
+        balance: Number(company.balance || 0) + companyRewardGrm,
+        ork: Number(company.ork || 0) + complexityXp,
+      });
+      order.rewardGranted = true;
+    }
+  }
+
   await updateGadgetRepairFields(order.playerId, order.gadgetId, {
     condition: normalized.maxCondition,
     maxCondition: normalized.maxCondition,
@@ -396,6 +565,43 @@ export async function completeRepairOrder(orderId: string) {
   order.status = "completed";
   order.completedAt = Date.now();
   order.updatedAt = Date.now();
+  createNotification(order.playerId, {
+    type: "REPAIR_COMPLETED",
+    title: "🔧 Ремонт завершён",
+    message: `Гаджет «${order.gadgetName}» отремонтирован. Списано: ${getCurrencySymbol(order.city)}${charged}.`,
+    dataJson: {
+      orderId: order.id,
+      gadgetId: order.gadgetId,
+      gadgetName: order.gadgetName,
+      charged,
+      companyId: order.assignedCompanyId,
+    },
+  });
+
+  if (order.assignedCompanyId) {
+    const participants = new Map<string, string>();
+    for (const contribution of getTaskContributions(order.id)) {
+      participants.set(contribution.userId, contribution.username);
+    }
+    for (const [userId, username] of participants.entries()) {
+      markCompanyRepairCompleted({
+        companyId: order.assignedCompanyId,
+        userId,
+        username,
+      });
+      createNotification(userId, {
+        type: "REPAIR_REWARD_AVAILABLE",
+        title: "🛠 Вклад в ремонт засчитан",
+        message: `Заказ «${order.gadgetName}» завершён. Твой вклад добавлен в статистику компании.`,
+        dataJson: {
+          orderId: order.id,
+          gadgetName: order.gadgetName,
+          companyId: order.assignedCompanyId,
+        },
+      });
+    }
+  }
+
   console.log(`[repair] completed order=${order.id} charged=${charged}`);
   return { order, charged };
 }
@@ -455,11 +661,6 @@ export async function sweepRepairOrders(nowMs: number = Date.now()) {
       await failRepairOrder(order.id, "Компания не начала ремонт вовремя");
       events.push({ type: "failed", order: { ...order }, reason: "Компания не начала ремонт вовремя" });
       continue;
-    }
-
-    if (order.status === "in_progress" && order.dueAt && nowMs >= order.dueAt) {
-      const completed = await completeRepairOrder(order.id);
-      events.push({ type: "completed", order: completed.order, charged: completed.charged });
     }
   }
   return events;

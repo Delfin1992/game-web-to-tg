@@ -116,6 +116,7 @@ export interface IStorage {
   getCompanyMembers(companyId: string): Promise<CompanyMember[]>;
   getMemberByUserId(companyId: string, userId: string): Promise<CompanyMember | undefined>;
   addCompanyMember(member: InsertCompanyMember): Promise<CompanyMember>;
+  updateCompanyMemberRole(companyId: string, userId: string, role: string): Promise<CompanyMember>;
   removeCompanyMember(companyId: string, userId: string): Promise<void>;
 
   createJoinRequest(request: InsertJoinRequest): Promise<JoinRequest>;
@@ -361,6 +362,15 @@ export class DrizzleStorage implements IStorage {
       ...insertMember,
       createdAt: Number(insertMember.createdAt || Math.floor(Date.now() / 1000)),
     }).returning();
+    return result[0];
+  }
+
+  async updateCompanyMemberRole(companyId: string, userId: string, role: string): Promise<CompanyMember> {
+    const result = await db.update(companyMembers)
+      .set({ role: String(role || "member") })
+      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, userId)))
+      .returning();
+    if (!result[0]) throw new Error("Company member not found");
     return result[0];
   }
 
@@ -793,6 +803,19 @@ export class MemStorage implements IStorage {
     list.push(created);
     this.members.set(member.companyId, list);
     return created;
+  }
+
+  async updateCompanyMemberRole(companyId: string, userId: string, role: string) {
+    const list = this.members.get(companyId) ?? [];
+    const index = list.findIndex((item) => item.userId === userId);
+    if (index < 0) throw new Error("Company member not found");
+    const updated: CompanyMember = {
+      ...list[index],
+      role: String(role || "member"),
+    };
+    list[index] = updated;
+    this.members.set(companyId, list);
+    return updated;
   }
 
   async removeCompanyMember(companyId: string, userId: string) {

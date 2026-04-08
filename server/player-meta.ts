@@ -11,6 +11,7 @@ import {
   isProfessionId,
   type ProfessionId,
 } from "../shared/professions";
+import { trackDailyQuestEvent } from "./daily-quests/service";
 
 type PlayerHousingState = {
   ownedByCity?: Partial<Record<HousingCityId, string[]>>;
@@ -320,7 +321,7 @@ export async function purchaseHousing(userId: string, houseId: string) {
   }
 
   owned.add(house.id);
-  return storage.updateUser(user.id, {
+  const updatedUser = await storage.updateUser(user.id, {
     balance: user.balance - house.priceLocal,
     tutorialState: serializeMetaContainer({
       ...container,
@@ -337,6 +338,8 @@ export async function purchaseHousing(userId: string, houseId: string) {
       },
     }),
   });
+  await trackDailyQuestEvent(user.id, { type: "buy_housing", value: 1 });
+  return updatedUser;
 }
 
 export async function setActiveHousing(userId: string, houseId: string) {

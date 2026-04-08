@@ -96,7 +96,13 @@ import { assertFeatureEnabled, getGameSettings, updateGameSettings } from "./gam
 import { appendEconomyAuditEvent } from "./economy-audit";
 import { canManageCompanyAssets, COMPANY_ASSET_MANAGER_ERROR } from "./company-security";
 import type { GameSettingsPatch } from "../shared/game-settings";
-import { BALANCE_CONFIG, getCompanyCreateCostLocal, getMarketFeeRate, resolveCityId } from "../shared/balance-config";
+import {
+  BALANCE_CONFIG,
+  getCompanyCreateCostLocal,
+  getLocalPerGrm,
+  getMarketFeeRate,
+  resolveCityId,
+} from "../shared/balance-config";
 import {
   WEEKLY_HACKATHON_CONFIG,
   HACKATHON_ALLOWED_PART_TYPES,
@@ -176,6 +182,8 @@ import {
 import { startPvpTestBotLoop } from "./pvp-test-bot";
 import {
   buyStockAsset,
+  declareCompanyDividends,
+  getCompanyDividendSnapshot,
   getStockMarketSnapshot,
   sellStockAsset,
 } from "./stock-exchange";
@@ -202,8 +210,12 @@ import { registerRegistrationRoutes } from "./routes/registration";
 import { registerPlayerRoutes } from "./routes/player";
 import { registerPvpRoutes } from "./routes/pvp";
 import { registerHackathonRoutes } from "./routes/hackathon";
+import { registerDailyQuestRoutes } from "./routes/daily-quests";
+import { registerNotificationRoutes } from "./routes/notifications";
+import { registerHomeDashboardRoutes } from "./routes/home-dashboard";
 import {
   buildCompanyIpoEligibility,
+  buildCompanyIpoOptions,
   buildCompanyStockPreview,
   launchCompanyIpo,
   recordCompanyBlueprintCompleted,
@@ -213,6 +225,23 @@ import {
   setCompanyEconomyRuntimeState,
   startCompanyStockDailyScheduler,
 } from "./services/company-stock-service";
+import { trackDailyQuestEvent } from "./daily-quests/service";
+import {
+  calculateCompanySkillContribution,
+  ensureCompanyMemberStatsSeeded,
+  getCompanyMemberContributionStats,
+  getTaskContributions,
+  markCompanyContractCompleted,
+  markCompanyRepairCompleted,
+  recordCompanyMoneyContribution,
+  recordCompanyPartsContribution,
+  recordCompanyTaskContribution,
+  type CompanyContributionSkillType,
+} from "./company-coop";
+import {
+  createNotification,
+  createNotifications,
+} from "./notifications/service";
 
 type CompanyBlueprintState = {
   id?: string;
@@ -427,7 +456,24 @@ type MarketListing = {
 const AUCTION_POST_BID_EXTENSION_MINUTES = 15;
 
 type CityContractStatus = "open" | "in_progress" | "completed";
-type CityContractKind = "gadget_delivery" | "parts_supply" | "skill_research";
+type CityContractKind = "gadget_delivery" | "parts_supply" | "skill_research" | "staged_skill";
+
+type CityContractStage = {
+  index: number;
+  title: string;
+  skillType: CompanyContributionSkillType;
+  target: number;
+  progress: number;
+  contributions: Array<{
+    id: string;
+    userId: string;
+    username: string;
+    value: number;
+    skillType: CompanyContributionSkillType;
+    createdAt: number;
+  }>;
+  completedAt?: number;
+};
 
 type CityContract = {
   id: string;
@@ -447,6 +493,13 @@ type CityContract = {
   status: CityContractStatus;
   assignedCompanyId?: string;
   completedAt?: number;
+  currentStageIndex?: number;
+  stages?: CityContractStage[];
+  participantRewardMoney?: number;
+  participantRewardXp?: number;
+  participantBaseMoney?: number;
+  participantBaseXp?: number;
+  participantRewardsGranted?: boolean;
 };
 
 type CompanyMiningState = {
@@ -1758,26 +1811,64 @@ function generateReferralCode(username: string) {
   return `${normalized}-${random}`;
 }
 
-const GADGET_CONTRACT_TEMPLATES = [
-  { title: "Городская цифровизация", customer: "Мэрия", category: "tablets", qty: 2, quality: 1.2, reward: 2200, ork: 1, ttlHours: 48 },
-  { title: "Оснащение колл-центра", customer: "Телеком Корп", category: "smartphones", qty: 3, quality: 1.1, reward: 2600, ork: 1, ttlHours: 48 },
-  { title: "Поставка для аналитиков", customer: "Data Group", category: "laptops", qty: 2, quality: 1.4, reward: 3600, ork: 2, ttlHours: 72 },
-  { title: "Носимые устройства для фитнеса", customer: "HealthLab", category: "smartwatches", qty: 3, quality: 1.25, reward: 2400, ork: 1, ttlHours: 48 },
-  { title: "Майнинговый пилот", customer: "EnergyTech", category: "asic_miners", qty: 1, quality: 1.6, reward: 4200, ork: 2, ttlHours: 72 },
-] as const;
-
-const PARTS_CONTRACT_TEMPLATES = [
-  { title: "Поставка комплектующих", customer: "Assembly Hub", partType: "processor", qty: 4, reward: 1700, ork: 1, ttlHours: 48 },
-  { title: "Сервисный запас", customer: "Repair Center", partType: "battery", qty: 5, reward: 1500, ork: 1, ttlHours: 48 },
-  { title: "Склад дисплеев", customer: "Retail Partner", partType: "display", qty: 3, reward: 1600, ork: 1, ttlHours: 48 },
-  { title: "Корпуса для сборки", customer: "Factory Line", partType: "case", qty: 6, reward: 1400, ork: 1, ttlHours: 48 },
-] as const;
-
-const SKILL_CONTRACT_TEMPLATES = [
-  { title: "Аудит UX-концепции", customer: "Design Board", skill: "design" as const, points: 40, reward: 1800, ork: 1, ttlHours: 48 },
-  { title: "Техревью архитектуры", customer: "Tech Council", skill: "coding" as const, points: 45, reward: 1900, ork: 1, ttlHours: 48 },
-  { title: "Проверка качества", customer: "QA Bureau", skill: "testing" as const, points: 35, reward: 1700, ork: 1, ttlHours: 48 },
-  { title: "Аналитический отчёт", customer: "BI Office", skill: "analytics" as const, points: 35, reward: 1750, ork: 1, ttlHours: 48 },
+const STAGED_CONTRACT_TEMPLATES = [
+  {
+    title: "Диагностика платформы",
+    customer: "Support Grid",
+    stages: [
+      { title: "Диагностика", skillType: "testing" as const, target: 180 },
+      { title: "Аналитика", skillType: "analytics" as const, target: 160 },
+    ],
+    reward: 1900,
+    ork: 1,
+    ttlHours: 48,
+  },
+  {
+    title: "Разработка сервиса",
+    customer: "Urban Cloud",
+    stages: [
+      { title: "Проектирование", skillType: "design" as const, target: 150 },
+      { title: "Разработка", skillType: "coding" as const, target: 220 },
+    ],
+    reward: 2400,
+    ork: 1,
+    ttlHours: 48,
+  },
+  {
+    title: "Аудит качества",
+    customer: "QA Bureau",
+    stages: [
+      { title: "Сбор данных", skillType: "analytics" as const, target: 150 },
+      { title: "Проверка", skillType: "testing" as const, target: 190 },
+    ],
+    reward: 2100,
+    ork: 1,
+    ttlHours: 48,
+  },
+  {
+    title: "Создание прототипа",
+    customer: "Product Lab",
+    stages: [
+      { title: "Концепт", skillType: "design" as const, target: 170 },
+      { title: "Прототип", skillType: "coding" as const, target: 210 },
+      { title: "Тестирование", skillType: "testing" as const, target: 160 },
+    ],
+    reward: 2900,
+    ork: 2,
+    ttlHours: 72,
+  },
+  {
+    title: "Оптимизация системы",
+    customer: "ScaleOps",
+    stages: [
+      { title: "Анализ", skillType: "analytics" as const, target: 140 },
+      { title: "Оптимизация", skillType: "coding" as const, target: 210 },
+      { title: "Проверка стабильности", skillType: "testing" as const, target: 170 },
+    ],
+    reward: 3000,
+    ork: 2,
+    ttlHours: 72,
+  },
 ] as const;
 
 function pickRandomDistinct<T>(items: readonly T[], count: number) {
@@ -1785,57 +1876,70 @@ function pickRandomDistinct<T>(items: readonly T[], count: number) {
   return shuffled.slice(0, Math.max(0, Math.min(count, shuffled.length)));
 }
 
+function cloneContractStages(template: typeof STAGED_CONTRACT_TEMPLATES[number], rewardMultiplier: number): CityContractStage[] {
+  return template.stages.map((stage, index) => ({
+    index,
+    title: stage.title,
+    skillType: stage.skillType,
+    target: Math.max(60, Math.round(stage.target * rewardMultiplier)),
+    progress: 0,
+    contributions: [],
+  }));
+}
+
+function getCurrentContractStage(contract: CityContract) {
+  const currentStageIndex = Math.max(0, Number(contract.currentStageIndex || 0));
+  return contract.stages?.[currentStageIndex] ?? null;
+}
+
+function isContractStageComplete(stage: CityContractStage | null | undefined) {
+  if (!stage) return false;
+  return Number(stage.progress || 0) >= Number(stage.target || 0);
+}
+
+function aggregateContractContributionByUser(contract: CityContract) {
+  const totals = new Map<string, { userId: string; username: string; value: number }>();
+  for (const stage of contract.stages ?? []) {
+    for (const row of stage.contributions ?? []) {
+      const current = totals.get(row.userId) ?? {
+        userId: row.userId,
+        username: row.username,
+        value: 0,
+      };
+      current.value = Number((current.value + Number(row.value || 0)).toFixed(2));
+      current.username = row.username || current.username;
+      totals.set(row.userId, current);
+    }
+  }
+  return Array.from(totals.values()).sort((a, b) => b.value - a.value);
+}
+
 function buildContractsForCity(city: string): CityContract[] {
   const now = Date.now();
   const cityId = resolveCityId(city);
   const rewardMultiplier = BALANCE_CONFIG.cityContracts.rewardMultiplierByCityId[cityId] ?? 1;
   const rewardByCity = (value: number) => Math.max(1, Math.round(value * rewardMultiplier));
-  const gadgetContracts: CityContract[] = pickRandomDistinct(GADGET_CONTRACT_TEMPLATES, 2).map((template) => ({
+  const stagedContracts: CityContract[] = pickRandomDistinct(STAGED_CONTRACT_TEMPLATES, 4).map((template) => ({
     id: randomUUID(),
     city,
     title: template.title,
     customer: template.customer,
-    kind: "gadget_delivery",
-    category: template.category,
-    requiredQuantity: template.qty,
-    minQuality: template.quality,
-    rewardMoney: rewardByCity(template.reward),
-    rewardOrk: template.ork,
-    expiresAt: now + template.ttlHours * 60 * 60 * 1000,
-    status: "open",
-  }));
-  const partContracts: CityContract[] = pickRandomDistinct(PARTS_CONTRACT_TEMPLATES, 2).map((template) => ({
-    id: randomUUID(),
-    city,
-    title: template.title,
-    customer: template.customer,
-    kind: "parts_supply",
-    category: "parts",
-    requiredQuantity: template.qty,
-    minQuality: 1,
-    requiredPartType: template.partType,
-    rewardMoney: rewardByCity(template.reward),
-    rewardOrk: template.ork,
-    expiresAt: now + template.ttlHours * 60 * 60 * 1000,
-    status: "open",
-  }));
-  const skillContracts: CityContract[] = pickRandomDistinct(SKILL_CONTRACT_TEMPLATES, 2).map((template) => ({
-    id: randomUUID(),
-    city,
-    title: template.title,
-    customer: template.customer,
-    kind: "skill_research",
+    kind: "staged_skill",
     category: "skills",
     requiredQuantity: 1,
     minQuality: 1,
-    requiredSkill: template.skill,
-    requiredSkillPoints: template.points,
     rewardMoney: rewardByCity(template.reward),
     rewardOrk: template.ork,
     expiresAt: now + template.ttlHours * 60 * 60 * 1000,
     status: "open",
+    currentStageIndex: 0,
+    stages: cloneContractStages(template, rewardMultiplier),
+    participantRewardMoney: Math.max(40, Math.round(rewardByCity(template.reward) * 0.18)),
+    participantRewardXp: Math.max(20, Math.round(template.reward / 55)),
+    participantBaseMoney: 12,
+    participantBaseXp: 6,
   }));
-  return [...gadgetContracts, ...partContracts, ...skillContracts];
+  return stagedContracts;
 }
 function getContractsByCity(city: string): CityContract[] {
   const existing = cityContracts.get(city) ?? [];
@@ -1851,6 +1955,71 @@ function getContractsByCity(city: string): CityContract[] {
 
   cityContracts.set(city, active);
   return active;
+}
+
+async function completeStagedCompanyContract(contract: CityContract, company: Company) {
+  if (contract.participantRewardsGranted) return;
+
+  const updatedCompany = await storage.updateCompany(company.id, {
+    balance: Number(company.balance || 0) + Number(contract.rewardMoney || 0),
+    ork: Number(company.ork || 0) + Number(contract.rewardOrk || 0),
+  });
+
+  const contributionRows = aggregateContractContributionByUser(contract);
+  const totalContribution = contributionRows.reduce((sum, row) => sum + Number(row.value || 0), 0);
+  const participantsCount = Math.max(1, contributionRows.length);
+  const moneyPool = Math.max(0, Number(contract.participantRewardMoney || 0));
+  const xpPool = Math.max(0, Number(contract.participantRewardXp || 0));
+  const baseMoney = Math.max(0, Number(contract.participantBaseMoney || 0));
+  const baseXp = Math.max(0, Number(contract.participantBaseXp || 0));
+  const participantRewards: Array<{ userId: string; username: string; money: number; xp: number; share: number }> = [];
+
+  for (const row of contributionRows) {
+    const user = await storage.getUser(row.userId);
+    if (!user) continue;
+    const share = totalContribution > 0 ? Number(row.value || 0) / totalContribution : 1 / participantsCount;
+    const rewardMoney = baseMoney + Math.max(0, Math.round(moneyPool * share));
+    const rewardXp = baseXp + Math.max(0, Math.round(xpPool * share));
+    const levelState = applyExperienceGainForLevel(user, rewardXp);
+    await storage.updateUser(user.id, {
+      balance: Number(user.balance || 0) + rewardMoney,
+      level: levelState.level,
+      experience: levelState.experience,
+      lastActiveAt: Math.floor(Date.now() / 1000),
+    });
+    participantRewards.push({
+      userId: user.id,
+      username: user.username,
+      money: rewardMoney,
+      xp: rewardXp,
+      share: Number(share.toFixed(4)),
+    });
+    createNotification(user.id, {
+      type: "CONTRACT_COMPLETED",
+      title: "🎯 Контракт завершён",
+      message: `Компания закрыла контракт «${contract.title}». Твоя доля: $${rewardMoney} и ${rewardXp} XP.`,
+      dataJson: {
+        companyId: company.id,
+        companyName: company.name,
+        contractId: contract.id,
+        contractTitle: contract.title,
+        rewardMoney,
+        rewardXp,
+        share: Number(share.toFixed(4)),
+      },
+    });
+    markCompanyContractCompleted({
+      companyId: company.id,
+      userId: user.id,
+      username: user.username,
+    });
+  }
+
+  contract.participantRewardsGranted = true;
+  return {
+    company: updatedCompany,
+    participantRewards,
+  };
 }
 
 function removeProducedGadget(companyId: string, gadgetId: string): ProducedGadget | null {
@@ -1885,6 +2054,25 @@ function getMarketGadgetBatchKey(gadget: Partial<ProducedGadget> | null | undefi
     exclusiveLevel: Number(gadget.exclusiveLevel || 0),
     bonus: String(gadget.exclusiveBonusLabel || ""),
   });
+}
+
+function getActiveMarketListedGadgetIds() {
+  return new Set(
+    marketListings
+      .filter((listing) => listing.status === "active" && listing.listingKind === "gadget" && listing.gadgetId)
+      .map((listing) => String(listing.gadgetId))
+  );
+}
+
+function getProducedGadgetMarketBatch(companyId: string, gadgetId: string, requiredCount: number) {
+  const produced = companyGadgets.get(companyId) ?? [];
+  const target = produced.find((item) => item.id === gadgetId);
+  if (!target) return [];
+  const targetKey = getMarketGadgetBatchKey(target);
+  const listedIds = getActiveMarketListedGadgetIds();
+  return produced
+    .filter((item) => !listedIds.has(String(item.id)) && getMarketGadgetBatchKey(item) === targetKey)
+    .slice(0, requiredCount);
 }
 
 function getExclusiveUpgradeCandidates(companyId: string) {
@@ -2028,7 +2216,7 @@ function rollPvpRewardPart(input: { isWinner: boolean; isDraw: boolean }) {
 
 function isLeadershipRole(role: string | null | undefined) {
   const normalized = String(role || "").toLowerCase();
-  return normalized === "owner" || normalized === "manager" || normalized === "cto";
+  return normalized === "owner" || normalized === "manager" || normalized === "cto" || normalized === "deputy";
 }
 
 async function resolveCompanyActorRole(companyId: string, userId: string) {
@@ -2453,6 +2641,17 @@ async function settleExpiredAuctions() {
         });
       }
       listing.status = "expired";
+      if (String(listing.sellerUserId || "").trim()) {
+        createNotification(String(listing.sellerUserId), {
+          type: "AUCTION_ENDED",
+          title: "⌛ Аукцион завершён без ставок",
+          message: `Лот «${formatAuctionLotTitle(listing)}» не был продан.`,
+          dataJson: {
+            listingId: listing.id,
+            companyId: listing.companyId,
+          },
+        });
+      }
       continue;
     }
 
@@ -2526,6 +2725,16 @@ async function settleExpiredAuctions() {
     listing.salePrice = listing.currentBid;
 
     const buyerTelegramId = Number(getTelegramIdByUserId(buyer.id) || 0);
+    createNotification(buyer.id, {
+      type: "AUCTION_WON",
+      title: "🏆 Аукцион выигран",
+      message: `Ты выиграл лот «${listing.listingKind === "gadget" ? String(soldGadget?.name || "Гаджет") : String(listing.partName || "Запчасть")}».`,
+      dataJson: {
+        listingId: listing.id,
+        companyId: listing.companyId,
+        salePrice: listing.currentBid,
+      },
+    });
     if (buyerTelegramId) {
       await sendTelegramBotText(
         buyerTelegramId,
@@ -2541,6 +2750,16 @@ async function settleExpiredAuctions() {
     }
 
     const sellerTelegramId = Number(getTelegramIdByUserId(company.ownerId) || 0);
+    createNotification(company.ownerId, {
+      type: "MARKET_LISTING_SOLD",
+      title: "💰 Лот компании продан",
+      message: `Компания продала лот за ${formatMarketAmount(Number(listing.currentBid || 0))} GRM.`,
+      dataJson: {
+        listingId: listing.id,
+        companyId: company.id,
+        netIncome,
+      },
+    });
     if (sellerTelegramId) {
       await sendTelegramBotText(
         sellerTelegramId,
@@ -2639,6 +2858,14 @@ async function applyHackathonRewards() {
   });
   if (!result.applied) return;
   if (result.mvpPlayerId) {
+    createNotification(result.mvpPlayerId, {
+      type: "HACKATHON_RESULT",
+      title: "🎯 Награда MVP хакатона",
+      message: `Ты стал самым полезным участником хакатона и получил +${Number(result.mvpRewardGrm || 0)} GRM.`,
+      dataJson: {
+        mvpRewardGrm: Number(result.mvpRewardGrm || 0),
+      },
+    });
     const telegramId = Number(getTelegramIdByUserId(result.mvpPlayerId) || 0);
     if (telegramId) {
       await sendTelegramBotText(
@@ -2661,6 +2888,22 @@ async function applyHackathonRewards() {
     const companyId = String(company?.companyId || "");
     if (!companyId) continue;
     recordCompanyHackathonPlacement(companyId, winnerPlaces.get(companyId) ?? null);
+    const members = await storage.getCompanyMembers(companyId);
+    const place = winnerPlaces.get(companyId);
+    if (place) {
+      createNotifications(
+        members.map((member) => member.userId),
+        {
+          type: "HACKATHON_RESULT",
+          title: "🏁 Хакатон завершён",
+          message: `Компания «${String(company?.companyName || "Компания")}» заняла ${place} место.`,
+          dataJson: {
+            companyId,
+            place,
+          },
+        },
+      );
+    }
   }
 }
 
@@ -2853,6 +3096,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     transferMarketPartToPlayerInventory,
     applyGadgetWear,
     getCurrencySymbol,
+    trackDailyQuestEvent,
+  });
+
+  registerDailyQuestRoutes(app, {
+    getUserWithGameState,
+    applyGameStatePatch,
+  });
+
+  registerNotificationRoutes(app);
+
+  registerHomeDashboardRoutes(app, {
+    getUserWithGameState,
+    getContractsByCity,
+    isTutorialCompany,
   });
 
   registerHackathonRoutes(app, {
@@ -2886,6 +3143,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     applyWeeklyHackathonSabotage,
     applyWeeklyHackathonDefense,
     recordCompanyHackathonParticipation,
+    recordCompanyTaskContribution,
+    recordCompanyMoneyContribution,
+    recordCompanyPartsContribution,
   });
 
   app.get("/api/game-settings", async (_req, res) => {
@@ -2957,7 +3217,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const created = await storage.createUser({
         username,
         password: `${TELEGRAM_PENDING_PASSWORD_PREFIX}${randomUUID()}`,
-        city: "РЎР°РЅРєС‚-РџРµС‚РµСЂР±СѓСЂРі",
+        city: "Санкт-Петербург",
         personality: "",
         gender: "",
       });
@@ -3105,20 +3365,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const dayKey = new Date().toISOString().slice(0, 10);
     const claimedDays = referralClaimHistory.get(user.id) ?? new Set<string>();
     if (claimedDays.has(dayKey)) {
-      return res.status(400).json({ error: "РџР°СЃСЃРёРІРЅС‹Р№ РґРѕС…РѕРґ СѓР¶Рµ РїРѕР»СѓС‡РµРЅ СЃРµРіРѕРґРЅСЏ" });
+      return res.status(400).json({ error: "Пассивный доход уже получен сегодня" });
     }
 
     const referrals = Array.from(referralChildrenByUserId.get(user.id) ?? []);
     const referralUsers = (await Promise.all(referrals.map((id) => storage.getUser(id)))).filter(Boolean) as any[];
     if (referralUsers.length === 0) {
-      return res.status(400).json({ error: "РќРµС‚ СЂРµС„РµСЂР°Р»РѕРІ РґР»СЏ РЅР°С‡РёСЃР»РµРЅРёСЏ" });
+      return res.status(400).json({ error: "Нет рефералов для начисления" });
     }
 
     const tier = resolvePassiveTier(referralUsers.length);
     const rawIncome = referralUsers.reduce((sum, refUser) => sum + refUser.balance * (tier.percentage / 100), 0);
     const payout = Math.min(tier.cap, Math.floor(rawIncome));
     if (payout <= 0) {
-      return res.status(400).json({ error: "РќРµС‚ РґРѕСЃС‚СѓРїРЅРѕРіРѕ РїР°СЃСЃРёРІРЅРѕРіРѕ РґРѕС…РѕРґР°" });
+      return res.status(400).json({ error: "Нет доступного пассивного дохода" });
     }
 
     const updated = await storage.updateUser(user.id, { balance: user.balance + payout });
@@ -3129,7 +3389,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true, payout, tier, user: safeUser });
   });
 
-  // вњ… РЎРћР—Р”РђРќРР• РљРћРњРџРђРќРР
+  // Создание компании
   app.post("/api/company", async (req, res) => {
     let debitedOwner: { id: string; balance: number } | null = null;
     try {
@@ -3137,7 +3397,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { ownerId, username, city } = req.body;
       const name = normalizeCompanyNameInput(req.body?.name);
       const emoji = normalizeCompanyEmojiInput(req.body?.emoji);
-      console.log("рџЏў Creating company:", { name, emoji, ownerId, username, city });
+      console.log("🏢 Creating company:", { name, emoji, ownerId, username, city });
 
       if (name.length < 3 || name.length > 40) {
         return res.status(400).json({ error: "Название компании должно быть длиной от 3 до 40 символов." });
@@ -3166,7 +3426,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ownerId,
         username,
       );
-      console.log("вњ… Company created:", company.id);
+      console.log("✅ Company created:", company.id);
       res.json({ ...company, creationCost });
     } catch (error) {
       if (debitedOwner) {
@@ -3177,7 +3437,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // вњ… РџРћР›РЈР§Р•РќРР• Р’РЎР•РҐ РљРћРњРџРђРќРР™
+  // Получение всех компаний
   app.get("/api/companies", async (req, res) => {
     try {
       await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
@@ -3189,7 +3449,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // вњ… РџРћР›РЈР§Р•РќРР• РљРћРњРџРђРќРР™ РџРћ Р“РћР РћР”РЈ
+  // Получение компаний по городу
   app.get("/api/companies/city/:city", async (req, res) => {
     try {
       await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
@@ -3201,7 +3461,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // вњ… РџРћР›РЈР§Р•РќРР• РљРћРњРџРђРќРР РџРћ ID
+  // Получение компании по ID
   app.get("/api/companies/:id", async (req, res) => {
     try {
       await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
@@ -3226,10 +3486,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         } as CompanyEconomyLike);
       const eligibility = await buildCompanyIpoEligibility(company, runtime);
       const preview = await buildCompanyStockPreview(company, runtime);
+      const options = buildCompanyIpoOptions({ city: company.city }, eligibility);
+      const dividends = await getCompanyDividendSnapshot(company.id);
       res.json({
         economy: runtime,
         eligibility,
         preview,
+        options,
+        dividends,
       });
     } catch (error: any) {
       res.status(500).json({ error: error?.message || "Failed to get company stock data" });
@@ -3246,6 +3510,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (company.ownerId !== userId) {
         return res.status(403).json({ error: "Только CEO может вывести компанию на IPO." });
       }
+      const ipoTypeId = String(req.body?.ipoTypeId || "boosted");
       const members = await storage.getCompanyMembers(company.id);
       const runtime = companyEconomyByCompanyId.get(String(company.id))
         ?? reconcileCompanyEconomy({
@@ -3253,7 +3518,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           employeeCount: members.length,
         } as CompanyEconomyLike);
       const eligibility = await buildCompanyIpoEligibility(company, runtime);
-      const result = launchCompanyIpo(runtime, eligibility);
+      const result = launchCompanyIpo(runtime, eligibility, ipoTypeId as any);
       if (!result.ok) {
         return res.status(400).json({ error: result.reason || "IPO недоступно" });
       }
@@ -3262,10 +3527,60 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ok: true,
         company: saved,
         sharePrice: result.sharePrice,
+        ipoTypeId,
+        investmentGrm: result.variant?.investmentGrm ?? 0,
         eligibility,
       });
     } catch (error: any) {
       res.status(500).json({ error: error?.message || "Failed to run IPO" });
+    }
+  });
+
+  app.post("/api/companies/:id/dividends/declare", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      const userId = String(req.body?.userId || "");
+      const payoutPerShareGrm = Number(req.body?.payoutPerShareGrm || 0);
+      if (!userId) return res.status(400).json({ error: "userId is required" });
+      if (company.ownerId !== userId) {
+        return res.status(403).json({ error: "Только CEO может объявлять дивиденды." });
+      }
+      const members = await storage.getCompanyMembers(company.id);
+      const runtime = companyEconomyByCompanyId.get(String(company.id))
+        ?? reconcileCompanyEconomy({
+          ...company,
+          employeeCount: members.length,
+        } as CompanyEconomyLike);
+      if (!runtime.shares.isPublic) {
+        return res.status(400).json({ error: "Дивиденды доступны только публичной компании." });
+      }
+      const dividendSnapshot = await getCompanyDividendSnapshot(company.id);
+      const totalPayoutGrm = Number((dividendSnapshot.distributedShares * Math.max(0, payoutPerShareGrm)).toFixed(2));
+      if (totalPayoutGrm <= 0) {
+        return res.status(400).json({ error: "Сумма дивидендов должна быть больше нуля." });
+      }
+      if (runtime.capitalGRM < totalPayoutGrm) {
+        return res.status(400).json({ error: "Недостаточно GRM на балансе компании." });
+      }
+      const payout = await declareCompanyDividends(company.id, payoutPerShareGrm);
+      const saved = setCompanyEconomyRuntimeState(company, reconcileCompanyEconomy({
+        ...runtime,
+        capitalGRM: Number((runtime.capitalGRM - payout.totalPayoutGrm).toFixed(2)),
+        shares: {
+          ...runtime.shares,
+          lastDividendPerShareGRM: Number(payoutPerShareGrm.toFixed(2)),
+          lastDividendAt: Date.now(),
+        },
+      }));
+      res.json({
+        ok: true,
+        payout,
+        company: saved,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || "Failed to declare dividends" });
     }
   });
 
@@ -3293,8 +3608,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!actorUserId || !targetUserId || !department) {
         return res.status(400).json({ error: "actorUserId, targetUserId и department обязательны" });
       }
-      if (company.ownerId !== actorUserId) {
-        return res.status(403).json({ error: "Назначать сотрудников по отделам может только CEO" });
+      const actorAccess = canManageCompanyAssets({
+        actorUserId,
+        companyOwnerId: company.ownerId,
+        role: (await storage.getMemberByUserId(company.id, actorUserId))?.role,
+      });
+      if (!actorAccess) {
+        return res.status(403).json({ error: "Назначать сотрудников по отделам могут только CEO и заместитель" });
       }
       if (!["researchAndDevelopment", "production", "marketing", "finance", "infrastructure"].includes(department)) {
         return res.status(400).json({ error: "Неизвестный отдел" });
@@ -3309,6 +3629,78 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ ok: true, staffing, effects });
     } catch (error: any) {
       res.status(400).json({ error: error?.message || "Failed to assign department" });
+    }
+  });
+
+  app.post("/api/companies/:id/staffing/role", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+
+      const actorUserId = String(req.body?.actorUserId || "");
+      const targetUserId = String(req.body?.targetUserId || "");
+      const role = String(req.body?.role || "").trim().toLowerCase();
+      if (!actorUserId || !targetUserId || !role) {
+        return res.status(400).json({ error: "actorUserId, targetUserId и role обязательны" });
+      }
+      if (String(company.ownerId) !== actorUserId) {
+        return res.status(403).json({ error: "Назначать заместителя может только CEO" });
+      }
+      if (String(company.ownerId) === targetUserId) {
+        return res.status(400).json({ error: "CEO нельзя переназначить через этот экран" });
+      }
+      if (!["member", "deputy"].includes(role)) {
+        return res.status(400).json({ error: "Неизвестная роль" });
+      }
+
+      const targetMember = await storage.getMemberByUserId(company.id, targetUserId);
+      if (!targetMember) return res.status(404).json({ error: "Сотрудник не найден" });
+
+      if (role === "deputy") {
+        const members = await storage.getCompanyMembers(company.id);
+        for (const member of members) {
+          if (member.userId !== targetUserId && String(member.role || "").toLowerCase() === "deputy") {
+            await storage.updateCompanyMemberRole(company.id, member.userId, "member");
+          }
+        }
+      }
+
+      const updated = await storage.updateCompanyMemberRole(company.id, targetUserId, role);
+      createNotification(targetUserId, {
+        type: "COMPANY_ROLE_ASSIGNED",
+        title: role === "deputy" ? "👔 Тебя назначили заместителем CEO" : "👤 Твоя роль в компании обновлена",
+        message:
+          role === "deputy"
+            ? `Теперь ты заместитель CEO в компании «${company.name}».`
+            : `В компании «${company.name}» тебе вернули обычную роль сотрудника.`,
+        dataJson: {
+          companyId: company.id,
+          companyName: company.name,
+          role,
+        },
+      });
+      const staffing = await getCompanyStaffingSnapshot(company.id);
+      const economy = reconcileCompanyEconomy({
+        ...(company as CompanyEconomyLike),
+        employeeCount: staffing.members.length,
+      });
+      const effects = getDepartmentEffects(economy.departments, staffing);
+      res.json({ ok: true, member: updated, staffing, effects });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to update role" });
+    }
+  });
+
+  app.get("/api/companies/:id/member-stats", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+      const company = await storage.getCompany(req.params.id);
+      if (!company) return res.status(404).json({ error: "Company not found" });
+      const stats = await ensureCompanyMemberStatsSeeded(company.id);
+      res.json({ companyId: company.id, items: stats });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Failed to get company member stats" });
     }
   });
 
@@ -3364,6 +3756,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           userId,
           username,
           role: "member",
+        });
+        createNotification(String(userId), {
+          type: "COMPANY_JOIN_ACCEPTED",
+          title: "🏢 Тебя приняли в компанию",
+          message: `Компания «${company.name}» одобрила твою заявку.`,
+          dataJson: {
+            companyId: company.id,
+            companyName: company.name,
+          },
         });
       }
 
@@ -4513,7 +4914,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (error: any) {
       return res.status(403).json({ error: error?.message || "Market is disabled by admin settings" });
     }
-    const { userId, gadgetId, partRef, price, mode = "fixed", durationHours = 2 } = req.body ?? {};
+    const { userId, gadgetId, partRef, quantity: rawQuantity, price, mode = "fixed", durationHours = 2 } = req.body ?? {};
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ error: "Company not found" });
     const access = await requireCompanyAssetManagerAccess({ company, userId: String(userId || ""), action: "market_listing_create" });
@@ -4525,6 +4926,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const gadget = gadgetId ? produced.find((g) => g.id === gadgetId) : null;
     const listedPart = partRef ? removeCompanyWarehousePartForMarket(company.id, String(partRef)) : null;
     if (!gadget && !listedPart) return res.status(404).json({ error: "Лот не найден на складе компании" });
+    const requestedQuantity = Math.max(1, Math.floor(Number(rawQuantity) || 1));
+    if (listedPart && requestedQuantity > 1) {
+      restoreCompanyWarehousePartFromMarket(company.id, listedPart);
+      return res.status(400).json({ error: "Количество можно указать только для одинаковых гаджетов" });
+    }
     if (gadget) {
       appendEconomyAuditEvent({
         eventType: "MARKET_GADGET_RELIST_ATTEMPT",
@@ -4559,7 +4965,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // TODO: Apply dynamic gadget price bands when economy.dynamicGadgetPricesEnabled is wired to market analytics.
     if (mode !== "fixed" && mode !== "auction") {
       if (listedPart) restoreCompanyWarehousePartFromMarket(company.id, listedPart);
-      return res.status(400).json({ error: "mode РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ fixed РёР»Рё auction" });
+      return res.status(400).json({ error: "mode должен быть fixed или auction" });
     }
 
     const minPrice = gadget
@@ -4571,37 +4977,64 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     if (price < minPrice || price > maxPrice) {
       if (listedPart) restoreCompanyWarehousePartFromMarket(company.id, listedPart);
-      return res.status(400).json({ error: `Р¦РµРЅР°/СЃС‚Р°СЂС‚РѕРІР°СЏ С†РµРЅР° РґРѕР»Р¶РЅР° Р±С‹С‚СЊ РІ РґРёР°РїР°Р·РѕРЅРµ ${minPrice}-${maxPrice}` });
+      return res.status(400).json({ error: `Цена/стартовая цена должна быть в диапазоне ${minPrice}-${maxPrice}` });
     }
 
     const normalizedDuration = Math.max(2, Math.min(12, Number(durationHours) || 2));
+    const gadgetsToList = gadget
+      ? getProducedGadgetMarketBatch(company.id, String(gadgetId), requestedQuantity)
+      : [];
+    if (gadget && gadgetsToList.length < requestedQuantity) {
+      return res.status(400).json({ error: `Доступно только ${gadgetsToList.length} шт.` });
+    }
+    const createdAt = Date.now();
+    const auctionEndsAt = mode === "auction" ? createdAt + normalizedDuration * 60 * 60 * 1000 : undefined;
+    const listingsToCreate: MarketListing[] = listedPart
+      ? [{
+          id: randomUUID(),
+          listingKind: "part",
+          partRef: String(partRef),
+          partId: listedPart?.id,
+          partName: listedPart?.name,
+          partRarity: listedPart?.rarity,
+          partType: listedPart?.type,
+          companyId: company.id,
+          companyName: company.name,
+          sellerUserId: userId,
+          saleType: mode,
+          price: mode === "fixed" ? price : undefined,
+          startingPrice: mode === "auction" ? price : undefined,
+          currentBid: mode === "auction" ? price : undefined,
+          currentBidderId: undefined,
+          auctionEndsAt,
+          auctionDurationHours: mode === "auction" ? normalizedDuration : undefined,
+          minIncrement: mode === "auction" ? Math.max(10, Math.floor(price * 0.05)) : undefined,
+          status: "active",
+          createdAt,
+          sold: false,
+        }]
+      : gadgetsToList.map((item) => ({
+          id: randomUUID(),
+          listingKind: "gadget",
+          gadgetId: String(item.id),
+          companyId: company.id,
+          companyName: company.name,
+          sellerUserId: userId,
+          saleType: mode,
+          price: mode === "fixed" ? price : undefined,
+          startingPrice: mode === "auction" ? price : undefined,
+          currentBid: mode === "auction" ? price : undefined,
+          currentBidderId: undefined,
+          auctionEndsAt,
+          auctionDurationHours: mode === "auction" ? normalizedDuration : undefined,
+          minIncrement: mode === "auction" ? Math.max(10, Math.floor(price * 0.05)) : undefined,
+          status: "active",
+          createdAt,
+          sold: false,
+        }));
 
-    const listing: MarketListing = {
-      id: randomUUID(),
-      listingKind: listedPart ? "part" : "gadget",
-      gadgetId: gadget ? String(gadgetId) : undefined,
-      partRef: listedPart ? String(partRef) : undefined,
-      partId: listedPart?.id,
-      partName: listedPart?.name,
-      partRarity: listedPart?.rarity,
-      partType: listedPart?.type,
-      companyId: company.id,
-      companyName: company.name,
-      sellerUserId: userId,
-      saleType: mode,
-      price: mode === "fixed" ? price : undefined,
-      startingPrice: mode === "auction" ? price : undefined,
-      currentBid: mode === "auction" ? price : undefined,
-      currentBidderId: undefined,
-      auctionEndsAt: mode === "auction" ? Date.now() + normalizedDuration * 60 * 60 * 1000 : undefined,
-      auctionDurationHours: mode === "auction" ? normalizedDuration : undefined,
-      minIncrement: mode === "auction" ? Math.max(10, Math.floor(price * 0.05)) : undefined,
-      status: "active",
-      createdAt: Date.now(),
-      sold: false,
-    };
-
-    marketListings.unshift(listing);
+    marketListings.unshift(...listingsToCreate);
+    const listing = listingsToCreate[0];
     appendEconomyAuditEvent({
       eventType: "COMPANY_MARKET_LISTING_CREATED",
       userId: String(userId || ""),
@@ -4613,10 +5046,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         listingId: listing.id,
         listingKind: listing.listingKind,
         saleType: listing.saleType,
+        quantity: listingsToCreate.length,
         role: access.role || null,
       },
     });
-    res.json(listing);
+    res.json({
+      listing,
+      listings: listingsToCreate,
+      quantity: listingsToCreate.length,
+    });
   });
 
   app.get("/api/market", async (_req, res) => {
@@ -4658,7 +5096,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const listing = marketListings.find((l) => l.id === listingId && l.status === "active");
     if (!listing) return res.status(404).json({ error: "Listing not found" });
     if (listing.saleType !== "fixed" || !listing.price) {
-      return res.status(400).json({ error: "Р­С‚РѕС‚ Р»РѕС‚ РїСЂРѕРґР°РµС‚СЃСЏ С‡РµСЂРµР· Р°СѓРєС†РёРѕРЅ" });
+      return res.status(400).json({ error: "Этот лот продается через аукцион" });
     }
     const requestedQuantity = Math.max(1, Math.floor(Number(rawQuantity) || 1));
 
@@ -4703,7 +5141,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     }
     const totalPrice = Number(listing.price || 0) * listingsToBuy.length;
-    if (buyer.balance < totalPrice) return res.status(400).json({ error: "РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ" });
+    if (buyer.balance < totalPrice) return res.status(400).json({ error: "Недостаточно средств" });
 
     const settings = await getGameSettings();
     const sellerCeo = await storage.getUser(company.ownerId);
@@ -4764,6 +5202,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
     }
+    createNotification(buyer.id, {
+      type: "SYSTEM_INFO",
+      title: "🛒 Лот куплен",
+      message: `Покупка на рынке завершена. Количество: ${listingsToBuy.length}.`,
+      dataJson: {
+        listingId: listing.id,
+        companyId: company.id,
+        quantity: listingsToBuy.length,
+        totalPrice,
+      },
+    });
+    createNotification(company.ownerId, {
+      type: "MARKET_LISTING_SOLD",
+      title: "💰 Лот компании продан",
+      message: `Компания продала лот за ${formatMarketAmount(totalPrice)} GRM.`,
+      dataJson: {
+        listingId: listing.id,
+        companyId: company.id,
+        netIncome,
+        quantity: listingsToBuy.length,
+      },
+    });
     res.json({
       ok: true,
       fee,
@@ -4785,8 +5245,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { listingId, bidderId, amount } = req.body ?? {};
     const listing = marketListings.find((l) => l.id === listingId && l.status === "active");
     if (!listing) return res.status(404).json({ error: "Listing not found" });
-    if (listing.saleType !== "auction") return res.status(400).json({ error: "РЎС‚Р°РІРєРё РґРѕСЃС‚СѓРїРЅС‹ С‚РѕР»СЊРєРѕ РґР»СЏ Р°СѓРєС†РёРѕРЅР°" });
-    if (!listing.auctionEndsAt || listing.auctionEndsAt <= Date.now()) return res.status(400).json({ error: "РђСѓРєС†РёРѕРЅ Р·Р°РІРµСЂС€РµРЅ" });
+    if (listing.saleType !== "auction") return res.status(400).json({ error: "Ставки доступны только для аукциона" });
+    if (!listing.auctionEndsAt || listing.auctionEndsAt <= Date.now()) return res.status(400).json({ error: "Аукцион завершен" });
 
     const bidder = await storage.getUser(bidderId);
     if (!bidder) return res.status(404).json({ error: "Bidder not found" });
@@ -4801,7 +5261,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     if (bidder.balance < Number(amount)) {
-      return res.status(400).json({ error: "РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ РґР»СЏ СЃС‚Р°РІРєРё" });
+      return res.status(400).json({ error: "Недостаточно средств для ставки" });
     }
 
     const previousBidderId = String(listing.currentBidderId || "").trim();
@@ -4846,7 +5306,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ error: error?.message || "Companies are disabled by admin settings" });
     }
     const { userId, companyId } = req.body ?? {};
-    if (!userId || !companyId) return res.status(400).json({ error: "userId Рё companyId РѕР±СЏР·Р°С‚РµР»СЊРЅС‹" });
+    if (!userId || !companyId) return res.status(400).json({ error: "userId и companyId обязательны" });
 
     const company = await storage.getCompany(companyId);
     if (!company) return res.status(404).json({ error: "Company not found" });
@@ -4855,19 +5315,105 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const membership = await storage.getMemberByUserId(companyId, userId);
-    if (!membership) return res.status(403).json({ error: "РўРѕР»СЊРєРѕ СѓС‡Р°СЃС‚РЅРёРє РєРѕРјРїР°РЅРёРё РјРѕР¶РµС‚ РїСЂРёРЅСЏС‚СЊ РєРѕРЅС‚СЂР°РєС‚" });
+    if (!membership) return res.status(403).json({ error: "Только участник компании может принять контракт" });
 
     const contracts = getContractsByCity(company.city);
     const contract = contracts.find((item) => item.id === req.params.contractId);
-    if (!contract) return res.status(404).json({ error: "РљРѕРЅС‚СЂР°РєС‚ РЅРµ РЅР°Р№РґРµРЅ" });
-    if (contract.status === "completed") return res.status(400).json({ error: "РљРѕРЅС‚СЂР°РєС‚ СѓР¶Рµ Р·Р°РІРµСЂС€РµРЅ" });
+    if (!contract) return res.status(404).json({ error: "Контракт не найден" });
+    if (contract.status === "completed") return res.status(400).json({ error: "Контракт уже завершен" });
     if (contract.assignedCompanyId && contract.assignedCompanyId !== companyId) {
-      return res.status(400).json({ error: "РљРѕРЅС‚СЂР°РєС‚ СѓР¶Рµ РїСЂРёРЅСЏС‚ РґСЂСѓРіРѕР№ РєРѕРјРїР°РЅРёРµР№" });
+      return res.status(400).json({ error: "Контракт уже принят другой компанией" });
     }
 
     contract.status = "in_progress";
     contract.assignedCompanyId = companyId;
+    if (contract.kind === "staged_skill" && (!Array.isArray(contract.stages) || !contract.stages.length)) {
+      contract.stages = [];
+      contract.currentStageIndex = 0;
+    }
     res.json(contract);
+  });
+
+  app.post("/api/city-contracts/:contractId/contribute", async (req, res) => {
+    try {
+      await assertFeatureEnabled("companies", "Companies are disabled by admin settings");
+    } catch (error: any) {
+      return res.status(403).json({ error: error?.message || "Companies are disabled by admin settings" });
+    }
+    const { userId, companyId } = req.body ?? {};
+    if (!userId || !companyId) return res.status(400).json({ error: "userId и companyId обязательны" });
+
+    const company = await storage.getCompany(companyId);
+    if (!company) return res.status(404).json({ error: "Company not found" });
+    if (isTutorialCompany(company)) {
+      return res.status(400).json({ error: "Tutorial company cannot use city contracts" });
+    }
+
+    const membership = await storage.getMemberByUserId(companyId, userId);
+    if (!membership) return res.status(403).json({ error: "Только участник компании может делать вклад в контракт" });
+
+    const contracts = getContractsByCity(company.city);
+    const contract = contracts.find((item) => item.id === req.params.contractId);
+    if (!contract) return res.status(404).json({ error: "Контракт не найден" });
+    if (contract.kind !== "staged_skill") return res.status(400).json({ error: "Для этого контракта вклад навыками не поддерживается" });
+    if (contract.assignedCompanyId !== companyId) return res.status(400).json({ error: "Контракт не закреплен за вашей компанией" });
+    if (contract.status === "completed") return res.status(400).json({ error: "Контракт уже завершен" });
+
+    const stage = getCurrentContractStage(contract);
+    if (!stage) return res.status(400).json({ error: "У контракта не найден активный этап" });
+    const calculation = await calculateCompanySkillContribution({
+      companyId,
+      userId,
+      skillType: stage.skillType,
+    });
+
+    const contribution = recordCompanyTaskContribution({
+      companyId,
+      userId: calculation.userId,
+      username: calculation.username,
+      taskId: contract.id,
+      source: "contract",
+      skillType: calculation.skillType,
+      value: calculation.value,
+      professionBonus: calculation.professionBonus,
+      departmentEfficiency: calculation.departmentEfficiency,
+      randomMultiplier: calculation.randomMultiplier,
+      stageIndex: stage.index,
+    });
+
+    stage.progress = Number((stage.progress + contribution.value).toFixed(2));
+    stage.contributions.push({
+      id: contribution.id,
+      userId: contribution.userId,
+      username: contribution.username,
+      value: contribution.value,
+      skillType: contribution.skillType,
+      createdAt: contribution.createdAt,
+    });
+
+    let completionPayload: any = null;
+    if (isContractStageComplete(stage)) {
+      stage.progress = Math.max(stage.progress, stage.target);
+      stage.completedAt = Date.now();
+      contract.currentStageIndex = Math.max(0, Number(contract.currentStageIndex || 0)) + 1;
+      if ((contract.currentStageIndex ?? 0) >= (contract.stages?.length ?? 0)) {
+        contract.status = "completed";
+        contract.completedAt = Date.now();
+        completionPayload = await completeStagedCompanyContract(contract, company);
+      }
+    }
+
+    res.json({
+      ok: true,
+      contract,
+      currentStage: getCurrentContractStage(contract),
+      contribution,
+      contributions: getTaskContributions(contract.id),
+      participantTotals: aggregateContractContributionByUser(contract),
+      completed: contract.status === "completed",
+      company: completionPayload?.company ?? null,
+      participantRewards: completionPayload?.participantRewards ?? [],
+    });
   });
 
   app.post("/api/city-contracts/:contractId/deliver", async (req, res) => {
@@ -4877,7 +5423,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ error: error?.message || "Companies are disabled by admin settings" });
     }
     const { userId, companyId } = req.body ?? {};
-    if (!userId || !companyId) return res.status(400).json({ error: "userId Рё companyId РѕР±СЏР·Р°С‚РµР»СЊРЅС‹" });
+    if (!userId || !companyId) return res.status(400).json({ error: "userId и companyId обязательны" });
 
     const company = await storage.getCompany(companyId);
     if (!company) return res.status(404).json({ error: "Company not found" });
@@ -4886,14 +5432,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const membership = await storage.getMemberByUserId(companyId, userId);
-    if (!membership) return res.status(403).json({ error: "РўРѕР»СЊРєРѕ СѓС‡Р°СЃС‚РЅРёРє РєРѕРјРїР°РЅРёРё РјРѕР¶РµС‚ СЃРґР°РІР°С‚СЊ РєРѕРЅС‚СЂР°РєС‚" });
+    if (!membership) return res.status(403).json({ error: "Только участник компании может сдавать контракт" });
     await requireCompanyAssetManagerAccess({ company, userId, action: "contract_deliver" });
 
     const contracts = getContractsByCity(company.city);
     const contract = contracts.find((item) => item.id === req.params.contractId);
-    if (!contract) return res.status(404).json({ error: "РљРѕРЅС‚СЂР°РєС‚ РЅРµ РЅР°Р№РґРµРЅ" });
-    if (contract.assignedCompanyId !== companyId) return res.status(400).json({ error: "РљРѕРЅС‚СЂР°РєС‚ РЅРµ Р·Р°РєСЂРµРїР»РµРЅ Р·Р° РІР°С€РµР№ РєРѕРјРїР°РЅРёРµР№" });
-    if (contract.status === "completed") return res.status(400).json({ error: "РљРѕРЅС‚СЂР°РєС‚ СѓР¶Рµ Р·Р°РІРµСЂС€РµРЅ" });
+    if (!contract) return res.status(404).json({ error: "Контракт не найден" });
+    if (contract.assignedCompanyId !== companyId) return res.status(400).json({ error: "Контракт не закреплен за вашей компанией" });
+    if (contract.status === "completed") return res.status(400).json({ error: "Контракт уже завершен" });
+
+    if (contract.kind === "staged_skill") {
+      return res.status(400).json({ error: "Этот контракт завершается автоматически, когда сотрудники закроют все этапы вкладом." });
+    }
 
     let consumedGadgets: string[] = [];
     let consumedPartsCount = 0;

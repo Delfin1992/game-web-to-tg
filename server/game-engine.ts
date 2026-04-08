@@ -45,6 +45,8 @@ import {
   getPlayerRuntimeState,
   setPlayerRuntimeState,
 } from "./runtime/player-state";
+import { trackDailyQuestEvent } from "./daily-quests/service";
+import { createNotification } from "./notifications/service";
 
 export type SkillName =
   | "coding"
@@ -1136,7 +1138,7 @@ export async function applyGadgetWear(userId: string, options: GadgetWearOptions
 
     report.affected.push({
       itemId: item.id,
-      itemName: item.name,
+      itemName: sanitizeWearReportItemName(item.name),
       before,
       after,
       lost: Number((before - after).toFixed(1)),
@@ -1712,6 +1714,26 @@ function createPartInventoryItem(part: ReturnType<typeof rollRandomPartDrop>) {
   };
 }
 
+function sanitizeWearReportItemName(name: string) {
+  const normalized = String(name || "")
+    .replace(/рџ–±пёЏ/gu, "🖱️")
+    .replace(/рџ–ҐпёЏ/gu, "🖥️")
+    .replace(/рџ’»/gu, "💻")
+    .replace(/рџЋ§/gu, "🎧")
+    .replace(/рџЋ®/gu, "🎮")
+    .replace(/рџ“±/gu, "📱")
+    .replace(/^[?]+\s*/gu, "")
+    .trim();
+
+  if (/Программируемая мышь/i.test(normalized) && !/^🖱️\s/u.test(normalized)) return `🖱️ ${normalized.replace(/^[^\p{L}\p{N}]+/u, "").trim()}`;
+  if (/4K Монитор/i.test(normalized) && !/^🖥️\s/u.test(normalized)) return `🖥️ ${normalized.replace(/^[^\p{L}\p{N}]+/u, "").trim()}`;
+  if (/MacBook Pro/i.test(normalized) && !/^💻\s/u.test(normalized)) return `💻 ${normalized.replace(/^[^\p{L}\p{N}]+/u, "").trim()}`;
+  if (/Профессиональные наушники/i.test(normalized) && !/^🎧\s/u.test(normalized)) return `🎧 ${normalized.replace(/^[^\p{L}\p{N}]+/u, "").trim()}`;
+  if (/Механическая клавиатура/i.test(normalized) && !/^🎮\s/u.test(normalized)) return `🎮 ${normalized.replace(/^[^\p{L}\p{N}]+/u, "").trim()}`;
+
+  return normalized;
+}
+
 export function getCurrencySymbol(city: string) {
   const resolved = resolveCity(city);
   if (resolved?.currencySymbol) return resolved.currencySymbol;
@@ -1866,7 +1888,7 @@ export function applyGameStatePatch(userId: string, payload: any) {
 export async function performQuickWork(userId: string) {
   await assertFeatureEnabled("jobs", "Jobs are disabled by admin settings");
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   let user = context.user;
@@ -1874,7 +1896,7 @@ export async function performQuickWork(userId: string) {
 
   const quickWorkEnergyCost = Number((getJobWorkEnergyCostByTier("intern") * getHousingEnergyMultiplier(user, "work")).toFixed(4));
   if (state.workTime < quickWorkEnergyCost) {
-    throw new Error("РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЌРЅРµСЂРіРёРё РґР»СЏ СЂР°Р±РѕС‚С‹ (РЅСѓР¶РЅРѕ РјРёРЅРёРјСѓРј 30%)");
+    throw new Error("Недостаточно энергии для работы (нужно минимум 30%)");
   }
 
   const settings = await getGameSettings();
@@ -1906,11 +1928,16 @@ export async function performQuickWork(userId: string) {
   if (partItem) {
     if (canStoreInventoryItem(user, state, partItem)) {
       addInventoryItem(state, partItem);
-      notices.push(`рџЋЃ РќР°Р№РґРµРЅР° РґРµС‚Р°Р»СЊ: ${droppedPart?.name} (${droppedPart?.rarity})`);
+      notices.push(`🎁 Найдена деталь: ${droppedPart?.name} (${droppedPart?.rarity})`);
     } else {
       notices.push("📦 Инвентарь дома заполнен: деталь не поместилась.");
     }
   }
+
+  const questProgress = await trackDailyQuestEvent(user.id, { type: "complete_jobs", value: 1 });
+  const moneyQuestProgress = await trackDailyQuestEvent(user.id, { type: "earn_money", value: moneyGained });
+  notices.push(...questProgress.notices);
+  notices.push(...moneyQuestProgress.notices);
 
   return { user, state, notices, moneyGained, expGained, droppedPart };
 }
@@ -1918,7 +1945,7 @@ export async function performQuickWork(userId: string) {
 export async function performStudy(userId: string) {
   await assertFeatureEnabled("education", "Education is disabled by admin settings");
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   let user = context.user;
@@ -1926,7 +1953,7 @@ export async function performStudy(userId: string) {
 
   const quickStudyEnergyCost = Number((BALANCE_CONFIG.energy.studyCostByLevel.school * getHousingEnergyMultiplier(user, "study")).toFixed(4));
   if (state.studyTime < quickStudyEnergyCost) {
-    throw new Error("РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЌРЅРµСЂРіРёРё РґР»СЏ СѓС‡РµР±С‹ (РЅСѓР¶РЅРѕ РјРёРЅРёРјСѓРј 30%)");
+    throw new Error("Недостаточно энергии для учёбы (нужно минимум 30%)");
   }
 
   const skillBoosts: SkillName[] = ["coding", "testing", "analytics"];
@@ -1950,7 +1977,19 @@ export async function performStudy(userId: string) {
     reputation: (user.reputation || 0) + reputationGain,
   });
 
-  notices.push(`рџ“љ РќР°РІС‹Рє ${boostedSkill} СѓРІРµР»РёС‡РµРЅ РЅР° +${skillIncrease}`);
+  notices.push(`📚 Навык ${boostedSkill} увеличен на +${skillIncrease}`);
+  const questProgress = await trackDailyQuestEvent(user.id, { type: "complete_education", value: 1 });
+  const studyEnergyQuest = await trackDailyQuestEvent(user.id, {
+    type: "spend_study_energy",
+    value: Math.round(quickStudyEnergyCost * 100),
+  });
+  const skillQuest = await trackDailyQuestEvent(user.id, {
+    type: "gain_skill_points",
+    value: skillIncrease,
+  });
+  notices.push(...questProgress.notices);
+  notices.push(...studyEnergyQuest.notices);
+  notices.push(...skillQuest.notices);
 
   return { user, state, notices, boostedSkill, skillIncrease };
 }
@@ -1958,7 +1997,7 @@ export async function performStudy(userId: string) {
 export async function completeJob(userId: string, jobRef: string) {
   await assertFeatureEnabled("jobs", "Jobs are disabled by admin settings");
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   let user = context.user;
@@ -2064,7 +2103,7 @@ export async function completeJob(userId: string, jobRef: string) {
     if (partItem && canStoreInventoryItem(user, state, partItem)) {
       addInventoryItem(state, partItem);
       state.jobDropPity = 0;
-      notices.push(`рџЋЃ Р—Р° РІР°РєР°РЅСЃРёСЋ РїРѕР»СѓС‡РµРЅР° РґРµС‚Р°Р»СЊ: ${droppedPart.name} (${droppedPart.rarity})`);
+      notices.push(`🎁 За вакансию получена деталь: ${droppedPart.name} (${droppedPart.rarity})`);
     } else {
       notices.push(`📦 Инвентарь полон, запчасть "${droppedPart.name}" потеряна.`);
     }
@@ -2082,6 +2121,11 @@ export async function completeJob(userId: string, jobRef: string) {
   if (gadgetWear.report.summary) {
     notices.push(gadgetWear.report.summary);
   }
+
+  const questProgress = await trackDailyQuestEvent(user.id, { type: "complete_jobs", value: 1 });
+  const moneyQuestProgress = await trackDailyQuestEvent(user.id, { type: "earn_money", value: finalMoney });
+  notices.push(...questProgress.notices);
+  notices.push(...moneyQuestProgress.notices);
 
   return {
     user,
@@ -2102,21 +2146,21 @@ export async function completeJob(userId: string, jobRef: string) {
 
 export async function buyShopItem(userId: string, itemRef: string) {
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   let user = context.user;
   const notices = [...context.notices];
 
   const item = findShopItemByRef(itemRef, user.city);
-  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!item) throw new Error("Предмет не найден");
   if (item.type === "consumable") {
     const minLevel = getConsumableMinLevel(item);
     if (Number(user.level || 1) < minLevel) {
       throw new Error(`Этот курс откроется с ${minLevel} уровня.`);
     }
   }
-  if (user.balance < item.price) throw new Error("РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ");
+  if (user.balance < item.price) throw new Error("Недостаточно средств");
   if (!canStoreInventoryItem(user, state, { id: item.id, type: item.type })) {
     throw new Error(`Инвентарь заполнен. Доступно слотов: ${getInventoryCapacityForUser(user)}.`);
   }
@@ -2160,17 +2204,19 @@ export async function buyShopItem(userId: string, itemRef: string) {
   });
 
   notices.push(`🛍 Куплено: ${item.name}`);
+  const questProgress = await trackDailyQuestEvent(user.id, { type: "buy_shop_item", value: 1 });
+  notices.push(...questProgress.notices);
   return { user, state, notices, item };
 }
 
 export async function useInventoryItem(userId: string, itemRef: string) {
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   const notices = [...context.notices];
   const item = findInventoryItemByRef(state, itemRef);
-  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!item) throw new Error("Предмет не найден");
 
   if (item.type === "consumable") {
     const trainingLimit = getConsumableTrainingLimitForLevel(context.user.level);
@@ -2204,19 +2250,19 @@ export async function useInventoryItem(userId: string, itemRef: string) {
     return { user: updatedUser, state, notices, item };
   }
 
-  throw new Error("Р­С‚РѕС‚ РїСЂРµРґРјРµС‚ РЅРµР»СЊР·СЏ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РєРѕРјР°РЅРґРѕР№ /use");
+  throw new Error("Этот предмет нельзя использовать командой /use");
 }
 
 export async function toggleGearItem(userId: string, itemRef: string) {
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   const notices = [...context.notices];
   const item = findInventoryItemByRef(state, itemRef);
-  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!item) throw new Error("Предмет не найден");
   if (!isTechInventoryItem(item)) {
-    throw new Error("РљРѕРјР°РЅРґР° /equip работает только для экипировки и гаджетов");
+    throw new Error("Команда /equip работает только для экипировки и гаджетов");
   }
   if (item.type === "gadget" || item.type === "gear") {
     const gadget = normalizeGadgetInventoryFields(item);
@@ -2246,13 +2292,13 @@ export async function toggleGearItem(userId: string, itemRef: string) {
 
 export async function serviceGadgetItem(userId: string, itemRef: string) {
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   let user = context.user;
   const notices = [...context.notices];
   const item = findInventoryItemByRef(state, itemRef);
-  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!item) throw new Error("Предмет не найден");
   if (!isTechInventoryItem(item)) throw new Error("Обслуживание доступно только для экипировки и гаджетов");
 
   const gadget = normalizeGadgetInventoryFields(item);
@@ -2260,10 +2306,10 @@ export async function serviceGadgetItem(userId: string, itemRef: string) {
   const maxDurability = Math.max(1, Math.round(gadget.maxCondition ?? gadget.maxDurability ?? 100));
   const currentDurability = Math.max(0, Math.round(gadget.condition ?? gadget.durability ?? maxDurability));
   const missingDurability = Math.max(0, maxDurability - currentDurability);
-  if (missingDurability <= 0) throw new Error("Р“Р°РґР¶РµС‚ СѓР¶Рµ РІ РёРґРµР°Р»СЊРЅРѕРј СЃРѕСЃС‚РѕСЏРЅРёРё");
+  if (missingDurability <= 0) throw new Error("Гаджет уже в идеальном состоянии");
 
   const serviceCost = Math.max(getGadgetRepairCost(gadget), Math.max(20, missingDurability * 5 + (gadget.isBroken ? 90 : 0)));
-  if (user.balance < serviceCost) throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ. РќСѓР¶РЅРѕ: ${getCurrencySymbol(user.city)}${serviceCost}`);
+  if (user.balance < serviceCost) throw new Error(`Недостаточно средств. Нужно: ${getCurrencySymbol(user.city)}${serviceCost}`);
 
   user = await storage.updateUser(user.id, {
     balance: user.balance - serviceCost,
@@ -2276,6 +2322,8 @@ export async function serviceGadgetItem(userId: string, itemRef: string) {
   item.isBroken = false;
   item.wear = 0;
   notices.push(`🔧 Гаджет отремонтирован: ${item.name} (-${getCurrencySymbol(user.city)}${serviceCost})`);
+  const questProgress = await trackDailyQuestEvent(user.id, { type: "repair_gadget", value: 1 });
+  notices.push(...questProgress.notices);
   return { user, state, notices, item, serviceCost };
 }
 
@@ -2310,19 +2358,19 @@ export function estimateInventorySellPrice(item: GameInventoryItem) {
 
 export async function sellInventoryItem(userId: string, itemRef: string) {
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   let user = context.user;
   const notices = [...context.notices];
   const item = findInventoryItemByRef(state, itemRef);
-  if (!item) throw new Error("РџСЂРµРґРјРµС‚ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!item) throw new Error("Предмет не найден");
   if (item.id === TUTORIAL_MEDAL_ITEM_ID && Number(context.user.level || 1) < 5) {
     throw new Error("Медаль за обучение можно продать только с 5 уровня.");
   }
   if (item.type !== "part" && item.type !== "gadget") {
     if (item.id !== TUTORIAL_MEDAL_ITEM_ID) {
-      throw new Error("РџСЂРѕРґР°РІР°С‚СЊ РјРѕР¶РЅРѕ С‚РѕР»СЊРєРѕ Р·Р°РїС‡Р°СЃС‚Рё, РіР°РґР¶РµС‚С‹ Рё СЃРїРµС†РёР°Р»СЊРЅС‹Рµ РЅР°РіСЂР°РґС‹");
+      throw new Error("Продавать можно только запчасти, гаджеты и специальные награды");
     }
   }
   const salePrice = estimateInventorySellPrice(item);
@@ -2345,21 +2393,21 @@ export async function openBankProduct(
 ) {
   await assertFeatureEnabled("bank", "Bank is disabled by admin settings");
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   let user = context.user;
   const notices = [...context.notices];
 
   if (state.activeBankProduct) {
-    throw new Error("РЎРЅР°С‡Р°Р»Р° Р·Р°РєСЂРѕР№ С‚РµРєСѓС‰РёР№ РєСЂРµРґРёС‚/РІРєР»Р°Рґ");
+    throw new Error("Сначала закрой текущий кредит/вклад");
   }
 
   const program = findBankProgramByRef(type, programRef, user.city);
-  if (!program) throw new Error("Р‘Р°РЅРєРѕРІСЃРєР°СЏ РїСЂРѕРіСЂР°РјРјР° РЅРµ РЅР°Р№РґРµРЅР°");
-  if (user.level < program.minLevel) throw new Error(`РўСЂРµР±СѓРµС‚СЃСЏ СѓСЂРѕРІРµРЅСЊ ${program.minLevel}+`);
+  if (!program) throw new Error("Банковская программа не найдена");
+  if (user.level < program.minLevel) throw new Error(`Требуется уровень ${program.minLevel}+`);
   if (amount < program.minAmount || amount > program.maxAmount) {
-    throw new Error(`РЎСѓРјРјР° РґРѕР»Р¶РЅР° Р±С‹С‚СЊ РѕС‚ ${program.minAmount} РґРѕ ${program.maxAmount}`);
+    throw new Error(`Сумма должна быть от ${program.minAmount} до ${program.maxAmount}`);
   }
   void days;
 
@@ -2392,7 +2440,7 @@ export async function openBankProduct(
     return { user, state, notices, program, totalReturn };
   }
 
-  if (user.balance < amount) throw new Error("РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ РґР»СЏ РІРєР»Р°РґР°");
+  if (user.balance < amount) throw new Error("Недостаточно средств для вклада");
   user = await storage.updateUser(user.id, { balance: user.balance - amount });
   state.activeBankProduct = {
     type: "deposit",
@@ -2423,19 +2471,33 @@ export async function openBankProduct(
       `✅ Вклад открыт: -${getCurrencySymbol(user.city)}${amount}. Через ${durationMinutes}м получите ${getCurrencySymbol(user.city)}${totalReturn}.`,
     );
   }
+  const questProgress = await trackDailyQuestEvent(user.id, { type: "open_bank_product", value: 1 });
+  notices.push(...questProgress.notices);
+  createNotification(user.id, {
+    type: "SYSTEM_INFO",
+    title: "🏦 Банковский продукт открыт",
+    message: `${program.name}: сумма ${getCurrencySymbol(user.city)}${amount}.`,
+    dataJson: {
+      bankType: type,
+      programId: program.id,
+      programName: program.name,
+      amount,
+      totalReturn,
+    },
+  });
   return { user, state, notices, program, totalReturn };
 }
 
 export async function closeBankProduct(userId: string, action: BankEarlyAction) {
   await assertFeatureEnabled("bank", "Bank is disabled by admin settings");
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   let user = context.user;
   const notices = [...context.notices];
   const active = state.activeBankProduct;
-  if (!active) throw new Error("РќРµС‚ Р°РєС‚РёРІРЅРѕРіРѕ Р±Р°РЅРєРѕРІСЃРєРѕРіРѕ РїСЂРѕРґСѓРєС‚Р°");
+  if (!active) throw new Error("Нет активного банковского продукта");
 
   const minutesPassed = Math.max(0, active.totalDays - Math.ceil(active.daysLeft));
   const daysPassedPercent = minutesPassed / Math.max(1, active.totalDays);
@@ -2445,11 +2507,20 @@ export async function closeBankProduct(userId: string, action: BankEarlyAction) 
   if (action === "repay" && active.type === "credit") {
     const amountToRepay = active.amount + interestForPassed;
     if (user.balance < amountToRepay) {
-      throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ. РќСѓР¶РЅРѕ: ${getCurrencySymbol(user.city)}${amountToRepay}`);
+      throw new Error(`Недостаточно средств. Нужно: ${getCurrencySymbol(user.city)}${amountToRepay}`);
     }
     user = await storage.updateUser(user.id, { balance: user.balance - amountToRepay });
     state.activeBankProduct = null;
-    notices.push(`вњ… РљСЂРµРґРёС‚ РїРѕРіР°С€РµРЅ РґРѕСЃСЂРѕС‡РЅРѕ: -${getCurrencySymbol(user.city)}${amountToRepay}`);
+    notices.push(`✅ Кредит погашен досрочно: -${getCurrencySymbol(user.city)}${amountToRepay}`);
+    createNotification(user.id, {
+      type: "BANK_PRODUCT_COMPLETED",
+      title: "🏦 Банковский продукт завершён",
+      message: `Кредит закрыт. Списано: ${getCurrencySymbol(user.city)}${amountToRepay}.`,
+      dataJson: {
+        bankType: "credit",
+        amount: amountToRepay,
+      },
+    });
     return { user, state, notices, amount: amountToRepay };
   }
 
@@ -2461,16 +2532,25 @@ export async function closeBankProduct(userId: string, action: BankEarlyAction) 
     user = await storage.updateUser(user.id, { balance: user.balance + amountToReceive });
     state.activeBankProduct = null;
     notices.push(`✅ Вклад снят досрочно: +${getCurrencySymbol(user.city)}${amountToReceive}`);
+    createNotification(user.id, {
+      type: "BANK_PRODUCT_COMPLETED",
+      title: "🏦 Банковский продукт завершён",
+      message: `Вклад закрыт. Получено: ${getCurrencySymbol(user.city)}${amountToReceive}.`,
+      dataJson: {
+        bankType: "deposit",
+        amount: amountToReceive,
+      },
+    });
     return { user, state, notices, amount: amountToReceive };
   }
 
-  throw new Error("Р”Р»СЏ РєСЂРµРґРёС‚Р° РёСЃРїРѕР»СЊР·СѓР№ /repay, РґР»СЏ РІРєР»Р°РґР° вЂ” /withdraw");
+  throw new Error("Для кредита используй /repay, для вклада — /withdraw");
 }
 
 export async function exchangeCurrencyToGram(userId: string, amountCurrency: number) {
   await assertFeatureEnabled("gram", "GRAM exchange is disabled by admin settings");
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   const notices = [...context.notices];
@@ -2478,10 +2558,10 @@ export async function exchangeCurrencyToGram(userId: string, amountCurrency: num
   const normalizedAmount = Math.floor(Number(amountCurrency));
 
   if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
-    throw new Error("РЎСѓРјРјР° РѕР±РјРµРЅР° РґРѕР»Р¶РЅР° Р±С‹С‚СЊ Р±РѕР»СЊС€Рµ 0");
+    throw new Error("Сумма обмена должна быть больше 0");
   }
   if (user.balance < normalizedAmount) {
-    throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃСЂРµРґСЃС‚РІ. РќСѓР¶РЅРѕ: ${getCurrencySymbol(user.city)}${normalizedAmount}`);
+    throw new Error(`Недостаточно средств. Нужно: ${getCurrencySymbol(user.city)}${normalizedAmount}`);
   }
 
   const cityRate = getLocalToGramRate(user.city);
@@ -2496,7 +2576,9 @@ export async function exchangeCurrencyToGram(userId: string, amountCurrency: num
     balance: user.balance - normalizedAmount,
   });
   state.gramBalance = Number((state.gramBalance + gramReceived).toFixed(3));
-  notices.push(`рџ’± РћР±РјРµРЅ: -${getCurrencySymbol(updatedUser.city)}${normalizedAmount}, +${gramReceived} GRM (комиссия ${Number((feeRate * 100).toFixed(2))}%)`);
+  notices.push(`💱 Обмен: -${getCurrencySymbol(updatedUser.city)}${normalizedAmount}, +${gramReceived} GRM (комиссия ${Number((feeRate * 100).toFixed(2))}%)`);
+  const questProgress = await trackDailyQuestEvent(updatedUser.id, { type: "exchange_gram", value: normalizedAmount });
+  notices.push(...questProgress.notices);
 
   return {
     user: updatedUser,
@@ -2511,7 +2593,7 @@ export async function exchangeCurrencyToGram(userId: string, amountCurrency: num
 export async function exchangeGramToCurrency(userId: string, amountGram: number) {
   await assertFeatureEnabled("gram", "GRAM exchange is disabled by admin settings");
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   const notices = [...context.notices];
@@ -2519,10 +2601,10 @@ export async function exchangeGramToCurrency(userId: string, amountGram: number)
   const normalizedGram = Number(Number(amountGram).toFixed(3));
 
   if (!Number.isFinite(normalizedGram) || normalizedGram <= 0) {
-    throw new Error("РљРѕР»РёС‡РµСЃС‚РІРѕ GRM РґРѕР»Р¶РЅРѕ Р±С‹С‚СЊ Р±РѕР»СЊС€Рµ 0");
+    throw new Error("Количество GRM должно быть больше 0");
   }
   if (state.gramBalance + 1e-9 < normalizedGram) {
-    throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ GRM. Р”РѕСЃС‚СѓРїРЅРѕ: ${state.gramBalance.toFixed(3)} GRM`);
+    throw new Error(`Недостаточно GRM. Доступно: ${state.gramBalance.toFixed(3)} GRM`);
   }
 
   const cityRate = getLocalToGramRate(user.city);
@@ -2536,7 +2618,9 @@ export async function exchangeGramToCurrency(userId: string, amountGram: number)
   const updatedUser = await storage.updateUser(user.id, {
     balance: user.balance + currencyReceived,
   });
-  notices.push(`рџ’± РћР±РјРµРЅ: -${normalizedGram} GRM, +${getCurrencySymbol(updatedUser.city)}${currencyReceived} (комиссия ${Number((feeRate * 100).toFixed(2))}%)`);
+  notices.push(`💱 Обмен: -${normalizedGram} GRM, +${getCurrencySymbol(updatedUser.city)}${currencyReceived} (комиссия ${Number((feeRate * 100).toFixed(2))}%)`);
+  const questProgress = await trackDailyQuestEvent(updatedUser.id, { type: "exchange_gram", value: currencyReceived });
+  notices.push(...questProgress.notices);
 
   return {
     user: updatedUser,
@@ -2551,27 +2635,27 @@ export async function exchangeGramToCurrency(userId: string, amountGram: number)
 export async function spendGram(userId: string, amountGram: number, reason: string = "Списание GRM") {
   await assertFeatureEnabled("gram", "GRAM operations are disabled by admin settings");
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
 
   const { state } = context;
   const notices = [...context.notices];
   const normalizedGram = Number(Number(amountGram).toFixed(3));
 
   if (!Number.isFinite(normalizedGram) || normalizedGram <= 0) {
-    throw new Error("РќРµРєРѕСЂСЂРµРєС‚РЅР°СЏ СЃСѓРјРјР° GRM");
+    throw new Error("Некорректная сумма GRM");
   }
   if (state.gramBalance + 1e-9 < normalizedGram) {
-    throw new Error(`РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ GRM. РќСѓР¶РЅРѕ: ${normalizedGram}, РґРѕСЃС‚СѓРїРЅРѕ: ${state.gramBalance.toFixed(3)}`);
+    throw new Error(`Недостаточно GRM. Нужно: ${normalizedGram}, доступно: ${state.gramBalance.toFixed(3)}`);
   }
 
   state.gramBalance = Number(Math.max(0, state.gramBalance - normalizedGram).toFixed(3));
-  notices.push(`рџЄ™ ${reason}: -${normalizedGram} GRM`);
+  notices.push(`🪙 ${reason}: -${normalizedGram} GRM`);
   return { user: context.user, state, notices, amountGram: normalizedGram };
 }
 
 export async function getPlayerGameSnapshot(userId: string) {
   const context = await loadContext(userId);
-  if (!context) throw new Error("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ");
+  if (!context) throw new Error("Пользователь не найден");
   return context;
 }
 

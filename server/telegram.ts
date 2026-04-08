@@ -110,6 +110,10 @@ import {
   type GamePvpBankBoost,
   type SkillName,
 } from "./game-engine";
+import { formatTelegramInbox } from "./notifications/format";
+import { claimNotificationReward, createNotification, listUserNotifications } from "./notifications/service";
+import { buildTelegramHomeDashboardInlineMarkup, formatTelegramHomeDashboard } from "./home-dashboard-format";
+import type { HomeDashboardSummary } from "./home-dashboard";
 import {
   acceptRepairOrder,
   calculateRepairEstimate,
@@ -130,12 +134,14 @@ import {
 import {
   COMPANY_STAGE_LABELS,
   DEPARTMENT_LABELS,
+  convertGRMToLocal,
   depositLocalToCompany,
   getDepartmentBonusText,
   getDepartmentEffects,
   getDepartmentNextCost,
   getDepartmentUpgradeCheck,
   getIPOProgress,
+  getLocalCurrencySymbolByCity,
   getLocalToGRMRate,
   reconcileCompanyEconomy,
   upgradeDepartment,
@@ -205,16 +211,28 @@ import {
   upgradeWeeklyHackathonDefenseLevel,
   upgradeWeeklyHackathonSabotageLevel,
 } from "./weekly-hackathon";
+import {
+  claimDailyQuestReward as claimDailyQuestRewardServer,
+  getDailyQuestSnapshot,
+} from "./daily-quests/service";
+import {
+  formatDailyQuestList,
+  formatDailyQuestReward,
+} from "./daily-quests/format";
 import { popGlobalEventAnnouncements } from "./game/events/event-engine";
 import {
   buyStockAsset,
+  declareCompanyDividends,
+  getCompanyDividendSnapshot,
   getStockMarketSnapshot,
   popStockMarketAnnouncement,
   sellStockAsset,
 } from "./stock-exchange";
 import {
+  buildCompanyIpoOptions,
   buildCompanyIpoEligibility,
   buildCompanyStockPreview,
+  COMPANY_IPO_VARIANTS,
   COMPANY_IPO_REQUIREMENTS,
   launchCompanyIpo,
   ensureCompanyStockDayState,
@@ -331,7 +349,6 @@ import {
   sendWithCityHubKeyboard as sendWithCityHubKeyboardBase,
   sendWithCurrentHubKeyboard as sendWithCurrentHubKeyboardBase,
   sendWithExtrasKeyboard as sendWithExtrasKeyboardBase,
-  sendHomeMenu as sendHomeMenuBase,
   sendWithMainKeyboard as sendWithMainKeyboardBase,
   restoreTelegramMenuState as restoreTelegramMenuStateBase,
 } from "./telegram/handlers/main-menu";
@@ -445,9 +462,11 @@ type PendingAction =
   | { type: "company_contract_parts"; contractId: string; requiredPartType: string; requiredQuantity: number }
   | { type: "company_topup"; companyId: string }
   | { type: "company_set_salary_amount"; companyId: string; memberUserId: string; memberUsername: string }
+  | { type: "company_dividend_amount"; companyId: string }
   | { type: "auction_bid_amount"; listingId: string; source?: "city" | "company" }
   | { type: "auction_buy_qty"; listingId: string; maxQuantity: number; source?: "city" | "company"; itemLabel: string }
-  | { type: "company_auction_list_price"; ref: string; label: string }
+  | { type: "company_auction_list_qty"; ref: string; label: string; maxQuantity: number }
+  | { type: "company_auction_list_price"; ref: string; label: string; quantity: number }
   | { type: "company_exclusive_parts"; gadgetName: string; gadgetId?: string; gadgetCategory?: string; gadgetBatchAvailable?: number }
   | { type: "company_exclusive_confirm"; gadgetName: string; gadgetId: string; partRefs: string[]; gadgetCategory?: string; gadgetBatchAvailable?: number }
   | { type: "company_bp_produce_qty"; blueprintId: string; blueprintName: string; maxQuantity: number }
@@ -629,7 +648,7 @@ type CityContractView = {
   id: string;
   title: string;
   customer: string;
-  kind?: "gadget_delivery" | "parts_supply" | "skill_research";
+  kind?: "gadget_delivery" | "parts_supply" | "skill_research" | "staged_skill";
   category: string;
   requiredQuantity: number;
   minQuality: number;
@@ -640,6 +659,18 @@ type CityContractView = {
   rewardOrk: number;
   status: "open" | "in_progress" | "completed";
   assignedCompanyId?: string;
+  currentStageIndex?: number;
+  participantBaseMoney?: number;
+  participantBaseXp?: number;
+  participantRewardMoney?: number;
+  participantRewardXp?: number;
+  stages?: Array<{
+    index: number;
+    title: string;
+    skillType: string;
+    target: number;
+    progress: number;
+  }>;
 };
 
 type CompanyContext = {
@@ -752,7 +783,8 @@ const TELEGRAM_PUBLIC_COMMANDS: Array<{ command: string; description: string }> 
   { command: "housing", description: "Недвижимость" },
   { command: "sell", description: "Продать запчасти/гаджеты" },
   { command: "bank", description: "Банк" },
-  { command: "quests", description: "Еженедельный квест" },
+  { command: "quests", description: "Ежедневные задания" },
+  { command: "inbox", description: "Игровые уведомления" },
   { command: "rating", description: "Рейтинг" },
   { command: "company", description: "Компания" },
   { command: "hackathon", description: "Weekly Hackathon" },
@@ -1254,7 +1286,7 @@ function resolvePlainTextAlias(text: string, chatId?: number) {
     ["💱 пополнить grm", "/company_topup"],
     ["🏛 отделы", "/company_departments"],
     ["🚀 ipo / акции", "/company_ipo"],
-    ["🚀 ipo", "/company_ipo_stub"],
+    ["🚀 ipo", "/company_ipo"],
     ["💸 зарплаты", "/company_salaries"],
     ["💰 получить зарплату", "/company_salary_claim"],
     ["➖ удалить компанию", "/company_delete"],
@@ -3070,9 +3102,6 @@ async function runJobSelection(
         ];
     if (!result.failed) {
       await tryApplyTutorialEvent(player.id, "first_job_done");
-      const weeklyQuestProgress = updateWeeklyQuestProgress(result.user, "jobs", 1);
-      const weeklyQuestNotice = formatWeeklyQuestProgressNotice(weeklyQuestProgress);
-      if (weeklyQuestNotice) lines.push("", weeklyQuestNotice);
     }
     if (!result.failed && result.droppedPart) lines.push(`🎁 Деталь: ${result.droppedPart.name} (${result.droppedPart.rarity})`);
     const lostPartNotice = result.notices.find((line) => line.includes("Инвентарь полон") && line.includes("потеряна"));
@@ -4576,6 +4605,10 @@ async function getTutorialSnapshotByUser(userId: string): Promise<TutorialApiSna
   return await callInternalApi("GET", `/api/tutorial/${userId}`) as TutorialApiSnapshot;
 }
 
+async function getHomeDashboardSummary(userId: string): Promise<HomeDashboardSummary> {
+  return await callInternalApi("GET", `/api/home-dashboard?userId=${encodeURIComponent(userId)}`) as HomeDashboardSummary;
+}
+
 async function sendTutorialMenu(token: string, chatId: number, userId: string) {
   const tutorial = await getTutorialSnapshotByUser(userId);
   const user = await storage.getUser(userId);
@@ -4694,6 +4727,7 @@ function formatShopPurchaseResultText(input: {
   equipped?: boolean;
   bonusesText?: string;
   used?: boolean;
+  notices?: string[];
 }) {
   const currency = getCurrencySymbol(input.city);
   const lines = [
@@ -4706,6 +4740,9 @@ function formatShopPurchaseResultText(input: {
   const tutorialNotice = formatTutorialAdvanceNotice(input.tutorialAdvance ?? null, input.city);
   if (tutorialNotice) {
     lines.push("", tutorialNotice);
+  }
+  if (Array.isArray(input.notices) && input.notices.length) {
+    lines.push("", formatNotices(input.notices));
   }
   return lines.join("\n");
 }
@@ -4895,6 +4932,13 @@ function formatContractStatus(contract: CityContractView, companyId: string) {
 }
 
 function formatWorkContractRequirement(contract: CityContractView) {
+  if (contract.kind === "staged_skill" && Array.isArray(contract.stages) && contract.stages.length) {
+    const currentStage = contract.stages[Math.max(0, Number(contract.currentStageIndex || 0))];
+    if (currentStage) {
+      return `Этап: ${currentStage.title} • ${currentStage.skillType} • ${formatNumber(currentStage.progress ?? 0)}/${formatNumber(currentStage.target ?? 0)}`;
+    }
+    return `Этапы: ${contract.stages.map((stage: any) => `${stage.title} (${stage.skillType})`).join(" → ")}`;
+  }
   if (contract.kind === "parts_supply") {
     return `Требование: ${contract.requiredPartType || "part"} x${contract.requiredQuantity} со склада компании`;
   }
@@ -4922,6 +4966,9 @@ function buildCompanyWorkInlineButtons(
         return [{ text: `✅ Принять #${index + 1}`, callback_data: `company:contract_accept:${index + 1}` }];
       }
       if (contract.status === "in_progress" && contract.assignedCompanyId === companyId) {
+        if (contract.kind === "staged_skill") {
+          return [{ text: `⚡ Вклад #${index + 1}`, callback_data: `company:contract_contribute:${index + 1}` }];
+        }
         return [{ text: `📦 Сдать #${index + 1}`, callback_data: `company:contract_deliver:${index + 1}` }];
       }
       return null;
@@ -5053,15 +5100,20 @@ async function formatCompanyWorkSection(input: CompanyContext, chatId: number) {
       `${index + 1}. ${contract.title} — ${contract.customer}`,
       `${formatWorkContractRequirement(contract)}`,
       `Награда: ${contract.rewardMoney} GRM +${contract.rewardOrk} ORK`,
+      contract.kind === "staged_skill"
+        ? `Игрокам: база $${contract.participantBaseMoney || 0} + ${contract.participantBaseXp || 0} XP, плюс доля из пула`
+        : null,
       `Статус: ${formatContractStatus(contract, input.company.id)}`,
       contract.status === "open"
         ? "Действие: принять кнопкой под сообщением."
         : contract.assignedCompanyId === input.company.id
           ? contract.kind === "parts_supply"
             ? "Действие: CEO выбирает детали кнопкой «Сдать»."
-            : "Действие: сдать кнопкой под сообщением."
+            : contract.kind === "staged_skill"
+              ? "Действие: сотрудники делают вклад кнопкой «Вклад»."
+              : "Действие: сдать кнопкой под сообщением."
           : "Действие: контракт занят другой компанией.",
-    ].join("\n")),
+    ].filter(Boolean).join("\n")),
   ].join("\n\n"),
     contracts,
   };
@@ -5135,7 +5187,7 @@ async function formatCompanyWarehouseSection(input: CompanyContext, chatId?: num
 }
 
 async function formatCompanyBureauSection(input: CompanyContext, chatId: number, userId: string) {
-  // TODO: РџРѕРґРґРµСЂР¶Р°С‚СЊ СЂРµРґРєРёРµ С‡РµСЂС‚РµР¶Рё РёР· API РЅР° РѕСЃРЅРѕРІРµ R&D lvl 4 (unlocksRareBlueprints).
+  // TODO: Поддержать редкие чертежи из API на основе R&D lvl 4 (unlocksRareBlueprints).
   const snapshot = await getCompanyBlueprintSnapshot(input.company.id);
   if (snapshot.active?.status === "production_ready" && snapshot.active.blueprintId) {
     storeCompanyBlueprint(input.company.id, snapshot.active.blueprintId);
@@ -5971,6 +6023,34 @@ function buildAuctionListingGroupKey(listing: any) {
   });
 }
 
+function buildAuctionDisplayGroupKey(listing: any) {
+  if (!listing) return "";
+  if (listing.listingKind !== "gadget") return `single::${String(listing.id || "")}`;
+  return [
+    "gadget",
+    String(listing.companyId || ""),
+    String(listing.saleType || ""),
+    buildAuctionListingGroupKey(listing),
+    listing.saleType === "auction"
+      ? `auction::${Number(listing.startingPrice || 0)}::${Number(listing.currentBid || listing.startingPrice || 0)}::${String(listing.currentBidderId || "")}::${Number(listing.auctionEndsAt || 0)}`
+      : `fixed::${Number(listing.price || 0)}`,
+  ].join("::");
+}
+
+function groupAuctionListingsForDisplay(listings: any[]) {
+  const groups = new Map<string, { representative: any; quantity: number }>();
+  for (const listing of listings ?? []) {
+    const key = buildAuctionDisplayGroupKey(listing);
+    const current = groups.get(key);
+    if (current) {
+      current.quantity += 1;
+      continue;
+    }
+    groups.set(key, { representative: listing, quantity: 1 });
+  }
+  return Array.from(groups.values());
+}
+
 function getAuctionBuyAvailability(listings: any[], listingId: string) {
   const target = listings.find((listing) => String(listing.id) === String(listingId));
   if (!target) return null;
@@ -5990,8 +6070,8 @@ function getAuctionBuyAvailability(listings: any[], listingId: string) {
 }
 
 async function formatAuctionSection(userId: string, chatId: number) {
-  const listings = await callInternalApi("GET", "/api/market") as any[];
-  marketListingRefsByChatId.set(chatId, listings.map((listing) => String(listing.id)));
+  const listings = groupAuctionListingsForDisplay(await callInternalApi("GET", "/api/market") as any[]);
+  marketListingRefsByChatId.set(chatId, listings.map(({ representative }) => String(representative.id)));
   if (!listings.length) {
     return "🏷 АУКЦИОН\n━━━━━━━━━━━━━━\nАктивных лотов пока нет.";
   }
@@ -6000,7 +6080,7 @@ async function formatAuctionSection(userId: string, chatId: number) {
   return [
     "🏷 АУКЦИОН",
     "━━━━━━━━━━━━━━",
-    ...listings.map((listing, index) => {
+    ...listings.map(({ representative: listing, quantity }, index) => {
       const ownEarlyAccess = Date.now() - Number(listing.createdAt || 0) < 20 * 60 * 1000;
       const lockedText = ownEarlyAccess && membership?.company?.id !== listing.companyId
         ? "Первые 20 минут: только для компании-разработчика"
@@ -6013,15 +6093,16 @@ async function formatAuctionSection(userId: string, chatId: number) {
         : `Цена: ${formatAuctionPrice(Number(listing.price || 0))} GRM`;
       if (listing.listingKind === "gadget" && viewMode !== "full") {
         return [
-          `${index + 1}. ${title}`,
+          `${index + 1}. ${title}${quantity > 1 ? ` x${quantity}` : ""}`,
           `${listing.companyName} • ${priceLine}`,
           `Характеристики: ${formatGadgetStatLine(listing.gadget?.stats) || "нет данных"}`,
+          quantity > 1 ? `Доступно: ${quantity} шт.` : "",
           listing.saleType === "auction" ? `До завершения: ${formatAuctionTimeLeft(Number(listing.auctionEndsAt || 0))}` : "",
           lockedText,
         ].filter(Boolean).join("\n");
       }
       return [
-        `${index + 1}. ${title}`,
+        `${index + 1}. ${title}${quantity > 1 ? ` x${quantity}` : ""}`,
         `Компания: ${listing.companyName} | ${listing.saleType === "auction" ? "Аукцион" : "Фиксированная цена"}`,
         listing.listingKind === "part"
           ? `Лот: запчасть ${formatRarityBadge(String(listing.part?.rarity || listing.partRarity || "Common"))}`
@@ -6030,6 +6111,7 @@ async function formatAuctionSection(userId: string, chatId: number) {
         listing.listingKind === "part" && listing.part?.type ? `Категория: ${listing.part.type}` : "",
         listing.gadget?.exclusiveBonusLabel ? `Бонус: ${listing.gadget.exclusiveBonusLabel}` : "",
         priceLine,
+        quantity > 1 ? `Доступно: ${quantity} шт.` : "",
         listing.saleType === "auction" ? `До завершения: ${formatAuctionTimeLeft(Number(listing.auctionEndsAt || 0))}` : "",
         lockedText,
         listing.saleType === "auction"
@@ -6052,14 +6134,15 @@ async function formatCompanyAuctionSection(membership: CompanyContext, chatId: n
   companyWarehouseGadgetRefsByChatId.set(chatId, groupedWarehouseGadgets.map((item) => String(item.representative.id)));
   companyWarehousePartRefsByChatId.set(chatId, warehouseParts.map((item) => `${item.id}::${String(item.quality || item.rarity || "Common")}`));
 
-  const listings = (await callInternalApi("GET", "/api/market") as any[]).slice(0, 8);
-  marketListingRefsByChatId.set(chatId, listings.map((listing) => String(listing.id)));
+  const listings = await callInternalApi("GET", "/api/market") as any[];
+  const groupedListings = groupAuctionListingsForDisplay(listings).slice(0, 8);
+  marketListingRefsByChatId.set(chatId, groupedListings.map(({ representative }) => String(representative.id)));
 
   const gadgetLines = groupedWarehouseGadgets.length
     ? groupedWarehouseGadgets.slice(0, 8).map((group, index: number) => [
         `${index + 1}. ${formatAuctionGadgetTitle(group.representative)}${group.quantity > 1 ? ` x${group.quantity}` : ""}`,
         `Цена рынка: ${formatNumber(Number(group.representative.minPrice || 0))}-${formatNumber(Number(group.representative.maxPrice || 0))} GRM`,
-        `Выставить: кнопкой ниже или /company_auction_list ${index + 1} <цена> [часы]`,
+        `Выставить: кнопкой ниже или /company_auction_list ${index + 1} <кол-во> <цена> [часы]`,
       ].join("\n"))
     : ["Гаджетов для продажи на складе нет."];
 
@@ -6072,8 +6155,8 @@ async function formatCompanyAuctionSection(membership: CompanyContext, chatId: n
       ].join("\n"))
     : ["Запчастей для продажи на складе нет."];
 
-  const marketLines = listings.length
-    ? listings.map((listing, index) => {
+  const marketLines = groupedListings.length
+    ? groupedListings.map(({ representative: listing, quantity }, index) => {
         const title = listing.listingKind === "gadget"
           ? formatAuctionGadgetTitle(listing.gadget || { name: "Гаджет", category: undefined })
           : stripLeadingRarityBadgeFromName(String(listing.part?.name || listing.partName || "Запчасть"));
@@ -6083,12 +6166,13 @@ async function formatCompanyAuctionSection(membership: CompanyContext, chatId: n
           ? `Ставка: ${formatAuctionPrice(Number(listing.currentBid || listing.startingPrice || 0))} GRM`
           : `Цена: ${formatAuctionPrice(Number(listing.price || 0))} GRM`;
         return [
-          `${index + 1}. ${title}`,
+          `${index + 1}. ${title}${quantity > 1 ? ` x${quantity}` : ""}`,
           listing.listingKind === "gadget"
             ? `${formatGadgetCategoryLabel(String(listing.gadget?.category || ""))} • ${listing.saleType === "auction" ? "Аукцион" : "Фиксированная цена"}`
             : `${quality} • ${formatPartTypeLabel(String(listing.part?.partType || listing.part?.type || listing.partType || ""))}`,
           `Компания: ${listing.companyName}`,
           priceLabel,
+          quantity > 1 ? `Доступно: ${quantity} шт.` : "",
           listing.saleType === "auction" ? `До завершения: ${formatAuctionTimeLeft(Number(listing.auctionEndsAt || 0))}` : "",
           locked ? "Первые 20 минут лот доступен только компании-разработчику." : "",
         ].join("\n");
@@ -6115,8 +6199,8 @@ async function buildCompanyAuctionInlineMarkup(chatId: number, companyId: string
   const gadgetRefs = companyWarehouseGadgetRefsByChatId.get(chatId) ?? [];
   const partRefs = companyWarehousePartRefsByChatId.get(chatId) ?? [];
   const listingRefs = marketListingRefsByChatId.get(chatId) ?? [];
-  const listings = (await callInternalApi("GET", "/api/market") as any[])
-    .filter((listing) => listingRefs.includes(String(listing.id)));
+  const listings = groupAuctionListingsForDisplay(await callInternalApi("GET", "/api/market") as any[])
+    .filter(({ representative }) => listingRefs.includes(String(representative.id)));
 
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   rows.push(...gadgetRefs.slice(0, 8).map((ref, index) => ([{
@@ -6127,14 +6211,14 @@ async function buildCompanyAuctionInlineMarkup(chatId: number, companyId: string
     text: `🏷 Запчасть p${index + 1}`,
     callback_data: `cauction:list:p${index + 1}`,
   }])));
-  rows.push(...listings.map((listing, index) => {
+  rows.push(...listings.map(({ representative: listing, quantity }, index) => {
     const locked = Date.now() - Number(listing.createdAt || 0) < 20 * 60 * 1000
       && String(listing.companyId || "") !== String(companyId || "");
     if (locked) {
-      return [{ text: `🔒 Лот ${index + 1}`, callback_data: "cauction:locked" }];
+      return [{ text: `🔒 Лот ${index + 1}${quantity > 1 ? ` x${quantity}` : ""}`, callback_data: "cauction:locked" }];
     }
     return [{
-      text: `${listing.saleType === "auction" ? "💸" : "🛒"} Лот ${index + 1}`,
+      text: `${listing.saleType === "auction" ? "💸" : "🛒"} Лот ${index + 1}${quantity > 1 ? ` x${quantity}` : ""}`,
       callback_data: listing.saleType === "auction"
         ? `cauction:bid:${listing.id}`
         : `cauction:buy:${listing.id}`,
@@ -6146,17 +6230,17 @@ async function buildCompanyAuctionInlineMarkup(chatId: number, companyId: string
 }
 
 async function buildAuctionInlineMarkup(userId: string, chatId: number) {
-  const listings = await callInternalApi("GET", "/api/market") as any[];
-  marketListingRefsByChatId.set(chatId, listings.map((listing) => String(listing.id)));
+  const listings = groupAuctionListingsForDisplay(await callInternalApi("GET", "/api/market") as any[]);
+  marketListingRefsByChatId.set(chatId, listings.map(({ representative }) => String(representative.id)));
   const membership = await getPlayerCompanyContext(userId);
-  const rows = listings.flatMap((listing, index) => {
+  const rows = listings.flatMap(({ representative: listing, quantity }, index) => {
     const ownEarlyAccess = Date.now() - Number(listing.createdAt || 0) < 20 * 60 * 1000;
     const locked = ownEarlyAccess && membership?.company?.id !== listing.companyId;
-    if (locked) return [[{ text: `🔒 ${index + 1}. Недоступно`, callback_data: "auction:locked" }]];
+    if (locked) return [[{ text: `🔒 ${index + 1}. Недоступно${quantity > 1 ? ` x${quantity}` : ""}`, callback_data: "auction:locked" }]];
     if (listing.saleType === "auction") {
-      return [[{ text: `💸 Ставка на лот ${index + 1}`, callback_data: `auction:bid:${listing.id}` }]];
+      return [[{ text: `💸 Ставка на лот ${index + 1}${quantity > 1 ? ` x${quantity}` : ""}`, callback_data: `auction:bid:${listing.id}` }]];
     }
-    return [[{ text: `🛒 Купить лот ${index + 1}`, callback_data: `auction:buy:${listing.id}` }]];
+    return [[{ text: `🛒 Купить лот ${index + 1}${quantity > 1 ? ` x${quantity}` : ""}`, callback_data: `auction:buy:${listing.id}` }]];
   });
   return { inline_keyboard: rows };
 }
@@ -6251,8 +6335,11 @@ async function formatCompanyIpoSection(input: CompanyContext) {
   const companyEconomy = ensureCompanyStockDayState(reconcileCompanyEconomy(input.company as CompanyEconomyLike));
   const ipoEligibility = await buildCompanyIpoEligibility(input.company, companyEconomy);
   const stockPreview = await buildCompanyStockPreview(input.company, companyEconomy);
-  const ipoLaunchPreview = launchCompanyIpo(companyEconomy, ipoEligibility);
+  const ipoOptions = buildCompanyIpoOptions({ city: input.company.city }, ipoEligibility);
+  const dividendSnapshot = await getCompanyDividendSnapshot(input.company.id);
+  const currencySymbol = getLocalCurrencySymbolByCity(input.company.city);
   const isPublic = companyEconomy.shares.isPublic || companyEconomy.stage === "public";
+  const lastPriceLocal = convertGRMToLocal(companyEconomy.shares.sharePriceGRM, input.company.city);
 
   return {
     text: [
@@ -6260,8 +6347,8 @@ async function formatCompanyIpoSection(input: CompanyContext) {
       "━━━━━━━━━━━━━━",
       `Стадия: ${COMPANY_STAGE_LABELS[companyEconomy.stage]}`,
       isPublic
-        ? `📊 Цена акции: ${formatNumber(companyEconomy.shares.sharePriceGRM)} GRM`
-        : `📊 Стартовая цена IPO: ${formatNumber(ipoLaunchPreview.ok ? ipoLaunchPreview.sharePrice : 0)} GRM`,
+        ? `📊 Цена акции: ${formatNumber(companyEconomy.shares.sharePriceGRM)} GRM / ${currencySymbol}${formatNumber(lastPriceLocal)}`
+        : "📊 Цена акции зависит от выбранного варианта IPO",
       isPublic
         ? `Изменение за последний день: ${companyEconomy.shares.lastPriceDeltaPercent > 0 ? "+" : ""}${formatNumber(companyEconomy.shares.lastPriceDeltaPercent)}%`
         : "Изменение цены начнётся после выхода на IPO",
@@ -6269,6 +6356,19 @@ async function formatCompanyIpoSection(input: CompanyContext) {
       "🚀 IPO Требования",
       ...ipoEligibility.items.map((item) => formatIpoMetricLine(item.label, item.current, item.target, item.done)),
       "",
+      ...(!isPublic
+        ? [
+            "Варианты IPO:",
+            ...ipoOptions.flatMap((option) => [
+              `${option.emoji} ${option.name}`,
+              `Вложение: ${formatNumber(option.investmentGrm)} GRM`,
+              `Цена акции: ${formatNumber(option.sharePriceGrm)} GRM / ${option.currencySymbol}${formatNumber(option.sharePriceLocal)}`,
+              `Free float: ${formatNumber(option.freeFloatShares)}`,
+              `${option.riskLabel} · ${option.description}`,
+            ]),
+            "",
+          ]
+        : []),
       isPublic
         ? "✅ Компания публичная"
         : ipoEligibility.allDone
@@ -6276,8 +6376,11 @@ async function formatCompanyIpoSection(input: CompanyContext) {
         : "⛔ IPO недоступно: не выполнены требования",
       "",
       isPublic
-        ? `📈 Акции: total ${companyEconomy.shares.totalShares}, free-float ${companyEconomy.shares.freeFloatShares}, IPO ${companyEconomy.shares.ipoLaunchedAt ? new Date(companyEconomy.shares.ipoLaunchedAt).toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow" }) : "сегодня"}`
+        ? `📈 Акции: тикер IPO-${String(input.company.id).slice(0, 6).toUpperCase()}, total ${companyEconomy.shares.totalShares}, free-float ${companyEconomy.shares.freeFloatShares}, IPO ${companyEconomy.shares.ipoLaunchedAt ? new Date(companyEconomy.shares.ipoLaunchedAt).toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow" }) : "сегодня"}`
         : "📊 Акции откроются после IPO",
+      isPublic
+        ? `💸 Дивиденды: держателей ${dividendSnapshot.holderCount}, акций у инвесторов ${dividendSnapshot.distributedShares}, последняя выплата ${companyEconomy.shares.lastDividendPerShareGRM > 0 ? `${formatNumber(companyEconomy.shares.lastDividendPerShareGRM)} GRM/акция` : "ещё не объявлялись"}`
+        : "",
       "",
       "Рост:",
       `${stockPreview.dayState.growthFactors.employeeActivity1 ? "✅" : "⬜"} Активность сотрудников`,
@@ -6302,17 +6405,29 @@ async function formatCompanyIpoSection(input: CompanyContext) {
     companyEconomy,
     ipoAllowed: ipoEligibility.allDone,
     isPublic,
+    ipoOptions,
   };
 }
 
 function buildCompanyIpoInlineButtons(isOwner: boolean, ipoAllowed: boolean, isPublic: boolean) {
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   if (isOwner && !isPublic) {
+    if (ipoAllowed) {
+      rows.push([
+        { text: "🟢 Базовый", callback_data: "company:ipo_pick:basic" },
+        { text: "🟡 Усиленный", callback_data: "company:ipo_pick:boosted" },
+      ]);
+      rows.push([
+        { text: "🔴 Агрессивный", callback_data: "company:ipo_pick:aggressive" },
+      ]);
+    } else {
+      rows.push([{ text: "⛔ IPO пока недоступно", callback_data: "company:ipo" }]);
+    }
+  }
+  if (isOwner && isPublic) {
     rows.push([
-      {
-        text: ipoAllowed ? "🚀 Провести IPO" : "⛔ IPO пока недоступно",
-        callback_data: ipoAllowed ? "company:ipo_run" : "company:ipo",
-      },
+      { text: "📊 Акции компании", callback_data: "company:ipo" },
+      { text: "💸 Дивиденды", callback_data: "company:ipo_dividends" },
     ]);
   }
   rows.push([{ text: "🔄 Обновить IPO", callback_data: "company:ipo" }]);
@@ -6819,6 +6934,7 @@ async function sendCompanyIpoSection(token: string, chatId: number, membership: 
     chatId,
     membership,
     formatCompanyIpoSection,
+    buildCompanyIpoInlineButtons,
     buildCompanyReplyMarkup,
     sendMessage,
   });
@@ -7638,133 +7754,43 @@ function getWeeklyQuestTemplatesByCity(city: string) {
   return buildWeeklyQuestTemplates(city, getIsoWeekKey());
 }
 
-function getWeeklyQuestTemplateForUser(userId: string, city: string, weekKey: string) {
-  const templates = buildWeeklyQuestTemplates(city, weekKey);
-  const index = hashString(`${userId}:${city}:${weekKey}`) % templates.length;
-  return templates[index];
-}
-
-function ensureWeeklyQuestState(user: User) {
-  const weekKey = getIsoWeekKey();
-  const city = user.city;
-  const templates = buildWeeklyQuestTemplates(city, weekKey);
-  const existing = weeklyQuestStateByUserId.get(user.id);
-
-  if (existing && existing.weekKey === weekKey && existing.city === city) {
-    const existingTemplate = templates.find((quest) => quest.id === existing.questId);
-    if (existingTemplate) {
-      return { state: existing, template: existingTemplate };
-    }
-  }
-
-  const template = getWeeklyQuestTemplateForUser(user.id, city, weekKey);
-  const state: WeeklyQuestState = {
-    weekKey,
-    city,
-    questId: template.id,
-    progress: 0,
-    claimed: false,
-  };
-  weeklyQuestStateByUserId.set(user.id, state);
-  return { state, template };
-}
-
-function formatWeeklyQuestMenu(user: User): WeeklyQuestMenuView {
-  const { state, template } = ensureWeeklyQuestState(user);
-  const progress = Math.max(0, Math.min(template.target, state.progress));
-  const percent = Math.max(0, Math.min(100, Math.round((progress / Math.max(1, template.target)) * 100)));
-  const filled = Math.max(0, Math.min(10, Math.round(percent / 10)));
-  const bar = `${"=".repeat(filled)}${"-".repeat(10 - filled)}`;
-  const completed = progress >= template.target;
-  const canClaim = completed && !state.claimed;
-  const statusLabel = state.claimed
-    ? "Награда получена"
-    : canClaim
-    ? "Готово к получению"
-    : "В процессе";
-
+async function formatWeeklyQuestMenu(user: User): Promise<WeeklyQuestMenuView> {
+  const snapshot = await getDailyQuestSnapshot(user.id);
   return {
-    canClaim,
-    text: [
-      "🗓 ЕЖЕНЕДЕЛЬНОЕ ЗАДАНИЕ",
-      "━━━━━━━━━━━━━━",
-      `Неделя: ${state.weekKey}`,
-      `Город: ${state.city}`,
-      "",
-      `Квест: ${template.title}`,
-      template.description,
-      "",
-      `Прогресс: [${bar}] ${progress}/${template.target} (${percent}%)`,
-      `Статус: ${statusLabel}`,
-      `Награда: ${template.rewardLabel}`,
-      "",
-      canClaim ? "Награда уже ждёт тебя: /quest_claim" : "Под рукой команды: /quest_claim, /reputation",
-    ].join("\n"),
+    canClaim: snapshot.completedUnclaimedCount > 0,
+    text: formatDailyQuestList(snapshot),
   };
 }
 
-function updateWeeklyQuestProgress(user: User, metric: WeeklyQuestMetric, amount = 1): WeeklyQuestProgressUpdate | null {
-  const safeAmount = Math.max(0, Math.floor(amount));
-  if (safeAmount <= 0) return null;
-
-  const { state, template } = ensureWeeklyQuestState(user);
-  if (template.metric !== metric) return null;
-  if (state.claimed) return { template, state, updated: false, completedNow: false };
-
-  const before = Math.max(0, state.progress);
-  if (before >= template.target) return { template, state, updated: false, completedNow: false };
-
-  state.progress = Math.min(template.target, before + safeAmount);
-  const completedNow = before < template.target && state.progress >= template.target;
-  weeklyQuestStateByUserId.set(user.id, state);
-
-  return {
-    template,
-    state,
-    updated: state.progress !== before,
-    completedNow,
-  };
+function updateWeeklyQuestProgress() {
+  return null;
 }
 
-function formatWeeklyQuestProgressNotice(progress: WeeklyQuestProgressUpdate | null) {
-  if (!progress || !progress.updated) return "";
-  const lines = [
-    `🗓 Квест продвинулся: ${progress.template.title} (${progress.state.progress}/${progress.template.target})`,
-  ];
-  if (progress.completedNow) {
-    lines.push("✅ Задание выполнено.");
-    lines.push("🎁 Награду уже можно забрать: /quest_claim");
-  }
-  return lines.join("\n");
+function formatWeeklyQuestProgressNotice() {
+  return "";
 }
 
 async function claimWeeklyQuestReward(userId: string) {
-  const user = await storage.getUser(userId);
-  if (!user) throw new Error("Пользователь не найден");
-
-  const { state, template } = ensureWeeklyQuestState(user);
-  if (state.claimed) throw new Error("Награда по этому квесту уже получена");
-  if (state.progress < template.target) {
-    throw new Error(`РљРІРµСЃС‚ РµС‰Рµ РЅРµ РІС‹РїРѕР»РЅРµРЅ: ${state.progress}/${template.target}`);
+  const snapshot = await getDailyQuestSnapshot(userId);
+  const nextQuest = snapshot.quests.find((quest) => quest.isCompleted && !quest.isClaimed);
+  if (!nextQuest) {
+    throw new Error("Нет готовой награды среди ежедневных заданий");
   }
 
-  const expState = applyExperienceGain(user, template.rewardExp);
-  const updatedUser = await storage.updateUser(user.id, {
-    balance: user.balance + template.rewardMoney,
-    reputation: (user.reputation || 0) + WEEKLY_QUEST_REPUTATION_REWARD,
-    level: expState.level,
-    experience: expState.experience,
+  const claimed = await claimDailyQuestRewardServer(userId, nextQuest.id, {
+    getUserWithGameState,
+    applyGameStatePatch,
   });
-  state.claimed = true;
-  weeklyQuestStateByUserId.set(user.id, state);
 
   return {
-    user: updatedUser,
-    state,
-    template,
-    rewardMoney: template.rewardMoney,
-    rewardExp: template.rewardExp,
-    rewardReputation: WEEKLY_QUEST_REPUTATION_REWARD,
+    user: claimed.user,
+    reward: { ...claimed.reward },
+    rewardMoney: Number(claimed.reward.money || 0),
+    rewardExp: Number(claimed.reward.xp || 0),
+    rewardReputation: Number(claimed.reward.reputation || 0),
+    rewardGram: Number(claimed.reward.gram || 0),
+    rewardLabel: formatDailyQuestReward(claimed.reward),
+    snapshot: claimed.snapshot,
   };
 }
 
@@ -7998,7 +8024,7 @@ async function formatStocksMenu(userId: string) {
     snapshot.publicCompanies.length
       ? `Публичные компании:\n${snapshot.publicCompanies
           .slice(0, 6)
-          .map((item) => `${item.companyName}\n${formatNumber(item.sharePriceGrm)} GRM\n${item.deltaPercent > 0 ? "+" : ""}${formatNumber(item.deltaPercent)}% за день`)
+          .map((item) => `${item.companyName} (${item.ticker})\n${formatNumber(item.sharePriceGrm)} GRM / ${item.currencySymbol}${formatNumber(item.sharePriceLocal)}\n${item.deltaPercent > 0 ? "+" : ""}${formatNumber(item.deltaPercent)}% за день`)
           .join("\n\n")}`
       : "Публичные компании: пока никто из игроков ещё не вышел на IPO.",
     "",
@@ -8278,13 +8304,59 @@ function buildWelcomeMessage(user?: TelegramUser) {
 }
 
 async function buildBotModeMessage(snapshot: Snapshot) {
-  const profileText = await formatPlayerProfile(snapshot);
+  const summary = await getHomeDashboardSummary(snapshot.user.id);
   const tutorialContinueLine = await getTutorialContinueLine(snapshot.user.id);
   return [
+    formatTelegramHomeDashboard(summary),
     tutorialContinueLine ?? "",
-    profileText,
     tutorialContinueLine ? "Старт обучения: кнопка «🎓 Обучение»" : "",
   ].filter(Boolean).join("\n");
+}
+
+async function refreshTelegramHomeDashboardMessage(input: {
+  token: string;
+  chatId: number;
+  userId: string;
+  from: TelegramUser;
+  messageId?: number;
+  prefix?: string;
+}) {
+  const snapshot = await resolveTelegramSnapshot(input.from);
+  const summary = await getHomeDashboardSummary(input.userId);
+  const base = await buildBotModeMessage(snapshot);
+  const notices = await shouldSuppressNonRegistrationMessages(input.userId) ? "" : formatNotices(snapshot.notices);
+  const text = [input.prefix, base, notices].filter(Boolean).join("\n\n");
+  const replyMarkup = buildTelegramHomeDashboardInlineMarkup(summary);
+
+  if (input.messageId) {
+    await callTelegramApi(input.token, "editMessageText", {
+      chat_id: input.chatId,
+      message_id: input.messageId,
+      text,
+      reply_markup: replyMarkup,
+    });
+    return;
+  }
+
+  await sendMessage(input.token, input.chatId, text, { reply_markup: replyMarkup });
+}
+
+async function claimAllHomeDashboardRewards(userId: string) {
+  const snapshot = await listUserNotifications(userId);
+  let claimedCount = 0;
+  let lastUser: any = null;
+
+  for (const item of snapshot.items) {
+    if (item.scope !== "personal" || !item.isClaimable || item.isClaimed) continue;
+    const claimed = await claimNotificationReward(userId, item.id);
+    if (claimed?.user) lastUser = claimed.user;
+    claimedCount += 1;
+  }
+
+  return {
+    claimedCount,
+    user: lastUser,
+  };
 }
 
 function buildTelegramUsernameCandidates(user: TelegramUser): string[] {
@@ -8382,10 +8454,11 @@ const companyTelegramModule = createCompanyTelegramModule({
   formatRate,
   getLocalToGRMRate,
   formatCompanyIpoSection,
-    formatCompanyStaffingSection,
-    buildCompanyStaffingInlineMarkup,
-    companyMemberRefsByChatId,
-    companyStaffTargetUserIdByChatId,
+  buildCompanyIpoInlineButtons,
+  formatCompanyStaffingSection,
+  buildCompanyStaffingInlineMarkup,
+  companyMemberRefsByChatId,
+  companyStaffTargetUserIdByChatId,
   storage,
   companyListByChatId,
   companyRequestsByChatId,
@@ -8469,7 +8542,6 @@ const inventoryTelegramModule = createInventoryTelegramModule({
   handleIncomingMessage,
   buyShopItem,
   tryApplyTutorialEvent,
-  updateWeeklyQuestProgress,
   formatShopPurchaseResultText,
   buildShopPurchaseInlineMarkup,
   sendWithCityHubKeyboard,
@@ -9155,6 +9227,9 @@ async function tryHandleTelegramPlayerSystemsMessage(
     isRatingEntityToken,
     normalizeRatingEntity,
     formatRatingMenu,
+    listUserNotifications,
+    formatTelegramInbox,
+    claimNotificationReward,
   })) {
     return true;
   }
@@ -9179,9 +9254,7 @@ async function tryHandleTelegramPlayerSystemsMessage(
     buyShopItem,
     resolveShopBuyRefFromChat,
     tryApplyTutorialEvent,
-    updateWeeklyQuestProgress,
     formatStats,
-    formatWeeklyQuestProgressNotice,
     formatTutorialAdvanceNotice,
     buildShopPurchaseInlineMarkup,
     buildInventoryMenu,
@@ -9453,6 +9526,15 @@ async function tryHandleTelegramMetaCallback(input: {
     }
 
     await setPlayerProfession(player.id, selected.id);
+    createNotification(player.id, {
+      type: "PROFESSION_SELECTED",
+      title: "🎓 Профессия выбрана",
+      message: `Ты выбрал профессию ${selected.emoji} ${selected.name}.`,
+      dataJson: {
+        professionId: selected.id,
+        professionName: selected.name,
+      },
+    });
     pendingActionByChatId.delete(chatId);
     await sendWithCurrentHubKeyboard(token, chatId, player.id, buildProfessionConfirmText(selected));
     return { handled: true as const, callbackText: "Профессия выбрана" };
@@ -9473,15 +9555,18 @@ async function tryHandleTelegramMetaCallback(input: {
 
   if (data === "quest:refresh") {
     const player = await resolveOrCreateTelegramPlayer(query.from);
-    const questView = formatWeeklyQuestMenu(player);
+    const questView = await formatWeeklyQuestMenu(player);
     if (messageId) {
       await callTelegramApi(token, "editMessageText", {
         chat_id: chatId,
         message_id: messageId,
         text: questView.text,
+        reply_markup: buildQuestInlineButtons(questView.canClaim),
       });
     } else {
-      await sendMessage(token, chatId, questView.text);
+      await sendMessage(token, chatId, questView.text, {
+        reply_markup: buildQuestInlineButtons(questView.canClaim),
+      });
     }
     return { handled: true as const, callbackText: "Квесты" };
   }
@@ -9514,6 +9599,88 @@ async function tryHandleTelegramUtilityCallback(input: {
   if (data === "auction:locked") {
     await answerCallbackQuery(token, callbackId, "Первые 20 минут лот доступен только компании-разработчику");
     return { handled: true as const, callbackText: "Лот недоступен", shouldClearInlineButtons: false };
+  }
+
+  if (data === "home:noop") {
+    await answerCallbackQuery(token, callbackId, "Сейчас это действие недоступно");
+    return { handled: true as const, callbackText: "Недоступно", shouldClearInlineButtons: false };
+  }
+
+  if (data === "home:contract_contribute") {
+    if (!query.from) {
+      return { handled: true as const, callbackText: "Игрок не найден", shouldClearInlineButtons: false };
+    }
+    const player = await resolveOrCreateTelegramPlayer(query.from);
+    try {
+      const summary = await getHomeDashboardSummary(player.id);
+      const contractId = summary.quickActions.contractContribution.contractId;
+      const companyId = summary.quickActions.contractContribution.companyId;
+      if (!summary.quickActions.contractContribution.visible || !contractId || !companyId) {
+        await answerCallbackQuery(token, callbackId, "Сейчас нет активного контракта");
+        return { handled: true as const, callbackText: "Контракта нет", shouldClearInlineButtons: false };
+      }
+      if (!summary.quickActions.contractContribution.enabled) {
+        await answerCallbackQuery(token, callbackId, "Сегодня ты уже сделал вклад в этот контракт");
+        return { handled: true as const, callbackText: "Вклад уже есть", shouldClearInlineButtons: false };
+      }
+
+      const result = await callInternalApi("POST", `/api/city-contracts/${encodeURIComponent(contractId)}/contribute`, {
+        userId: player.id,
+        companyId,
+      }) as any;
+
+      const contributionValue = Number(result?.contribution?.value || 0);
+      const prefix = result?.completed
+        ? "✅ Вклад принят. Контракт завершён."
+        : `✅ Вклад принят: +${Number.isFinite(contributionValue) ? contributionValue.toFixed(1) : "0.0"}`;
+      await refreshTelegramHomeDashboardMessage({
+        token,
+        chatId,
+        userId: player.id,
+        from: query.from,
+        messageId,
+        prefix,
+      });
+      return { handled: true as const, callbackText: "Вклад принят", shouldClearInlineButtons: false };
+    } catch (error) {
+      await answerCallbackQuery(token, callbackId, extractErrorMessage(error));
+      return { handled: true as const, callbackText: "Ошибка вклада", shouldClearInlineButtons: false };
+    }
+  }
+
+  if (data === "home:claim_rewards") {
+    if (!query.from) {
+      return { handled: true as const, callbackText: "Игрок не найден", shouldClearInlineButtons: false };
+    }
+    const player = await resolveOrCreateTelegramPlayer(query.from);
+    try {
+      const claimed = await claimAllHomeDashboardRewards(player.id);
+      if (claimed.claimedCount <= 0) {
+        await answerCallbackQuery(token, callbackId, "Сейчас наград для получения нет");
+        return { handled: true as const, callbackText: "Наград нет", shouldClearInlineButtons: false };
+      }
+      await refreshTelegramHomeDashboardMessage({
+        token,
+        chatId,
+        userId: player.id,
+        from: query.from,
+        messageId,
+        prefix: `🎁 Награды получены: ${claimed.claimedCount}`,
+      });
+      return { handled: true as const, callbackText: "Награды получены", shouldClearInlineButtons: false };
+    } catch (error) {
+      await answerCallbackQuery(token, callbackId, extractErrorMessage(error));
+      return { handled: true as const, callbackText: "Ошибка наград", shouldClearInlineButtons: false };
+    }
+  }
+
+  if (data === "home:pvp") {
+    await handleIncomingMessage(token, webAppUrl, {
+      chat: { id: chatId },
+      from: query.from,
+      text: "/pvp",
+    });
+    return { handled: true as const, callbackText: "PvP Arena", shouldClearInlineButtons: false };
   }
 
   const auctionBuyMatch = data.match(/^auction:buy:(.+)$/);
@@ -9630,10 +9797,31 @@ async function tryHandleTelegramCommerceCallback(input: {
     const rawRef = String(companyAuctionListMatch[1] || "").trim();
     const normalizedRef = /^\d+$/.test(rawRef) ? rawRef : rawRef.toLowerCase();
     const partRef = resolveWarehousePartRefFromChat(chatId, normalizedRef);
+    const blueprintSnapshot = await getCompanyBlueprintSnapshot(membership.company.id);
+    const groupedGadgets = groupCompanyProducedGadgets(blueprintSnapshot?.produced ?? []);
+    const representativeId = resolveWarehouseGadgetRefFromChat(chatId, normalizedRef);
+    const groupedGadget = groupedGadgets.find((item) => String(item.representative.id) === String(representativeId));
     const label = partRef
       ? formatWarehousePartLine(getCompanyWarehouseParts(membership.company.id).find((item) => `${item.id}::${String(item.quality || item.rarity || "Common")}` === partRef) ?? { name: "Запчасть" })
-      : String(((await getCompanyBlueprintSnapshot(membership.company.id))?.produced ?? []).find((item: any) => item.id === resolveWarehouseGadgetRefFromChat(chatId, normalizedRef))?.name || `Гаджет ${normalizedRef}`);
-    pendingActionByChatId.set(chatId, { type: "company_auction_list_price", ref: normalizedRef, label });
+      : String(groupedGadget?.representative?.name || `Гаджет ${normalizedRef}`);
+    if (!partRef && groupedGadget && groupedGadget.quantity > 1) {
+      pendingActionByChatId.set(chatId, {
+        type: "company_auction_list_qty",
+        ref: normalizedRef,
+        label,
+        maxQuantity: groupedGadget.quantity,
+      });
+      await sendMessage(token, chatId, [
+        `🏷 Подготовка лота: ${label}`,
+        `На складе доступно: ${groupedGadget.quantity} шт.`,
+        "",
+        `Введи количество для выставления (1-${groupedGadget.quantity}) или all.`,
+      ].join("\n"), {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return { handled: true as const };
+    }
+    pendingActionByChatId.set(chatId, { type: "company_auction_list_price", ref: normalizedRef, label, quantity: 1 });
     await sendMessage(token, chatId, [
       `🏷 Подготовка лота: ${label}`,
       "Введи стартовую цену и часы аукциона.",
@@ -10132,17 +10320,16 @@ async function sendCityHubSummary(token: string, chatId: number, userId: string,
 }
 
 async function sendHomeMenu(token: string, chatId: number, snapshot: Snapshot, userId: string, prefix?: string) {
-  await sendHomeMenuBase({
-    token,
-    chatId,
-    snapshot,
-    userId,
-    prefix,
-    rememberTelegramMenu,
-    shouldSuppressNonRegistrationMessages,
-    formatNotices,
-    buildBotModeMessage,
-    sendWithHomeKeyboard,
+  rememberTelegramMenu(userId, { menu: "home" });
+  const shouldSuppress = await shouldSuppressNonRegistrationMessages(userId);
+  const notices = shouldSuppress ? "" : formatNotices(snapshot.notices);
+  const summary = await getHomeDashboardSummary(userId);
+  const base = await buildBotModeMessage(snapshot);
+  const text = [prefix, base, notices].filter(Boolean).join("\n\n");
+
+  await sendWithHomeKeyboard(token, chatId, "🏠 Главная панель открыта. Основные разделы доступны кнопками меню ниже.");
+  await sendMessage(token, chatId, text, {
+    reply_markup: buildTelegramHomeDashboardInlineMarkup(summary),
   });
 }
 
@@ -10319,6 +10506,7 @@ async function handleCancelCommand(token: string, chatId: number, message: Teleg
     || pendingAction?.type === "company_part_sell"
     || pendingAction?.type === "company_part_sell_qty"
     || pendingAction?.type === "auction_buy_qty"
+    || pendingAction?.type === "company_auction_list_qty"
     || pendingAction?.type === "company_auction_list_price"
     || pendingAction?.type === "company_contract_parts"
     || pendingAction?.type === "company_exclusive_parts"
@@ -10556,10 +10744,12 @@ function getPendingExclusiveAction(chatId: number): ExclusiveActionIntent | null
     || pending.type === "company_part_deposit_qty"
     || pending.type === "company_part_sell"
     || pending.type === "company_part_sell_qty"
+    || pending.type === "company_auction_list_qty"
     || pending.type === "company_auction_list_price"
     || pending.type === "company_contract_parts"
     || pending.type === "company_topup"
     || pending.type === "company_set_salary_amount"
+    || pending.type === "company_dividend_amount"
     || pending.type === "company_exclusive_parts"
     || pending.type === "company_exclusive_confirm"
     || pending.type === "company_bp_produce_qty"
@@ -10946,6 +11136,14 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       || normalizedCommand === "/company_auction"
       || normalizedCommand === "/cancel"
     )
+    || pendingAction.type === "company_auction_list_qty"
+    && (
+      normalizedCommand === "/company_auction"
+      || normalizedCommand === "/company_warehouse"
+      || normalizedCommand === "/company_back"
+      || normalizedCommand === "/company"
+      || normalizedCommand === "/cancel"
+    )
     || pendingAction.type === "company_auction_list_price"
     || pendingAction.type === "company_part_sell"
     || pendingAction.type === "company_part_sell_qty"
@@ -10979,10 +11177,12 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     "company_part_sell",
     "company_part_sell_qty",
     "auction_buy_qty",
+    "company_auction_list_qty",
     "company_auction_list_price",
     "repair_service_price",
     "company_contract_parts",
     "company_topup",
+    "company_dividend_amount",
     "company_bp_produce_qty",
     "company_bp_produce_confirm",
     "company_exclusive_confirm",
@@ -11024,8 +11224,9 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       || pendingAction.type === "stocks_buy_qty"
       || pendingAction.type === "stocks_sell_select"
       || pendingAction.type === "stocks_sell_qty"
-      || pendingAction.type === "auction_buy_qty"
-      || pendingAction.type === "company_auction_list_price"
+    || pendingAction.type === "auction_buy_qty"
+    || pendingAction.type === "company_auction_list_qty"
+    || pendingAction.type === "company_auction_list_price"
       || pendingAction.type === "company_part_sell"
       || pendingAction.type === "company_part_sell_qty"
     )
@@ -11191,7 +11392,6 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
         result.item.type === "consumable" ? "first_course_item_bought" : "first_gadget_bought",
       );
       pendingActionByChatId.delete(chatId);
-      const weeklyQuestProgress = updateWeeklyQuestProgress(result.user, "shop", 1);
       const lines = [
         formatShopPurchaseResultText({
         itemName: result.item.name,
@@ -11199,10 +11399,9 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
         city: result.user.city,
         price: Number(result.item.price || 0),
         tutorialAdvance,
+        notices: result.notices,
       }),
       ];
-      const weeklyQuestNotice = formatWeeklyQuestProgressNotice(weeklyQuestProgress);
-      if (weeklyQuestNotice) lines.push("", weeklyQuestNotice);
       const purchaseMarkup = buildShopPurchaseInlineMarkup(result.item);
       if (purchaseMarkup) {
         await sendMessage(token, chatId, lines.join("\n"), { reply_markup: purchaseMarkup });
@@ -11229,13 +11428,13 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     try {
       const result = await openBankProduct(player.id, pendingAction.productType, parsed.programRef, parsed.amount, parsed.days);
       pendingActionByChatId.delete(chatId);
-      const lines = [pendingAction.productType === "credit" ? `✅ РљСЂРµРґРёС‚ РѕС„РѕСЂРјР»РµРЅ: ${result.program.name}` : `✅ Р’РєР»Р°Рґ РѕС‚РєСЂС‹С‚: ${result.program.name}`, ...result.notices, "", await formatLiveProfile(result.user, result.state as GameView)];
+      const lines = [pendingAction.productType === "credit" ? `✅ Кредит оформлен: ${result.program.name}` : `✅ Вклад открыт: ${result.program.name}`, ...result.notices, "", await formatLiveProfile(result.user, result.state as GameView)];
       await sendWithBankKeyboard(token, chatId, lines.join("\n"));
     } catch (error) {
       await sendMessage(
         token,
         chatId,
-        `❌ ${extractErrorMessage(error)}\nРџРѕРїСЂРѕР±СѓР№ РµС‰С‘ СЂР°Р· РёР»Рё РЅР°Р¶РјРё В«Р’ Р±Р°РЅРєВ».`,
+        `❌ ${extractErrorMessage(error)}\nПопробуй ещё раз или нажми «В банк».`,
         { reply_markup: buildBankSelectionReplyMarkup(pendingAction.productType) },
       );
     }
@@ -11281,7 +11480,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
         ].join("\n"),
       );
     } catch (error) {
-      await sendWithBankKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}\nР’РІРµРґРё СЃСѓРјРјСѓ РµС‰С‘ СЂР°Р·.`);
+      await sendWithBankKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}\nВведи сумму ещё раз.`);
     }
     return true;
   }
@@ -11299,13 +11498,13 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
         token,
         chatId,
         [
-          `✅ РћР±РјРµРЅ РІС‹РїРѕР»РЅРµРЅ: -${formatGramValue(result.amountGram)} GRM, +${getCurrencySymbol(result.user.city)}${result.amountCurrency}`,
+          `✅ Обмен выполнен: -${formatGramValue(result.amountGram)} GRM, +${getCurrencySymbol(result.user.city)}${result.amountCurrency}`,
           "",
           await formatLiveProfile(result.user, result.state as GameView),
         ].join("\n"),
       );
     } catch (error) {
-      await sendWithBankKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}\nР’РІРµРґРё РєРѕР»РёС‡РµСЃС‚РІРѕ GRM РµС‰С‘ СЂР°Р·.`);
+      await sendWithBankKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}\nВведи количество GRM ещё раз.`);
     }
     return true;
   }
@@ -11434,7 +11633,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     const companyEconomy = await ensureCompanyEconomyState(membership.company, membership.membersCount);
     const topUp = await applyCompanyTopUpFromPlayer(player, membership.company, companyEconomy, amountLocal);
     if (!topUp.ok) {
-      await sendWithMainKeyboard(token, chatId, `❌ ${topUp.reason ?? "РџРѕРїРѕР»РЅРµРЅРёРµ РЅРµРґРѕСЃС‚СѓРїРЅРѕ"}`);
+      await sendWithMainKeyboard(token, chatId, `❌ ${topUp.reason ?? "Пополнение недоступно"}`);
       return true;
     }
 
@@ -11450,6 +11649,38 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     );
     if (updatedMembership) {
       await sendCompanyEconomySection(token, chatId, updatedMembership);
+    }
+    return true;
+  }
+
+  if (pendingAction.type === "company_dividend_amount") {
+    const payoutPerShareGrm = parseDecimalInput(text);
+    if (payoutPerShareGrm === null || payoutPerShareGrm <= 0) {
+      await sendWithMainKeyboard(token, chatId, "Неверный формат. Введи размер дивиденда на акцию, например: 0.5");
+      return true;
+    }
+    try {
+      const result = await callInternalApi("POST", `/api/companies/${pendingAction.companyId}/dividends/declare`, {
+        userId: player.id,
+        payoutPerShareGrm,
+      });
+      pendingActionByChatId.delete(chatId);
+      await sendWithMainKeyboard(
+        token,
+        chatId,
+        [
+          "💸 Дивиденды объявлены",
+          `На акцию: ${formatNumber(Number(result.payout?.payoutPerShareGrm || payoutPerShareGrm))} GRM`,
+          `Всего списано: ${formatNumber(Number(result.payout?.totalPayoutGrm || 0))} GRM`,
+          `Получателей: ${formatNumber(Number(result.payout?.holderCount || 0))}`,
+        ].join("\n"),
+      );
+      const membership = await getPlayerCompanyContext(player.id);
+      if (membership) {
+        await sendCompanyIpoSection(token, chatId, membership);
+      }
+    } catch (error) {
+      await sendWithMainKeyboard(token, chatId, `❌ ${extractErrorMessage(error)}`);
     }
     return true;
   }
@@ -11500,6 +11731,54 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
     return true;
   }
 
+  if (pendingAction.type === "company_auction_list_qty") {
+    const membership = await getPlayerCompanyContext(player.id);
+    if (!membership) {
+      pendingActionByChatId.delete(chatId);
+      await sendWithMainKeyboard(token, chatId, "Ты не состоишь в компании. Нажми кнопку «🏢 Компания».");
+      return true;
+    }
+    const backToCompanyAlias =
+      aliasCommand === "/company_auction"
+      || aliasCommand === "/company_warehouse"
+      || aliasCommand === "/company_part_sell"
+      || aliasCommand === "/company_back"
+      || normalizedCommand === "/company_auction"
+      || normalizedCommand === "/company_warehouse"
+      || normalizedCommand === "/company_part_sell"
+      || normalizedCommand === "/company_back"
+      || normalizedCommand === "/company"
+      || normalizedCommand === "/cancel";
+    if (backToCompanyAlias) {
+      clearPendingActionRuntimeState(chatId, pendingAction);
+      return false;
+    }
+    const normalizedText = text.trim().toLowerCase();
+    const quantity = normalizedText === "all"
+      ? pendingAction.maxQuantity
+      : Math.max(0, Math.floor(Number(text.trim()) || 0));
+    if (!Number.isFinite(quantity) || quantity < 1 || quantity > pendingAction.maxQuantity) {
+      await sendMessage(token, chatId, `Неверный формат. Введи количество от 1 до ${pendingAction.maxQuantity} или all.`, {
+        reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+      });
+      return true;
+    }
+    pendingActionByChatId.set(chatId, {
+      type: "company_auction_list_price",
+      ref: pendingAction.ref,
+      label: pendingAction.label,
+      quantity,
+    });
+    await sendMessage(token, chatId, [
+      `🏷 Подготовка лота: ${pendingAction.label} x${quantity}`,
+      "Введи стартовую цену и часы аукциона.",
+      "Пример: 500 2",
+    ].join("\n"), {
+      reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
+    });
+    return true;
+  }
+
   if (pendingAction.type === "company_auction_list_price") {
     const membership = await getPlayerCompanyContext(player.id);
     if (!membership) {
@@ -11545,12 +11824,13 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
         userId: player.id,
         gadgetId,
         partRef,
+        quantity: pendingAction.quantity,
         price,
         mode: "auction",
         durationHours,
       });
       pendingActionByChatId.delete(chatId);
-      await sendMessage(token, chatId, `✅ Лот выставлен: ${pendingAction.label}\nСтартовая цена: ${formatNumber(price)} GRM\nДлительность: ${durationHours} ч.`, {
+      await sendMessage(token, chatId, `✅ Лот выставлен: ${pendingAction.label} x${pendingAction.quantity}\nСтартовая цена: ${formatNumber(price)} GRM\nДлительность: ${durationHours} ч.`, {
         reply_markup: buildCompanyReplyMarkup(membership.role, chatId),
       });
       await sendCompanyAuctionSection(token, chatId, membership, player.id);
@@ -12375,10 +12655,7 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
 
     applyGameStatePatch(player.id, { skills: nextSkills, studyTime: nextStudyTime });
     const tutorialAdvance = await tryApplyTutorialEvent(player.id, "first_education_started");
-    const weeklyQuestProgress = updateWeeklyQuestProgress(updatedUser, "study", 1);
-
     const continueTutorialLine = formatTutorialAdvanceNotice(tutorialAdvance, player.city) || await getTutorialContinueLine(player.id);
-    const weeklyQuestNotice = formatWeeklyQuestProgressNotice(weeklyQuestProgress);
     const resultingCap = Object.keys(appliedBoosts).reduce((best, skillKey) => {
       return Math.max(best, getTrainingSkillCapForLevel(player.level, skillKey as SkillName, professionId));
     }, baseSkillCap);
@@ -12396,7 +12673,6 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
         `⚡ Потрачено энергии учёбы: ${Math.round(studyEnergyCost * 100)}`,
         `⚡ Остаток энергии учёбы: ${formatEnergyPercent(nextStudyTime)}`,
         `💰 Остаток денег: ${getCurrencySymbol(updatedUser.city)}${formatNumber(updatedUser.balance)}`,
-        weeklyQuestNotice || "",
         continueTutorialLine || "",
       ].filter(Boolean).join("\n"),
       { reply_markup: STUDY_RESULT_REPLY_MARKUP },
@@ -12477,8 +12753,8 @@ async function tryHandlePendingAction(token: string, chatId: number, text: strin
       token,
       chatId,
       refreshed
-        ? `✅ РќР°С‡РёСЃР»РµРЅРѕ ${Math.floor(amount)} XP\n\n${await formatPlayerProfile(refreshed)}`
-        : `✅ РќР°С‡РёСЃР»РµРЅРѕ ${Math.floor(amount)} XP`,
+        ? `✅ Начислено ${Math.floor(amount)} XP\n\n${await formatPlayerProfile(refreshed)}`
+        : `✅ Начислено ${Math.floor(amount)} XP`,
     );
     if (player.level < ADVANCED_PERSONALITY_UNLOCK_LEVEL && updated.level >= ADVANCED_PERSONALITY_UNLOCK_LEVEL) {
       await maybePromptAdvancedPersonality(token, chatId, updated);
@@ -12995,7 +13271,8 @@ async function dispatchTelegramCommandMessage(ctx: TelegramMessageDispatchContex
         "• /company — меню компании",
         "• /pvp — PvP Arena",
         "• /hackathon — weekly hackathon",
-        "• /quests — еженедельное задание",
+        "• /quests — ежедневные задания",
+        "• /inbox — игровые уведомления",
         "• /updates — последние обновления",
       ].join("\n"),
     );
@@ -13212,7 +13489,7 @@ export function startTelegramBot(httpServer: Server) {
 
   const webAppUrl = trimTrailingSlash(process.env.TELEGRAM_WEBAPP_URL || process.env.APP_URL || "http://localhost:5000");
   if (!webAppUrl.startsWith("https://") && !webAppUrl.startsWith("http://localhost")) {
-    console.warn(`вљ пёЏ TELEGRAM_WEBAPP_URL РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ HTTPS (С‚РµРєСѓС‰РµРµ Р·РЅР°С‡РµРЅРёРµ: ${webAppUrl})`);
+    console.warn(`⚠️ TELEGRAM_WEBAPP_URL должен быть HTTPS (текущее значение: ${webAppUrl})`);
   }
 
   let stopped = false;
@@ -13242,7 +13519,7 @@ export function startTelegramBot(httpServer: Server) {
             await handleIncomingMessage(token, webAppUrl, update.message as TelegramMessage);
           }
         } catch (error) {
-          console.error("вљ пёЏ Telegram message handling error:", error);
+          console.error("⚠️ Telegram message handling error:", error);
           const messageChatId = update?.message?.chat?.id ?? update?.callback_query?.message?.chat?.id;
           if (messageChatId) {
             await sendWithMainKeyboard(token, messageChatId, "Ошибка обработки команды. Попробуй ещё раз.");
@@ -13250,7 +13527,7 @@ export function startTelegramBot(httpServer: Server) {
         }
       }
     } catch (error) {
-      console.error("вљ пёЏ Telegram polling error:", error);
+      console.error("⚠️ Telegram polling error:", error);
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
     setImmediate(poll);
@@ -13492,7 +13769,7 @@ export function startTelegramBot(httpServer: Server) {
         const me = await callTelegramApi(token, "getMe", {});
         if (me?.username) {
           telegramBotUsername = String(me.username).replace("@", "").trim();
-          console.log(`в„№пёЏ Telegram bot username: @${telegramBotUsername}`);
+          console.log(`ℹ️ Telegram bot username: @${telegramBotUsername}`);
         }
       } catch (error) {
         console.warn("⚠️ Не удалось получить username бота (getMe):", error);
@@ -13501,7 +13778,7 @@ export function startTelegramBot(httpServer: Server) {
 
     try {
       await callTelegramApi(token, "setMyCommands", { commands: TELEGRAM_PUBLIC_COMMANDS });
-      console.log("в„№пёЏ Telegram command list synced");
+      console.log("ℹ️ Telegram command list synced");
     } catch (error) {
       console.warn("⚠️ Не удалось обновить список команд Telegram:", error);
     }

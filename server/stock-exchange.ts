@@ -13,10 +13,13 @@ import {
   type StockSectorReportView,
   type StockWeeklyMarketReportView,
 } from "../shared/stock-exchange";
+import { convertGRMToLocal } from "../client/src/lib/companySystem";
 import { applyGameStatePatch, getUserWithGameState } from "./game-engine";
 import { registerRuntimeSnapshotProvider } from "./storage";
 import { storage } from "./storage";
 import { getPublicCompanyStockViews } from "./services/company-stock-service";
+import { trackDailyQuestEvent } from "./daily-quests/service";
+import { createNotification } from "./notifications/service";
 
 type StockAssetRuntime = {
   definition: StockAssetDefinition;
@@ -351,13 +354,28 @@ function buildQuoteView(asset: StockAssetRuntime): StockQuoteView {
   };
 }
 
+function buildPublicCompanyResolvedAsset(company: PublicCompanyStockView, userCity: string): ResolvedMarketAsset {
+  const currentPrice = Number(convertGRMToLocal(company.sharePriceGrm, userCity).toFixed(2));
+  const previousPriceGrm = company.sharePriceGrm / Math.max(0.01, 1 + company.deltaPercent / 100);
+  return {
+    ticker: company.ticker,
+    name: company.companyName,
+    sector: "tech",
+    type: "public_company",
+    description: `Акции публичной компании ${company.companyName}`,
+    currentPrice,
+    previousPrice: Number(convertGRMToLocal(previousPriceGrm, userCity).toFixed(2)),
+    dividendYield: 0,
+    companyId: company.companyId,
+  };
+}
+
 async function getPublicCompanyAssetMap() {
   const publicCompanies = await getPublicCompanyStockViews();
   const map = new Map<string, ResolvedMarketAsset>();
   for (const company of publicCompanies) {
-    const ticker = `IPO-${String(company.companyId).slice(0, 6).toUpperCase()}`;
-    map.set(ticker, {
-      ticker,
+    map.set(company.ticker, {
+      ticker: company.ticker,
       name: company.companyName,
       sector: "tech",
       type: "public_company",
@@ -389,17 +407,27 @@ async function resolveMarketAssetByTicker(ticker: string): Promise<ResolvedMarke
   return publicMap.get(ticker) ?? null;
 }
 
+async function resolveMarketAssetByTickerForUser(ticker: string, userCity: string): Promise<ResolvedMarketAsset | null> {
+  const asset = await resolveMarketAssetByTicker(ticker);
+  if (!asset || asset.type !== "public_company" || !asset.companyId) {
+    return asset;
+  }
+  const publicCompanies = await getPublicCompanyStockViews();
+  const company = publicCompanies.find((item) => item.companyId === asset.companyId || item.ticker === ticker);
+  return company ? buildPublicCompanyResolvedAsset(company, userCity) : asset;
+}
+
 function getWeeksHeld(firstBoughtAtMs: number, nowMs: number) {
   if (!Number.isFinite(firstBoughtAtMs) || firstBoughtAtMs <= 0) return 0;
   return Math.max(0, Math.floor((getWeekStartMs(nowMs) - getWeekStartMs(firstBoughtAtMs)) / WEEK_MS));
 }
 
-async function buildHoldingViews(userId: string, nowMs: number): Promise<StockHoldingView[]> {
+async function buildHoldingViews(userId: string, userCity: string, nowMs: number): Promise<StockHoldingView[]> {
   const holdingMap = stockHoldingsByUserId.get(userId) ?? new Map<string, UserHoldingRuntime>();
   const holdings: StockHoldingView[] = [];
 
   for (const [ticker, holding] of holdingMap.entries()) {
-    const asset = await resolveMarketAssetByTicker(ticker);
+    const asset = await resolveMarketAssetByTickerForUser(ticker, userCity);
     if (!asset || holding.quantity <= 0) continue;
     const marketValue = Number((asset.currentPrice * holding.quantity).toFixed(2));
     const invested = Number((holding.averagePrice * holding.quantity).toFixed(2));
@@ -598,19 +626,19 @@ export async function getStockMarketSnapshot(userId: string, nowMs: number = Dat
   const recentDividendPayouts = await applyWeeklyDividends(userId, nowMs);
   const npcQuotes = Array.from(stockAssetsByTicker.values()).map(buildQuoteView);
   const publicCompanyQuotes = (await getPublicCompanyStockViews()).map((item: PublicCompanyStockView) => ({
-    ticker: `IPO-${String(item.companyId).slice(0, 6).toUpperCase()}`,
+    ticker: item.ticker,
     name: item.companyName,
     sector: "tech" as const,
     type: "public_company" as const,
     description: `Акции публичной компании ${item.companyName}`,
-    currentPrice: Number(item.sharePriceGrm.toFixed(2)),
-    previousPrice: Number((item.sharePriceGrm / Math.max(0.01, 1 + item.deltaPercent / 100)).toFixed(2)),
-    changeLocal: Number((item.sharePriceGrm - (item.sharePriceGrm / Math.max(0.01, 1 + item.deltaPercent / 100))).toFixed(2)),
+    currentPrice: Number(item.sharePriceLocal.toFixed(2)),
+    previousPrice: Number(convertGRMToLocal(item.sharePriceGrm / Math.max(0.01, 1 + item.deltaPercent / 100), user.city).toFixed(2)),
+    changeLocal: Number((item.sharePriceLocal - convertGRMToLocal(item.sharePriceGrm / Math.max(0.01, 1 + item.deltaPercent / 100), user.city)).toFixed(2)),
     changePercent: Number(item.deltaPercent.toFixed(2)),
     dividendYield: 0,
   }));
   const quotes = [...npcQuotes, ...publicCompanyQuotes];
-  const holdings = await buildHoldingViews(userId, nowMs);
+  const holdings = await buildHoldingViews(userId, user.city, nowMs);
   const portfolioValue = Number(holdings.reduce((sum, item) => sum + item.marketValue, 0).toFixed(2));
   const cashBalance = Math.max(0, Number(user.balance || 0));
   return {
@@ -636,7 +664,7 @@ export async function buyStockAsset(userId: string, ticker: string, quantity: nu
   const normalizedQty = Math.max(0, Math.floor(Number(quantity || 0)));
   if (!normalizedTicker) throw new Error("Ticker is required");
   if (normalizedQty <= 0) throw new Error("Quantity must be greater than zero");
-  const asset = await resolveMarketAssetByTicker(normalizedTicker);
+  const asset = await resolveMarketAssetByTickerForUser(normalizedTicker, user.city);
   if (!asset) throw new Error("Asset not found");
   if (asset.type === "public_company" && asset.companyId) {
     const publicCompanies = await getPublicCompanyStockViews();
@@ -668,6 +696,17 @@ export async function buyStockAsset(userId: string, ticker: string, quantity: nu
   const updatedUser = await storage.updateUser(userId, {
     balance: Number((Number(user.balance || 0) - totalCost).toFixed(2)),
   });
+  const questProgress = await trackDailyQuestEvent(userId, { type: "buy_stock", value: 1 });
+  createNotification(userId, {
+    type: "SYSTEM_INFO",
+    title: "📈 Актив куплен",
+    message: `${normalizedTicker} x${normalizedQty} добавлен в портфель.`,
+    dataJson: {
+      ticker: normalizedTicker,
+      quantity: normalizedQty,
+      totalCost,
+    },
+  });
 
   return {
     user: updatedUser,
@@ -675,6 +714,7 @@ export async function buyStockAsset(userId: string, ticker: string, quantity: nu
     quantity: normalizedQty,
     pricePerShare: Number(asset.currentPrice.toFixed(2)),
     totalCost,
+    notices: questProgress.notices,
     snapshot: await getStockMarketSnapshot(userId),
   };
 }
@@ -687,7 +727,7 @@ export async function sellStockAsset(userId: string, ticker: string, quantity: n
   const normalizedQty = Math.max(0, Math.floor(Number(quantity || 0)));
   if (!normalizedTicker) throw new Error("Ticker is required");
   if (normalizedQty <= 0) throw new Error("Quantity must be greater than zero");
-  const asset = await resolveMarketAssetByTicker(normalizedTicker);
+  const asset = await resolveMarketAssetByTickerForUser(normalizedTicker, user.city);
   if (!asset) throw new Error("Asset not found");
 
   const holdingMap = getUserHoldingMap(userId);
@@ -716,6 +756,17 @@ export async function sellStockAsset(userId: string, ticker: string, quantity: n
   const updatedUser = await storage.updateUser(userId, {
     balance: Number((Number(user.balance || 0) + totalRevenue).toFixed(2)),
   });
+  const questProgress = await trackDailyQuestEvent(userId, { type: "sell_stock", value: 1 });
+  createNotification(userId, {
+    type: "SYSTEM_INFO",
+    title: "📉 Актив продан",
+    message: `${normalizedTicker} x${normalizedQty} продан из портфеля.`,
+    dataJson: {
+      ticker: normalizedTicker,
+      quantity: normalizedQty,
+      totalRevenue,
+    },
+  });
 
   return {
     user: updatedUser,
@@ -723,6 +774,72 @@ export async function sellStockAsset(userId: string, ticker: string, quantity: n
     quantity: normalizedQty,
     pricePerShare: Number(asset.currentPrice.toFixed(2)),
     totalRevenue,
+    notices: questProgress.notices,
     snapshot: await getStockMarketSnapshot(userId),
+  };
+}
+
+export async function getCompanyDividendSnapshot(companyId: string) {
+  const ticker = `IPO-${String(companyId).slice(0, 6).toUpperCase()}`;
+  let distributedShares = 0;
+  let holderCount = 0;
+  for (const holdings of stockHoldingsByUserId.values()) {
+    const holding = holdings.get(ticker);
+    if (!holding || holding.quantity <= 0) continue;
+    distributedShares += holding.quantity;
+    holderCount += 1;
+  }
+  return {
+    ticker,
+    holderCount,
+    distributedShares,
+    recommendedPerShareGrm: [0.25, 0.5, 1],
+  };
+}
+
+export async function declareCompanyDividends(companyId: string, payoutPerShareGrm: number) {
+  const ticker = `IPO-${String(companyId).slice(0, 6).toUpperCase()}`;
+  const safePerShare = Math.max(0, Number(payoutPerShareGrm || 0));
+  if (safePerShare <= 0) {
+    throw new Error("Размер дивиденда должен быть больше нуля");
+  }
+
+  let holderCount = 0;
+  let distributedShares = 0;
+  const recipients: Array<{ userId: string; quantity: number; amountGrm: number }> = [];
+
+  for (const [userId, holdings] of stockHoldingsByUserId.entries()) {
+    const holding = holdings.get(ticker);
+    if (!holding || holding.quantity <= 0) continue;
+    const amountGrm = Number((holding.quantity * safePerShare).toFixed(2));
+    if (amountGrm <= 0) continue;
+    const snapshot = await getUserWithGameState(userId);
+    if (!snapshot) continue;
+    applyGameStatePatch(userId, {
+      gramBalance: Number((Number(snapshot.game.gramBalance || 0) + amountGrm).toFixed(2)),
+    });
+    createNotification(userId, {
+      type: "SYSTEM_INFO",
+      title: "💸 Получены дивиденды",
+      message: `По акциям ${ticker} начислено ${amountGrm.toFixed(2)} GRM.`,
+      dataJson: {
+        ticker,
+        quantity: holding.quantity,
+        amountGrm,
+        payoutPerShareGrm: safePerShare,
+      },
+    });
+    distributedShares += holding.quantity;
+    holderCount += 1;
+    recipients.push({ userId, quantity: holding.quantity, amountGrm });
+  }
+
+  return {
+    ticker,
+    payoutPerShareGrm: safePerShare,
+    distributedShares,
+    holderCount,
+    totalPayoutGrm: Number((distributedShares * safePerShare).toFixed(2)),
+    recipients,
   };
 }
